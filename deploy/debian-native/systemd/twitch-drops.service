@@ -1,0 +1,23 @@
+[Unit]
+Description=Twitch Drops Miner & Auto-Claimer (Zero-Telemetry)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/auto-loot-claimer
+EnvironmentFile=-/opt/auto-loot-claimer/.env
+ExecStart=/usr/bin/python3 -m src.twitch_drops.main --daemon
+Restart=always
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+
+# Hardened security sandbox
+ProtectSystem=full
+ProtectHome=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

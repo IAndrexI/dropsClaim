@@ -1,0 +1,1 @@
+"""Twitch Drops Miner module."""
