@@ -5,7 +5,7 @@ name="twitch-drops"
 description="Twitch Drops Miner & Auto-Claimer (Zero-Telemetry)"
 
 command="/usr/bin/python3"
-command_args="-m src.twitch_drops.main --daemon"
+command_args="-u -m src.twitch_drops.main --daemon"
 directory="/opt/auto-loot-claimer"
 command_background="yes"
 pidfile="/run/${RC_SVCNAME}.pid"
@@ -17,6 +17,8 @@ depend() {
 }
 
 start_pre() {
+    touch /var/log/twitch-drops.log
+    export PYTHONUNBUFFERED=1
     if [ -f "/opt/auto-loot-claimer/.env" ]; then
         set -a
         . /opt/auto-loot-claimer/.env
