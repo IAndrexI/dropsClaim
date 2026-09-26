@@ -40,6 +40,9 @@ ALLOWED_DOMAINS = {
     # Official Open-Source Repositories (installers only)
     "github.com",
     "ghcr.io",
+    # Local loopback
+    "localhost",
+    "127.0.0.1",
 }
 
 URL_REGEX = re.compile(r'https?://([a-zA-Z0-9.-]+)')

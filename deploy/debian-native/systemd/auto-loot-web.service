@@ -1,0 +1,18 @@
+[Unit]
+Description=Auto Loot Claimer Web Dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/auto-loot-claimer
+EnvironmentFile=-/opt/auto-loot-claimer/.env
+ExecStart=/usr/bin/python3 -u -m src.web.server --port 8080
+Restart=always
+RestartSec=15
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

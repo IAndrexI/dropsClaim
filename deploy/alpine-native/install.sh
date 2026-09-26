@@ -68,12 +68,17 @@ fi
 echo "[4/6] Setting up script permissions..."
 chmod +x "$APP_DIR/scripts/"*.sh
 
-echo "[5/6] Installing OpenRC service for Twitch Drops Miner..."
+echo "[5/7] Installing OpenRC service for Twitch Drops Miner..."
 cp "$APP_DIR/deploy/alpine-native/openrc/twitch-drops" /etc/init.d/twitch-drops
 chmod 755 /etc/init.d/twitch-drops
 rc-update add twitch-drops default
 
-echo "[6/6] Setting up daily cron schedule for Free Games Claimer..."
+echo "[6/7] Installing OpenRC service for Web Dashboard..."
+cp "$APP_DIR/deploy/alpine-native/openrc/auto-loot-web" /etc/init.d/auto-loot-web
+chmod 755 /etc/init.d/auto-loot-web
+rc-update add auto-loot-web default
+
+echo "[7/7] Setting up daily cron schedule for Free Games Claimer..."
 # Create daily cron runner in /etc/periodic/daily/free-games
 cat << 'EOF' > /etc/periodic/daily/free-games
 #!/bin/sh

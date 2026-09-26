@@ -1,0 +1,27 @@
+#!/sbin/openrc-run
+# OpenRC service script for Auto Loot Claimer Web Dashboard on Alpine Linux
+
+name="auto-loot-web"
+description="Web Dashboard for Auto Loot Claimer"
+
+command="/usr/bin/python3"
+command_args="-u -m src.web.server --port 8080"
+directory="/opt/auto-loot-claimer"
+command_background="yes"
+pidfile="/run/${RC_SVCNAME}.pid"
+output_log="/var/log/auto-loot-web.log"
+error_log="/var/log/auto-loot-web.log"
+
+depend() {
+    need net
+}
+
+start_pre() {
+    touch /var/log/auto-loot-web.log
+    export PYTHONUNBUFFERED=1
+    if [ -f "/opt/auto-loot-claimer/.env" ]; then
+        set -a
+        . /opt/auto-loot-claimer/.env
+        set +a
+    fi
+}

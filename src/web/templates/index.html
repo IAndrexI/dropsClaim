@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Loot Claimer Dashboard</title>
+  <style>
+    :root {
+      --bg: #0b0f19;
+      --card-bg: #131b2e;
+      --card-border: #1e293b;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --accent-twitch: #9146ff;
+      --accent-epic: #0078f2;
+      --accent-amazon: #ff9900;
+      --accent-gog: #9e44c4;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { background-color: var(--bg); color: var(--text); padding: 24px; min-height: 100vh; }
+    .container { max-width: 1200px; margin: 0 auto; }
+    
+    /* Header */
+    header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; flex-wrap: wrap; gap: 16px; border-bottom: 1px solid var(--card-border); padding-bottom: 16px; }
+    .title-area h1 { font-size: 1.6rem; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+    .title-area p { color: var(--text-muted); font-size: 0.9rem; margin-top: 4px; }
+    .header-actions { display: flex; align-items: center; gap: 12px; }
+    .btn { background: #1e293b; color: white; border: 1px solid #334155; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 0.85rem; font-weight: 500; transition: all 0.2s; display: inline-flex; align-items: center; gap: 6px; }
+    .btn:hover { background: #334155; }
+    .btn-primary { background: var(--accent-twitch); border-color: var(--accent-twitch); }
+    .btn-primary:hover { background: #7c2cf1; }
+    .btn-success { background: #059669; border-color: #059669; }
+    .btn-success:hover { background: #047857; }
+    
+    /* Status banner */
+    .status-bar { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 24px; }
+    .stat-card { background: var(--card-bg); border: 1px solid var(--card-border); padding: 16px; border-radius: 10px; display: flex; flex-direction: column; }
+    .stat-label { font-size: 0.75rem; text-transform: uppercase; color: var(--text-muted); font-weight: 600; letter-spacing: 0.05em; }
+    .stat-value { font-size: 1.25rem; font-weight: 700; margin-top: 4px; display: flex; align-items: center; gap: 6px; }
+    
+    /* Tabs */
+    .tabs { display: flex; gap: 8px; margin-bottom: 20px; border-bottom: 1px solid var(--card-border); padding-bottom: 8px; }
+    .tab-btn { background: none; border: none; color: var(--text-muted); padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 0.95rem; font-weight: 600; }
+    .tab-btn.active { color: white; background: #1e293b; }
+    
+    /* Grid */
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; }
+    .card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 10px; padding: 18px; display: flex; flex-direction: column; justify-content: space-between; transition: transform 0.15s, border-color 0.15s; position: relative; overflow: hidden; }
+    .card:hover { border-color: #3b82f6; }
+    .card-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; }
+    .store-tag { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; padding: 3px 8px; border-radius: 4px; }
+    .store-epic { background: rgba(0, 120, 242, 0.15); color: #60a5fa; border: 1px solid rgba(0, 120, 242, 0.3); }
+    .store-twitch { background: rgba(145, 70, 255, 0.15); color: #c084fc; border: 1px solid rgba(145, 70, 255, 0.3); }
+    .store-amazon { background: rgba(255, 153, 0, 0.15); color: #fbbf24; border: 1px solid rgba(255, 153, 0, 0.3); }
+    .store-gog { background: rgba(158, 68, 196, 0.15); color: #e879f9; border: 1px solid rgba(158, 68, 196, 0.3); }
+    
+    .badge { font-size: 0.75rem; font-weight: 700; padding: 4px 10px; border-radius: 9999px; display: inline-flex; align-items: center; gap: 4px; }
+    .badge-claimed { background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); }
+    .badge-ready { background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.3); animation: pulse 2s infinite; }
+    .badge-progress { background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3); }
+    .badge-available { background: rgba(148, 163, 184, 0.15); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.3); }
+    .badge-upcoming { background: rgba(100, 116, 139, 0.15); color: #94a3b8; border: 1px solid rgba(100, 116, 139, 0.3); }
+
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
+
+    .item-title { font-size: 1.1rem; font-weight: 600; margin-bottom: 6px; color: #f1f5f9; line-height: 1.3; }
+    .item-sub { font-size: 0.82rem; color: var(--text-muted); margin-bottom: 12px; }
+    
+    /* Progress bar */
+    .progress-box { margin-top: 12px; }
+    .progress-label { display: flex; justify-content: space-between; font-size: 0.75rem; color: var(--text-muted); margin-bottom: 4px; }
+    .progress-track { background: #1e293b; height: 8px; border-radius: 4px; overflow: hidden; }
+    .progress-fill { height: 100%; background: linear-gradient(90deg, #3b82f6, #9146ff); border-radius: 4px; transition: width 0.4s ease; }
+    .progress-fill.complete { background: #10b981; }
+
+    /* Logs view */
+    .log-container { background: #050811; border: 1px solid #1e293b; border-radius: 8px; padding: 14px; font-family: monospace; font-size: 0.8rem; color: #cbd5e1; max-height: 380px; overflow-y: auto; white-space: pre-wrap; line-height: 1.5; }
+    
+    .empty-state { text-align: center; padding: 48px 16px; color: var(--text-muted); grid-column: 1 / -1; }
+    
+    /* Toast alert */
+    #toast { position: fixed; bottom: 20px; right: 20px; background: #1e293b; border: 1px solid #3b82f6; color: white; padding: 12px 20px; border-radius: 8px; font-size: 0.9rem; z-index: 9999; display: none; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5); }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="title-area">
+        <h1>🎁 Auto Loot & Claimer</h1>
+        <p>Real-time inventory, drops tracking, and game storefront status</p>
+      </div>
+      <div class="header-actions">
+        <button class="btn btn-primary" onclick="claimDropsNow()">⚡ Claim Ready Drops</button>
+        <button class="btn btn-success" onclick="triggerGamesCheck()">🎮 Check All Games</button>
+        <button class="btn" onclick="fetchData()">🔄 Refresh</button>
+      </div>
+    </header>
+
+    <!-- Top Stats -->
+    <div class="status-bar">
+      <div class="stat-card">
+        <span class="stat-label">Twitch Account</span>
+        <span class="stat-value" id="stat-twitch-user">Connecting...</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Twitch Miner Status</span>
+        <span class="stat-value" id="stat-miner-status">Checking...</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Epic Games Session</span>
+        <span class="stat-value" id="stat-epic-status">Checking...</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Ready to Claim</span>
+        <span class="stat-value" id="stat-ready-count">0 Items</span>
+      </div>
+    </div>
+
+    <!-- Navigation Tabs -->
+    <div class="tabs">
+      <button class="tab-btn active" onclick="switchTab('drops')">Twitch Drops</button>
+      <button class="tab-btn" onclick="switchTab('epic')">Epic Games Store</button>
+      <button class="tab-btn" onclick="switchTab('stores')">Amazon & GOG</button>
+      <button class="tab-btn" onclick="switchTab('logs')">Live Logs</button>
+    </div>
+
+    <!-- TAB 1: TWITCH DROPS -->
+    <div id="tab-drops" class="tab-content">
+      <div class="grid" id="drops-grid">
+        <div class="empty-state">Loading your personal Twitch drops inventory...</div>
+      </div>
+    </div>
+
+    <!-- TAB 2: EPIC GAMES -->
+    <div id="tab-epic" class="tab-content" style="display: none;">
+      <h2 style="font-size: 1.1rem; margin-bottom: 12px; color: #94a3b8;">Current Weekly Freebies (100% Off)</h2>
+      <div class="grid" id="epic-active-grid"></div>
+      
+      <h2 style="font-size: 1.1rem; margin: 28px 0 12px 0; color: #94a3b8;">Upcoming Next Week</h2>
+      <div class="grid" id="epic-upcoming-grid"></div>
+    </div>
+
+    <!-- TAB 3: OTHER STORES -->
+    <div id="tab-stores" class="tab-content" style="display: none;">
+      <div class="grid" id="stores-grid"></div>
+    </div>
+
+    <!-- TAB 4: LOGS -->
+    <div id="tab-logs" class="tab-content" style="display: none;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+        <span style="font-size: 0.9rem; color: #94a3b8;">Twitch Drops Miner Live Log</span>
+        <button class="btn" style="padding: 4px 10px; font-size: 0.75rem;" onclick="fetchLogs()">Refresh Logs</button>
+      </div>
+      <div class="log-container" id="log-view">Loading logs...</div>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+
+  <script>
+    let currentData = null;
+
+    function showToast(message) {
+      const toast = document.getElementById("toast");
+      toast.innerText = message;
+      toast.style.display = "block";
+      setTimeout(() => { toast.style.display = "none"; }, 4000);
+    }
+
+    function switchTab(name) {
+      document.querySelectorAll(".tab-content").forEach(el => el.style.display = "none");
+      document.querySelectorAll(".tab-btn").forEach(el => el.classList.remove("active"));
+      document.getElementById(`tab-${name}`).style.display = "block";
+      event.target.classList.add("active");
+      if (name === "logs") fetchLogs();
+    }
+
+    async function fetchData() {
+      try {
+        const res = await fetch("/api/status");
+        currentData = await res.json();
+        renderDashboard(currentData);
+      } catch (err) {
+        showToast("Error connecting to server API: " + err.message);
+      }
+    }
+
+    function renderDashboard(data) {
+      // 1. Stats
+      const twitch = data.twitch || {};
+      document.getElementById("stat-twitch-user").innerHTML = twitch.username 
+        ? `<span style="color: #a855f7;">${twitch.username}</span>`
+        : `<span style="color: #ef4444;">Not Connected</span>`;
+      
+      const isRunning = data.system && data.system.miner_running;
+      document.getElementById("stat-miner-status").innerHTML = isRunning
+        ? `<span style="color: #10b981;">● Active (Mining)</span>`
+        : `<span style="color: #f59e0b;">Stopped</span>`;
+
+      const epicCookies = data.epic && data.epic.has_saved_session;
+      document.getElementById("stat-epic-status").innerHTML = epicCookies
+        ? `<span style="color: #10b981;">● Logged In</span>`
+        : `<span style="color: #94a3b8;">Pending Initial Login</span>`;
+
+      // 2. Render Twitch Drops
+      const dropsGrid = document.getElementById("drops-grid");
+      const drops = twitch.drops_in_progress || [];
+      let readyCount = 0;
+
+      if (drops.length === 0) {
+        dropsGrid.innerHTML = `<div class="empty-state">No drop campaigns currently in progress. All available rewards are claimed or campaigns ended!</div>`;
+      } else {
+        dropsGrid.innerHTML = drops.map(item => {
+          const pct = item.required_minutes > 0 ? Math.min(100, Math.floor((item.watched_minutes / item.required_minutes) * 100)) : 0;
+          let badge = `<span class="badge badge-progress">In Progress</span>`;
+          if (item.is_claimed) {
+            badge = `<span class="badge badge-claimed">✓ CLAIMED</span>`;
+          } else if (item.watched_minutes >= item.required_minutes && item.required_minutes > 0) {
+            badge = `<span class="badge badge-ready">⚡ READY TO CLAIM</span>`;
+            readyCount++;
+          }
+
+          return `
+            <div class="card">
+              <div>
+                <div class="card-top">
+                  <span class="store-tag store-twitch">${item.game || "Twitch"}</span>
+                  ${badge}
+                </div>
+                <div class="item-title">${item.name}</div>
+                <div class="item-sub">Campaign: ${item.campaign_name}</div>
+              </div>
+              <div class="progress-box">
+                <div class="progress-label">
+                  <span>${item.watched_minutes} / ${item.required_minutes} min</span>
+                  <span>${pct}%</span>
+                </div>
+                <div class="progress-track">
+                  <div class="progress-fill ${item.is_claimed ? 'complete' : ''}" style="width: ${pct}%;"></div>
+                </div>
+              </div>
+            </div>
+          `;
+        }).join("");
+      }
+
+      document.getElementById("stat-ready-count").innerText = `${readyCount} Items`;
+
+      // 3. Render Epic Games Store
+      const epic = data.epic || {};
+      const activeGrid = document.getElementById("epic-active-grid");
+      const upcomingGrid = document.getElementById("epic-upcoming-grid");
+
+      const activeFreebies = epic.active_freebies || [];
+      const upcomingFreebies = epic.upcoming_freebies || [];
+
+      activeGrid.innerHTML = activeFreebies.map(game => {
+        const isClaimed = epic.claimed_titles && epic.claimed_titles.includes(game.title);
+        const badge = isClaimed 
+          ? `<span class="badge badge-claimed">✓ CLAIMED TO LIBRARY</span>`
+          : `<span class="badge badge-available">FREE NOW</span>`;
+
+        return `
+          <div class="card">
+            <div>
+              <div class="card-top">
+                <span class="store-tag store-epic">Epic Games Store</span>
+                ${badge}
+              </div>
+              <div class="item-title">${game.title}</div>
+              <div class="item-sub">Ends: ${new Date(game.end).toLocaleDateString()}</div>
+            </div>
+          </div>
+        `;
+      }).join("") || `<div class="empty-state">No free games active at this moment.</div>`;
+
+      upcomingGrid.innerHTML = upcomingFreebies.map(game => `
+        <div class="card">
+          <div>
+            <div class="card-top">
+              <span class="store-tag store-epic">Upcoming Freebie</span>
+              <span class="badge badge-upcoming">Next Week</span>
+            </div>
+            <div class="item-title">${game.title}</div>
+            <div class="item-sub">Available starting: ${new Date(game.start).toLocaleDateString()}</div>
+          </div>
+        </div>
+      `).join("") || `<div class="empty-state">No upcoming announcements right now.</div>`;
+
+      // 4. Render Amazon & GOG
+      const storesGrid = document.getElementById("stores-grid");
+      const amazon = data.amazon || {};
+      const gog = data.gog || {};
+      storesGrid.innerHTML = `
+        <div class="card">
+          <div>
+            <div class="card-top">
+              <span class="store-tag store-amazon">Amazon Prime Gaming</span>
+              <span class="badge ${amazon.has_saved_session ? 'badge-claimed' : 'badge-available'}">
+                ${amazon.has_saved_session ? '✓ Connected' : 'Configured'}
+              </span>
+            </div>
+            <div class="item-title">Prime Monthly Games & Loot</div>
+            <div class="item-sub">Account: ${amazon.email || 'Not configured'}</div>
+          </div>
+        </div>
+        <div class="card">
+          <div>
+            <div class="card-top">
+              <span class="store-tag store-gog">GOG Giveaways</span>
+              <span class="badge ${gog.has_saved_session ? 'badge-claimed' : 'badge-available'}">
+                ${gog.has_saved_session ? '✓ Connected' : 'Configured'}
+              </span>
+            </div>
+            <div class="item-title">DRM-Free Giveaways</div>
+            <div class="item-sub">Account: ${gog.email || 'Not configured'}</div>
+          </div>
+        </div>
+      `;
+    }
+
+    async function fetchLogs() {
+      try {
+        const res = await fetch("/api/logs");
+        const data = await res.json();
+        const logBox = document.getElementById("log-view");
+        logBox.innerText = data.logs || "No logs available yet.";
+        logBox.scrollTop = logBox.scrollHeight;
+      } catch (e) {
+        document.getElementById("log-view").innerText = "Could not fetch logs.";
+      }
+    }
+
+    async function claimDropsNow() {
+      showToast("Claiming any 100% completed drops...");
+      try {
+        const res = await fetch("/api/claim-drops", { method: "POST" });
+        const data = await res.json();
+        showToast(`Result: Claimed ${data.claimed || 0} completed drops!`);
+        fetchData();
+      } catch (err) {
+        showToast("Claim request failed: " + err.message);
+      }
+    }
+
+    async function triggerGamesCheck() {
+      showToast("Triggering game storefronts check in background...");
+      try {
+        const res = await fetch("/api/trigger-games", { method: "POST" });
+        const data = await res.json();
+        showToast(data.message || "Game claim check initiated!");
+      } catch (err) {
+        showToast("Error triggering game check: " + err.message);
+      }
+    }
+
+    // Initial load & 30s auto-refresh
+    fetchData();
+    setInterval(fetchData, 30000);
+  </script>
+</body>
+</html>

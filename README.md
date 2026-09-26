@@ -53,10 +53,26 @@ This automatically:
 nano /opt/auto-loot-claimer/.env
 ```
 
-### 4. Start the Service
+### 4. Start the Services (Miner & Web Dashboard)
 ```bash
 rc-service twitch-drops start
+rc-service auto-loot-web start
 ```
+
+---
+
+## 🌐 Mini Web Dashboard (`http://<server-ip>:8080`)
+
+A self-contained, real-time web dashboard built using the standard library (zero external dependencies) that allows you to check active free games/items and see if you personally claimed them.
+
+* **Twitch Drops Inventory**: View active campaigns with personal progress bars (`54/120 min`, 45%) and status badges (`✓ CLAIMED`, `⚡ READY TO CLAIM`, `In Progress`).
+* **Epic Games Store**: Displays active free games (e.g. *Astrea*, *Mechabellum*), end dates, and whether they have been claimed to your library, along with upcoming releases.
+* **Amazon Prime Gaming & GOG**: Real-time status of your connected accounts.
+* **One-Click Actions**: "⚡ Claim Ready Drops" and "🎮 Check All Games" buttons directly in the web UI.
+* **Live Logs**: View real-time output from background mining.
+
+Access it anytime in your browser at:
+`http://<your-lxc-ip>:8080`
 
 ---
 
