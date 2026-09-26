@@ -89,13 +89,13 @@
   <div class="container">
     <header>
       <div class="title-area">
-        <h1>🎁 Auto Loot & Claimer</h1>
+        <h1>Auto Loot & Claimer</h1>
         <p>Real-time inventory, drops tracking, and game storefront status</p>
       </div>
       <div class="header-actions">
-        <button class="btn btn-primary" onclick="claimDropsNow()">⚡ Claim Ready Drops</button>
-        <button class="btn btn-success" onclick="triggerGamesCheck()">🎮 Check All Games</button>
-        <button class="btn" onclick="fetchData()">🔄 Refresh</button>
+        <button class="btn btn-primary" onclick="claimDropsNow()">Claim Ready Drops</button>
+        <button class="btn btn-success" onclick="triggerGamesCheck()">Check All Games</button>
+        <button class="btn" onclick="fetchData()">Refresh</button>
       </div>
     </header>
 
@@ -197,12 +197,12 @@
       
       const isRunning = data.system && data.system.miner_running;
       document.getElementById("stat-miner-status").innerHTML = isRunning
-        ? `<span style="color: #10b981;">● Active (Mining)</span>`
+        ? `<span style="color: #10b981;">[Active] Mining</span>`
         : `<span style="color: #f59e0b;">Stopped</span>`;
 
       const epicCookies = data.epic && data.epic.has_saved_session;
       document.getElementById("stat-epic-status").innerHTML = epicCookies
-        ? `<span style="color: #10b981;">● Logged In</span>`
+        ? `<span style="color: #10b981;">[Active] Logged In</span>`
         : `<span style="color: #94a3b8;">Pending Initial Login</span>`;
 
       // 2. Render Twitch Drops
@@ -217,9 +217,9 @@
           const pct = item.required_minutes > 0 ? Math.min(100, Math.floor((item.watched_minutes / item.required_minutes) * 100)) : 0;
           let badge = `<span class="badge badge-progress">In Progress</span>`;
           if (item.is_claimed) {
-            badge = `<span class="badge badge-claimed">✓ CLAIMED</span>`;
+            badge = `<span class="badge badge-claimed">CLAIMED</span>`;
           } else if (item.watched_minutes >= item.required_minutes && item.required_minutes > 0) {
-            badge = `<span class="badge badge-ready">⚡ READY TO CLAIM</span>`;
+            badge = `<span class="badge badge-ready">READY TO CLAIM</span>`;
             readyCount++;
           }
 
@@ -260,7 +260,7 @@
       activeGrid.innerHTML = activeFreebies.map(game => {
         const isClaimed = epic.claimed_titles && epic.claimed_titles.includes(game.title);
         const badge = isClaimed 
-          ? `<span class="badge badge-claimed">✓ CLAIMED TO LIBRARY</span>`
+          ? `<span class="badge badge-claimed">CLAIMED TO LIBRARY</span>`
           : `<span class="badge badge-available">FREE NOW</span>`;
 
         return `
@@ -300,7 +300,7 @@
             <div class="card-top">
               <span class="store-tag store-amazon">Amazon Prime Gaming</span>
               <span class="badge ${amazon.has_saved_session ? 'badge-claimed' : 'badge-available'}">
-                ${amazon.has_saved_session ? '✓ Connected' : 'Configured'}
+                ${amazon.has_saved_session ? 'Connected' : 'Configured'}
               </span>
             </div>
             <div class="item-title">Prime Monthly Games & Loot</div>
@@ -312,7 +312,7 @@
             <div class="card-top">
               <span class="store-tag store-gog">GOG Giveaways</span>
               <span class="badge ${gog.has_saved_session ? 'badge-claimed' : 'badge-available'}">
-                ${gog.has_saved_session ? '✓ Connected' : 'Configured'}
+                ${gog.has_saved_session ? 'Connected' : 'Configured'}
               </span>
             </div>
             <div class="item-title">DRM-Free Giveaways</div>

@@ -41,7 +41,7 @@ class DropsMiner:
             return
         try:
             # Discord webhook format
-            payload = {"content": f"🎁 **Twitch Drops Miner**: {message}"}
+            payload = {"content": f"[Twitch Drops Miner]: {message}"}
             body = json.dumps(payload).encode("utf-8")
             req = urllib.request.Request(
                 self.webhook_url,

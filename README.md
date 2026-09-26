@@ -1,4 +1,4 @@
-# Auto Loot & Drops Claimer 🎮📦
+# Auto Loot & Drops Claimer
 
 An ultra-lightweight, security-audited, zero-telemetry application designed to automatically claim:
 - **Epic Games Store**: Weekly free games and promotional drops
@@ -6,11 +6,11 @@ An ultra-lightweight, security-audited, zero-telemetry application designed to a
 - **Twitch Drops**: Streamless background mining and automated reward claiming
 - **GOG**: Promotional DRM-free giveaways
 
-Engineered specifically for **LXC containers** (Proxmox, LXD) running **Plain Debian** or **Docker**, with an extreme focus on minimal CPU, RAM (<60 MB idle), and storage usage.
+Engineered specifically for **LXC containers** (Proxmox, LXD) running **Plain Debian**, **Alpine Linux**, or **Docker**, with an extreme focus on minimal CPU, RAM (<20 MB idle on Alpine), and storage usage.
 
 ---
 
-## 🛡️ Security & Zero-Telemetry Guarantee
+## Security & Zero-Telemetry Guarantee
 
 Before running any tool handling game accounts, security and privacy are paramount.
 - **Zero Third-Party Telemetry**: No Google Analytics, Mixpanel, Sentry, or external tracking beacons.
@@ -20,21 +20,23 @@ Before running any tool handling game accounts, security and privacy are paramou
 
 ---
 
-## ⚡ Deployment Options (Plain Debian vs Docker)
+## Deployment Options (Alpine vs Debian vs Docker)
 
-| Metric | Option A: Native Debian LXC (Recommended) | Option B: Docker in LXC |
-| :--- | :--- | :--- |
-| **Idle RAM Usage** | **~40 - 60 MB RAM** | ~140 - 200 MB RAM |
-| **Idle CPU Usage** | **0.0% - 0.2%** | ~0.5% |
-| **Disk Overhead** | Minimal (no container layer duplicates) | Requires Docker engine & images |
-| **Execution Model** | `twitch-drops.service` (daemon) + `free-games.timer` (runs daily for 90s, then 0 MB RAM) | `docker-compose.yml` with memory limits |
+| Metric | Option A: Native Alpine LXC (Lowest) | Option B: Native Debian LXC | Option C: Docker in LXC |
+| :--- | :--- | :--- | :--- |
+| **Idle RAM Usage** | **~15 - 20 MB RAM** | **~40 - 60 MB RAM** | ~140 - 200 MB RAM |
+| **Idle CPU Usage** | **0.0% - 0.1%** | **0.0% - 0.2%** | ~0.5% |
+| **Disk Overhead** | **~150 MB** | Minimal (~1.2 GB) | Requires Docker engine & images |
+| **Execution Model** | OpenRC daemon + daily cron | systemd daemon + systemd timer | docker-compose.yml with memory limits |
 
 ---
 
-## 🏔️ Option A: Native Alpine Linux LXC (Absolute Lowest Footprint: ~15 MB RAM)
+## Option A: Native Alpine Linux LXC (Lowest Footprint: ~15 MB RAM)
 
 ### 1. Clone to your Alpine Container
 ```bash
+apk update
+apk add --no-cache git bash nano curl ca-certificates
 git clone https://github.com/IAndrexI/dropsClaim.git /opt/auto-loot-claimer
 cd /opt/auto-loot-claimer
 ```
@@ -46,6 +48,7 @@ bash deploy/alpine-native/install.sh
 This automatically:
 - Installs minimal packages via `apk` (`python3`, `nodejs`, `npm`, `chromium`, `bash`, `git`).
 - Configures OpenRC service (`/etc/init.d/twitch-drops`).
+- Configures OpenRC service for Web Dashboard (`/etc/init.d/auto-loot-web`).
 - Configures BusyBox daily cron schedule (`/etc/periodic/daily/free-games`).
 
 ### 3. Configure Credentials
@@ -61,14 +64,14 @@ rc-service auto-loot-web start
 
 ---
 
-## 🌐 Mini Web Dashboard (`http://<server-ip>:8080`)
+## Mini Web Dashboard (`http://<server-ip>:8080`)
 
 A self-contained, real-time web dashboard built using the standard library (zero external dependencies) that allows you to check active free games/items and see if you personally claimed them.
 
-* **Twitch Drops Inventory**: View active campaigns with personal progress bars (`54/120 min`, 45%) and status badges (`✓ CLAIMED`, `⚡ READY TO CLAIM`, `In Progress`).
+* **Twitch Drops Inventory**: View active campaigns with personal progress bars (`54/120 min`, 45%) and status badges (`CLAIMED`, `READY TO CLAIM`, `In Progress`).
 * **Epic Games Store**: Displays active free games (e.g. *Astrea*, *Mechabellum*), end dates, and whether they have been claimed to your library, along with upcoming releases.
 * **Amazon Prime Gaming & GOG**: Real-time status of your connected accounts.
-* **One-Click Actions**: "⚡ Claim Ready Drops" and "🎮 Check All Games" buttons directly in the web UI.
+* **One-Click Actions**: "Claim Ready Drops" and "Check All Games" buttons directly in the web UI.
 * **Live Logs**: View real-time output from background mining.
 
 Access it anytime in your browser at:
@@ -76,7 +79,7 @@ Access it anytime in your browser at:
 
 ---
 
-## 🚀 Option B: Native Debian LXC
+## Option B: Native Debian LXC
 
 ### 1. Transfer or Clone to your LXC Server
 Copy this project folder to your Debian LXC container (for example into `/opt/auto-loot-claimer`).
@@ -108,7 +111,7 @@ systemctl start twitch-drops.service
 
 ---
 
-## 🐳 Option B: Docker-Compose
+## Option C: Docker-Compose
 
 If you prefer containerized deployment:
 
@@ -126,7 +129,7 @@ If you prefer containerized deployment:
 
 ---
 
-## 🔑 How to Get Your Twitch `auth-token` (Password-Free)
+## How to Get Your Twitch `auth-token` (Password-Free)
 
 1. Open [https://www.twitch.tv](https://www.twitch.tv) in your browser and make sure you are logged in.
 2. Press `F12` (or `Ctrl + Shift + I`) to open Developer Tools.
@@ -140,7 +143,7 @@ If you prefer containerized deployment:
 
 ---
 
-## 🔍 Commands & Utilities
+## Commands & Utilities
 
 ### Preview Active Free Games (No Login Required)
 Check what's free on the Epic Games Store right now:
@@ -167,7 +170,7 @@ python3 scripts/audit_network.py
 
 ---
 
-## 📡 Git Repository Status
+## Git Repository Status
 
 This project is fully initialized as a local Git repository with all credentials, session files, and cache excluded in `.gitignore`.
 
