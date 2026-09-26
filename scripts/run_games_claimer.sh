@@ -16,6 +16,16 @@ if [ -f .env ]; then
     set +a
 fi
 
+# Detect Chromium binary on Alpine (/usr/bin/chromium-browser) or Debian (/usr/bin/chromium)
+if [ -z "$PUPPETEER_EXECUTABLE_PATH" ]; then
+    if [ -x "/usr/bin/chromium-browser" ]; then
+        export PUPPETEER_EXECUTABLE_PATH="/usr/bin/chromium-browser"
+    elif [ -x "/usr/bin/chromium" ]; then
+        export PUPPETEER_EXECUTABLE_PATH="/usr/bin/chromium"
+    fi
+fi
+export PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+
 echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] Starting Free Games Claimer check..."
 
 # Run preview check first to show active store giveaways

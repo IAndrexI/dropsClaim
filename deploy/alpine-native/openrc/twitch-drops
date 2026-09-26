@@ -1,0 +1,25 @@
+#!/sbin/openrc-run
+# OpenRC service script for Twitch Drops Miner on Alpine Linux
+
+name="twitch-drops"
+description="Twitch Drops Miner & Auto-Claimer (Zero-Telemetry)"
+
+command="/usr/bin/python3"
+command_args="-m src.twitch_drops.main --daemon"
+directory="/opt/auto-loot-claimer"
+command_background="yes"
+pidfile="/run/${RC_SVCNAME}.pid"
+output_log="/var/log/twitch-drops.log"
+error_log="/var/log/twitch-drops.log"
+
+depend() {
+    need net
+}
+
+start_pre() {
+    if [ -f "/opt/auto-loot-claimer/.env" ]; then
+        set -a
+        . /opt/auto-loot-claimer/.env
+        set +a
+    fi
+}

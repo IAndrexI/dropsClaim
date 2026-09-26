@@ -31,7 +31,36 @@ Before running any tool handling game accounts, security and privacy are paramou
 
 ---
 
-## 🚀 Option A: Native Debian LXC (Lowest Footprint)
+## 🏔️ Option A: Native Alpine Linux LXC (Absolute Lowest Footprint: ~15 MB RAM)
+
+### 1. Clone to your Alpine Container
+```bash
+git clone https://github.com/IAndrexI/dropsClaim.git /opt/auto-loot-claimer
+cd /opt/auto-loot-claimer
+```
+
+### 2. Run the Alpine Installer
+```bash
+bash deploy/alpine-native/install.sh
+```
+This automatically:
+- Installs minimal packages via `apk` (`python3`, `nodejs`, `npm`, `chromium`, `bash`, `git`).
+- Configures OpenRC service (`/etc/init.d/twitch-drops`).
+- Configures BusyBox daily cron schedule (`/etc/periodic/daily/free-games`).
+
+### 3. Configure Credentials
+```bash
+nano /opt/auto-loot-claimer/.env
+```
+
+### 4. Start the Service
+```bash
+rc-service twitch-drops start
+```
+
+---
+
+## 🚀 Option B: Native Debian LXC
 
 ### 1. Transfer or Clone to your LXC Server
 Copy this project folder to your Debian LXC container (for example into `/opt/auto-loot-claimer`).
