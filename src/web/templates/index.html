@@ -96,6 +96,7 @@
         <button class="btn btn-primary" onclick="claimDropsNow()">Claim Ready Drops</button>
         <button class="btn btn-success" onclick="triggerGamesCheck()">Check All Games</button>
         <button class="btn" onclick="fetchData()">Refresh</button>
+        <button class="btn" style="border-color: #ef4444; color: #f87171;" onclick="signOut()">Sign Out</button>
       </div>
     </header>
 
@@ -355,6 +356,13 @@
       } catch (err) {
         showToast("Error triggering game check: " + err.message);
       }
+    }
+
+    async function signOut() {
+      try {
+        await fetch("/api/logout", { method: "POST" });
+      } catch (e) {}
+      window.location.href = "/login";
     }
 
     // Initial load & 30s auto-refresh

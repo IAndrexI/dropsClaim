@@ -1,15 +1,17 @@
 """
 Ultra-lightweight Web Dashboard Server for Auto Loot Claimer.
 Built using Python Standard Library ONLY (zero external pip packages).
-Runs on port 8080 by default.
+Features secure session authentication and login page for external domain access.
 """
 
 import argparse
 import json
 import os
+import secrets
 import subprocess
 import sys
 import threading
+import time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 # Path resolution
@@ -19,6 +21,9 @@ sys.path.insert(0, APP_DIR)
 from src.free_games.preview_promotions import fetch_epic_freebies
 from src.twitch_drops.twitch_api import TwitchClient
 from src.twitch_drops.miner import DropsMiner
+
+# In-memory session store: token -> expiration timestamp
+ACTIVE_SESSIONS = {}
 
 
 def load_env_file(path=None):
@@ -36,6 +41,30 @@ def load_env_file(path=None):
     return env
 
 
+def parse_cookies(cookie_header):
+    if not cookie_header:
+        return {}
+    cookies = {}
+    for part in cookie_header.split(";"):
+        if "=" in part:
+            k, v = part.strip().split("=", 1)
+            cookies[k.strip()] = v.strip()
+    return cookies
+
+
+def is_authenticated(headers):
+    cookies = parse_cookies(headers.get("Cookie", ""))
+    session_id = cookies.get("session_id")
+    if not session_id:
+        return False
+    expiry = ACTIVE_SESSIONS.get(session_id)
+    if not expiry or expiry < time.time():
+        if session_id in ACTIVE_SESSIONS:
+            del ACTIVE_SESSIONS[session_id]
+        return False
+    return True
+
+
 def get_claimed_epic_titles(data_dir):
     """Scan local logs and data to find titles already claimed."""
     claimed = set()
@@ -48,7 +77,6 @@ def get_claimed_epic_titles(data_dir):
                 try:
                     with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
                         text = f.read()
-                        # Astrea, Mechabellum, etc.
                         if "claimed" in text.lower():
                             for line in text.splitlines():
                                 if "claimed" in line.lower():
@@ -101,7 +129,6 @@ def build_status_payload():
                             "drop_instance_id": sdata.get("dropInstanceId"),
                         })
 
-                # Global campaigns count
                 camps = client.get_all_active_campaigns()
                 twitch_info["active_campaigns_count"] = len(camps)
         except Exception as err:
@@ -173,6 +200,39 @@ def build_status_payload():
 
 class DashboardHandler(SimpleHTTPRequestHandler):
     def do_GET(self):
+        # 1. Login Page
+        if self.path == "/login":
+            if is_authenticated(self.headers):
+                self.send_response(302)
+                self.send_header("Location", "/")
+                self.end_headers()
+                return
+
+            login_path = os.path.join(os.path.dirname(__file__), "templates", "login.html")
+            if os.path.exists(login_path):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                with open(login_path, "rb") as f:
+                    self.wfile.write(f.read())
+            else:
+                self.send_error(404, "Login template not found")
+            return
+
+        # 2. Enforce Authentication on All Other Routes
+        if not is_authenticated(self.headers):
+            if self.path.startswith("/api/"):
+                self.send_response(401)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "Unauthorized"}).encode("utf-8"))
+            else:
+                self.send_response(302)
+                self.send_header("Location", "/login")
+                self.end_headers()
+            return
+
+        # 3. Main Dashboard
         if self.path == "/" or self.path == "/index.html":
             template_path = os.path.join(os.path.dirname(__file__), "templates", "index.html")
             if os.path.exists(template_path):
@@ -194,7 +254,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return
 
         elif self.path == "/api/logs":
-            log_paths = ["/var/log/twitch-drops.log", "/var/log/free-games.log"]
+            log_paths = ["/var/log/twitch-drops.log", "/var/log/free-games.log", "/var/log/auto-loot-web.log"]
             combined = ""
             for lp in log_paths:
                 if os.path.exists(lp):
@@ -216,6 +276,64 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         self.send_error(404, "Not Found")
 
     def do_POST(self):
+        # 1. Login Endpoint
+        if self.path == "/api/login":
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length)
+            try:
+                payload = json.loads(body.decode("utf-8"))
+            except Exception:
+                payload = {}
+
+            username = payload.get("username", "").strip()
+            password = payload.get("password", "").strip()
+
+            env = load_env_file()
+            expected_user = env.get("DASHBOARD_USERNAME", "admin").strip()
+            expected_pass = env.get("DASHBOARD_PASSWORD", "admin123").strip()
+
+            user_matches = secrets.compare_digest(username, expected_user)
+            pass_matches = secrets.compare_digest(password, expected_pass)
+
+            if user_matches and pass_matches:
+                token = secrets.token_hex(32)
+                # Session valid for 7 days
+                ACTIVE_SESSIONS[token] = time.time() + (86400 * 7)
+
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Set-Cookie", f"session_id={token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": True}).encode("utf-8"))
+            else:
+                self.send_response(401)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "Invalid username or password"}).encode("utf-8"))
+            return
+
+        # 2. Logout Endpoint
+        if self.path == "/api/logout":
+            cookies = parse_cookies(self.headers.get("Cookie", ""))
+            session_id = cookies.get("session_id")
+            if session_id and session_id in ACTIVE_SESSIONS:
+                del ACTIVE_SESSIONS[session_id]
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Set-Cookie", "session_id=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0")
+            self.end_headers()
+            self.wfile.write(json.dumps({"success": True}).encode("utf-8"))
+            return
+
+        # 3. Protected POST Endpoints
+        if not is_authenticated(self.headers):
+            self.send_response(401)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "Unauthorized"}).encode("utf-8"))
+            return
+
         if self.path == "/api/claim-drops":
             env = load_env_file()
             token = env.get("TWITCH_AUTH_TOKEN", "").strip()
@@ -234,7 +352,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return
 
         elif self.path == "/api/trigger-games":
-            # Run claim script asynchronously
             script_path = os.path.join(APP_DIR, "scripts", "run_games_claimer.sh")
             if os.path.exists(script_path):
                 subprocess.Popen(["bash", script_path], cwd=APP_DIR)
@@ -254,9 +371,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 def run_server(port=8080):
     server_address = ("0.0.0.0", port)
     httpd = ThreadingHTTPServer(server_address, DashboardHandler)
+    env = load_env_file()
+    user = env.get("DASHBOARD_USERNAME", "admin").strip()
     print("===========================================================")
     print("  Auto Loot Claimer Web Dashboard running!")
     print(f"  Access in your browser: http://<your-server-ip>:{port}")
+    print(f"  Authentication: Protected (User: {user})")
     print("===========================================================")
     try:
         httpd.serve_forever()
