@@ -203,15 +203,42 @@
 
     <!-- TAB 2: EPIC GAMES STORE -->
     <div id="tab-epic" class="tab-content" style="display: none;">
-      <h2 style="font-size: 1.05rem; margin-bottom: 12px; color: #94a3b8;">Current Weekly Freebies (100% Off)</h2>
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 8px;">
+        <div>
+          <h2 style="font-size: 1.15rem; font-weight: 700;">Epic Games Store Giveaways</h2>
+          <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 2px;">
+            Weekly 100% off promotional giveaways tracked and claimed automatically.
+          </p>
+        </div>
+        <div style="display: flex; gap: 8px;">
+          <button class="btn btn-sm btn-primary" onclick="triggerGamesCheck('epic')">Claim Epic Freebies Now</button>
+          <button class="btn btn-sm" onclick="promptAddClaimed('epic')">+ Record Claimed Title</button>
+        </div>
+      </div>
+
+      <h3 style="font-size: 0.95rem; margin-bottom: 12px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em;">Current Weekly Freebies (100% Off)</h3>
       <div class="grid" id="epic-active-grid"></div>
       
-      <h2 style="font-size: 1.05rem; margin: 28px 0 12px 0; color: #94a3b8;">Upcoming Next Week</h2>
+      <h3 style="font-size: 0.95rem; margin: 28px 0 12px 0; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em;">Upcoming Next Week</h3>
       <div class="grid" id="epic-upcoming-grid"></div>
+
+      <h3 style="font-size: 0.95rem; margin: 28px 0 12px 0; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em;">Claimed Library History</h3>
+      <div id="epic-claimed-list" style="background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 8px; padding: 16px;"></div>
     </div>
 
     <!-- TAB 3: OTHER STORES (AMAZON & GOG) -->
     <div id="tab-stores" class="tab-content" style="display: none;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 8px;">
+        <div>
+          <h2 style="font-size: 1.15rem; font-weight: 700;">Amazon Prime Gaming & GOG Loot</h2>
+          <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 2px;">
+            Monthly Prime loot, weekly DRM-free GOG game licenses, and recorded inventory.
+          </p>
+        </div>
+        <div style="display: flex; gap: 8px;">
+          <button class="btn btn-sm btn-primary" onclick="triggerGamesCheck('all')">Check All Storefronts</button>
+        </div>
+      </div>
       <div class="grid" id="stores-grid"></div>
     </div>
 
@@ -389,7 +416,11 @@
         ? `<span style="color: #a855f7;">${twitch.username}</span>`
         : `<span style="color: #ef4444;">Not Connected</span>`;
 
-      document.getElementById("stat-inventory-count").innerText = `${twitch.claimed_history_count || 0} Claimed`;
+      const totalClaimedCount = (twitch.claimed_history_count || 0) + 
+        ((data.epic && data.epic.claimed_titles) ? data.epic.claimed_titles.length : 0) + 
+        ((data.amazon && data.amazon.claimed_items) ? data.amazon.claimed_items.length : 0) + 
+        ((data.gog && data.gog.claimed_items) ? data.gog.claimed_items.length : 0);
+      document.getElementById("stat-inventory-count").innerText = `${totalClaimedCount} Claimed`;
       document.getElementById("stat-active-campaigns").innerText = `${twitch.active_campaigns_count || 0} Active`;
       document.getElementById("stat-ready-count").innerText = `${twitch.ready_to_claim_count || 0} Items`;
 
@@ -567,18 +598,52 @@
       }).join("");
     }
 
+    function escapeHtml(str) {
+      if (!str) return "";
+      return String(str).replace(/'/g, "\\'").replace(/"/g, "&quot;");
+    }
+
+    async function toggleClaimItem(store, title, isClaimed) {
+      showToast(`${isClaimed ? "Marking" : "Unmarking"} ${title} as claimed...`);
+      try {
+        const res = await fetch("/api/claim-item", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: jsonStringify({ store: store, title: title, claimed: isClaimed })
+        });
+        const data = await res.json();
+        showToast(data.message || `Updated ${title}`);
+        fetchData();
+      } catch (err) {
+        showToast("Error updating claim status: " + err.message);
+      }
+    }
+
+    function promptAddClaimed(store) {
+      const storeName = store === "epic" ? "Epic Games Store" : store === "amazon" ? "Amazon Prime Gaming" : "GOG";
+      const title = prompt(`Enter the game or loot title to record as [CLAIMED] for ${storeName}:`);
+      if (title && title.trim()) {
+        toggleClaimItem(store, title.trim(), true);
+      }
+    }
+
     function renderEpicGrid(epic) {
       const activeGrid = document.getElementById("epic-active-grid");
       const upcomingGrid = document.getElementById("epic-upcoming-grid");
+      const claimedList = document.getElementById("epic-claimed-list");
 
       const activeFreebies = epic.active_freebies || [];
       const upcomingFreebies = epic.upcoming_freebies || [];
+      const claimedTitles = epic.claimed_titles || [];
 
       activeGrid.innerHTML = activeFreebies.map(game => {
-        const isClaimed = epic.claimed_titles && epic.claimed_titles.includes(game.title);
+        const isClaimed = claimedTitles.some(t => t.toLowerCase().trim() === (game.title || "").toLowerCase().trim());
         const badge = isClaimed 
-          ? `<span class="badge badge-claimed">CLAIMED TO LIBRARY</span>`
-          : `<span class="badge badge-available">FREE NOW</span>`;
+          ? `<span class="badge badge-claimed">[CLAIMED TO LIBRARY]</span>`
+          : `<span class="badge badge-available">[FREE NOW]</span>`;
+        const actionBtn = isClaimed
+          ? `<button class="btn btn-sm" onclick="toggleClaimItem('epic', '${escapeHtml(game.title)}', false)">Unmark Claimed</button>`
+          : `<button class="btn btn-sm btn-success" onclick="toggleClaimItem('epic', '${escapeHtml(game.title)}', true)">Mark as Claimed</button>`;
 
         return `
           <div class="card">
@@ -589,6 +654,9 @@
               </div>
               <div class="item-title">${game.title}</div>
               <div class="item-sub">Ends: ${new Date(game.end).toLocaleDateString()}</div>
+            </div>
+            <div style="margin-top: 14px; display: flex; gap: 8px; justify-content: flex-end;">
+              ${actionBtn}
             </div>
           </div>
         `;
@@ -606,10 +674,79 @@
           </div>
         </div>
       `).join("") || `<div class="empty-state">No upcoming announcements right now.</div>`;
+
+      if (claimedList) {
+        if (claimedTitles.length === 0) {
+          claimedList.innerHTML = `<span style="font-size: 0.85rem; color: #94a3b8;">No Epic Games marked as claimed yet. Click "Claim Epic Freebies Now" or use "+ Record Claimed Title" to record library items.</span>`;
+        } else {
+          claimedList.innerHTML = `
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+              <span style="font-size: 0.88rem; font-weight: 600; color: #34d399;">${claimedTitles.length} Titles Claimed in Epic Library</span>
+            </div>
+            <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+              ${claimedTitles.map(t => `
+                <div class="chip active">
+                  <span>${t}</span>
+                  <span class="chip-remove" title="Unmark" onclick="toggleClaimItem('epic', '${escapeHtml(t)}', false)">&times;</span>
+                </div>
+              `).join("")}
+            </div>
+          `;
+        }
+      }
     }
 
     function renderStoresGrid(amazon, gog) {
       const storesGrid = document.getElementById("stores-grid");
+      const amazonItems = amazon.claimed_items || [];
+      const gogItems = gog.claimed_items || [];
+
+      const amazonItemsHtml = amazonItems.length > 0 ? `
+        <div style="margin-top: 12px; border-top: 1px solid #1e293b; padding-top: 10px;">
+          <div style="font-size: 0.8rem; font-weight: 600; color: #34d399; margin-bottom: 8px;">
+            Claimed Loot & Games (${amazonItems.length}):
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto;">
+            ${amazonItems.map(item => `
+              <div style="display: flex; justify-content: space-between; align-items: center; background: #0c1322; border: 1px solid #1e293b; padding: 6px 10px; border-radius: 6px;">
+                <span style="font-size: 0.85rem; font-weight: 500;">${item}</span>
+                <div style="display: flex; gap: 6px; align-items: center;">
+                  <span class="badge badge-claimed">[CLAIMED]</span>
+                  <span class="chip-remove" title="Unmark" onclick="toggleClaimItem('amazon', '${escapeHtml(item)}', false)">&times;</span>
+                </div>
+              </div>
+            `).join("")}
+          </div>
+        </div>
+      ` : `
+        <p style="font-size: 0.8rem; color: #94a3b8; margin-top: 10px;">
+          No items recorded as claimed yet. Automated runner checks monthly loot.
+        </p>
+      `;
+
+      const gogItemsHtml = gogItems.length > 0 ? `
+        <div style="margin-top: 12px; border-top: 1px solid #1e293b; padding-top: 10px;">
+          <div style="font-size: 0.8rem; font-weight: 600; color: #34d399; margin-bottom: 8px;">
+            Claimed DRM-Free Giveaways (${gogItems.length}):
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto;">
+            ${gogItems.map(item => `
+              <div style="display: flex; justify-content: space-between; align-items: center; background: #0c1322; border: 1px solid #1e293b; padding: 6px 10px; border-radius: 6px;">
+                <span style="font-size: 0.85rem; font-weight: 500;">${item}</span>
+                <div style="display: flex; gap: 6px; align-items: center;">
+                  <span class="badge badge-claimed">[CLAIMED]</span>
+                  <span class="chip-remove" title="Unmark" onclick="toggleClaimItem('gog', '${escapeHtml(item)}', false)">&times;</span>
+                </div>
+              </div>
+            `).join("")}
+          </div>
+        </div>
+      ` : `
+        <p style="font-size: 0.8rem; color: #94a3b8; margin-top: 10px;">
+          No items recorded as claimed yet. Automated runner claims DRM-free licenses.
+        </p>
+      `;
+
       storesGrid.innerHTML = `
         <div class="card">
           <div>
@@ -621,12 +758,11 @@
             </div>
             <div class="item-title">Prime Monthly Games & Loot</div>
             <div class="item-sub">Account: ${amazon.email || 'Not configured'}</div>
-            <p style="font-size: 0.85rem; color: #94a3b8; margin-top: 8px;">
-              Automated claims run via open-source free-games-claimer vendor runner.
-            </p>
-          </div>
-          <div style="margin-top: 16px;">
-            <button class="btn btn-sm btn-primary" onclick="triggerGamesCheck()">Claim Prime Loot Now</button>
+            <div style="display: flex; gap: 8px; margin-top: 12px;">
+              <button class="btn btn-sm btn-primary" onclick="triggerGamesCheck('prime')">Claim Prime Loot Now</button>
+              <button class="btn btn-sm" onclick="promptAddClaimed('amazon')">+ Mark Claimed</button>
+            </div>
+            ${amazonItemsHtml}
           </div>
         </div>
         <div class="card">
@@ -639,12 +775,11 @@
             </div>
             <div class="item-title">DRM-Free Giveaways</div>
             <div class="item-sub">Account: ${gog.email || 'Not configured'}</div>
-            <p style="font-size: 0.85rem; color: #94a3b8; margin-top: 8px;">
-              Claims promotional DRM-free game licenses automatically.
-            </p>
-          </div>
-          <div style="margin-top: 16px;">
-            <button class="btn btn-sm btn-primary" onclick="triggerGamesCheck()">Claim GOG Games Now</button>
+            <div style="display: flex; gap: 8px; margin-top: 12px;">
+              <button class="btn btn-sm btn-primary" onclick="triggerGamesCheck('gog')">Claim GOG Games Now</button>
+              <button class="btn btn-sm" onclick="promptAddClaimed('gog')">+ Mark Claimed</button>
+            </div>
+            ${gogItemsHtml}
           </div>
         </div>
       `;
@@ -750,10 +885,15 @@
       }
     }
 
-    async function triggerGamesCheck() {
-      showToast("Triggering game storefronts check in background...");
+    async function triggerGamesCheck(targetStore = "all") {
+      const storeLabel = targetStore === "all" ? "all storefronts" : targetStore.toUpperCase();
+      showToast(`Triggering ${storeLabel} check in background...`);
       try {
-        const res = await fetch("/api/trigger-games", { method: "POST" });
+        const res = await fetch("/api/trigger-games", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: jsonStringify({ store: targetStore })
+        });
         const data = await res.json();
         showToast(data.message || "Game claim check initiated!");
       } catch (err) {
