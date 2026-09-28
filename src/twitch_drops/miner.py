@@ -62,16 +62,16 @@ class DropsMiner:
         claimed_count = 0
         try:
             inv = self.client.get_inventory()
-            campaigns = inv.get("dropCampaignInProgress") or []
+            campaigns = inv.get("dropCampaignsInProgress") or inv.get("dropCampaignInProgress") or []
             if isinstance(campaigns, dict):
                 campaigns = [campaigns]
 
             for camp in campaigns:
-                game_name = camp.get("game", {}).get("displayName", "Unknown")
+                game_name = camp.get("game", {}).get("displayName") or camp.get("game", {}).get("name") or "Unknown"
                 for drop in camp.get("timeBasedDrops", []):
                     self_data = drop.get("self", {})
                     is_claimed = self_data.get("isClaimed", False)
-                    drop_id = self_data.get("dropInstanceId")
+                    drop_id = self_data.get("dropInstanceID") or self_data.get("dropInstanceId")
                     watched = self_data.get("currentMinutesWatched", 0)
                     required = drop.get("requiredMinutesWatched", 0)
 
@@ -110,9 +110,12 @@ class DropsMiner:
         # Sort by user priority if provided
         if self.priority_games:
             for p_game in self.priority_games:
+                p_game_clean = p_game.strip().lower()
                 for camp in eligible:
-                    game_title = camp.get("game", {}).get("name", "").lower()
-                    if p_game in game_title:
+                    game_obj = camp.get("game") or {}
+                    gname = (game_obj.get("displayName") or game_obj.get("name") or "").lower()
+                    cname = (camp.get("name") or "").lower()
+                    if p_game_clean in gname or p_game_clean in cname:
                         return camp
 
         # Fallback to the first available campaign with the most viewers / earliest end
