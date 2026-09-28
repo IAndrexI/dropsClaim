@@ -1,7 +1,7 @@
 """
 Ultra-lightweight Web Dashboard Server for Auto Loot Claimer.
 Built using Python Standard Library ONLY (zero external pip packages).
-Features secure session authentication and login page for external domain access.
+Features secure session authentication, login page, and in-browser account management.
 """
 
 import argparse
@@ -12,6 +12,8 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
+import urllib.error
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 # Path resolution
@@ -39,6 +41,37 @@ def load_env_file(path=None):
                 k, v = line.split("=", 1)
                 env[k.strip()] = v.strip().strip("'\"")
     return env
+
+
+def save_env_file(updates, path=None):
+    """Safely updates or appends key-value pairs in the .env file."""
+    if not path:
+        path = os.path.join(APP_DIR, ".env")
+    lines = []
+    existing_keys = set()
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+
+    new_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            k, _ = stripped.split("=", 1)
+            k = k.strip()
+            if k in updates:
+                val = updates[k]
+                new_lines.append(f"{k}={val}\n")
+                existing_keys.add(k)
+                continue
+        new_lines.append(line)
+
+    for k, v in updates.items():
+        if k not in existing_keys:
+            new_lines.append(f"{k}={v}\n")
+
+    with open(path, "w", encoding="utf-8") as f:
+        f.writelines(new_lines)
 
 
 def parse_cookies(cookie_header):
@@ -91,13 +124,21 @@ def build_status_payload():
     data_dir = os.path.join(APP_DIR, "data", "fgc")
     twitch_token = env.get("TWITCH_AUTH_TOKEN", "").strip()
 
+    priority_str = env.get("TWITCH_PRIORITY_GAMES", "").strip()
+    priority_list = [g.strip() for g in priority_str.split(",") if g.strip()]
+
     # 1. Twitch Status & Personal Inventory
     twitch_info = {
         "username": None,
         "user_id": None,
         "connected": False,
+        "campaigns": [],
         "drops_in_progress": [],
+        "priority_games": priority_list,
         "active_campaigns_count": 0,
+        "claimed_history_count": 0,
+        "ready_to_claim_count": 0,
+        "in_progress_count": 0,
     }
 
     if twitch_token:
@@ -108,29 +149,28 @@ def build_status_payload():
                 twitch_info["user_id"] = client.user_id
                 twitch_info["connected"] = True
 
-                inv = client.get_inventory()
-                campaigns = inv.get("dropCampaignInProgress") or []
-                if isinstance(campaigns, dict):
-                    campaigns = [campaigns]
-
-                for camp in campaigns:
-                    camp_name = camp.get("name", "Drop Campaign")
-                    gname = camp.get("game", {}).get("displayName", "Twitch Game")
-                    for drop in camp.get("timeBasedDrops", []):
-                        sdata = drop.get("self", {})
-                        twitch_info["drops_in_progress"].append({
-                            "id": drop.get("id"),
-                            "name": drop.get("name"),
-                            "campaign_name": camp_name,
-                            "game": gname,
-                            "required_minutes": drop.get("requiredMinutesWatched", 0),
-                            "watched_minutes": sdata.get("currentMinutesWatched", 0),
-                            "is_claimed": sdata.get("isClaimed", False),
-                            "drop_instance_id": sdata.get("dropInstanceId"),
-                        })
-
-                camps = client.get_all_active_campaigns()
-                twitch_info["active_campaigns_count"] = len(camps)
+                overview = client.get_drops_overview()
+                twitch_info["campaigns"] = overview.get("campaigns", [])
+                twitch_info["active_campaigns_count"] = overview.get("total_campaigns", 0)
+                twitch_info["claimed_history_count"] = overview.get("claimed_history_count", 0)
+                twitch_info["ready_to_claim_count"] = overview.get("ready_to_claim_count", 0)
+                twitch_info["in_progress_count"] = overview.get("in_progress_count", 0)
+                
+                # Maintain legacy drops_in_progress flat list for backwards compatibility
+                for camp in overview.get("campaigns", []):
+                    for d in camp.get("drops", []):
+                        if d.get("status") in ("IN_PROGRESS", "READY_TO_CLAIM"):
+                            twitch_info["drops_in_progress"].append({
+                                "id": d.get("id"),
+                                "name": d.get("name"),
+                                "campaign_name": camp.get("name"),
+                                "game": camp.get("game"),
+                                "required_minutes": d.get("required_minutes", 0),
+                                "watched_minutes": d.get("watched_minutes", 0),
+                                "is_claimed": d.get("status") == "CLAIMED",
+                                "drop_instance_id": d.get("drop_instance_id"),
+                                "status": d.get("status"),
+                            })
         except Exception as err:
             twitch_info["error"] = str(err)
 
@@ -253,6 +293,28 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.wfile.write(json.dumps(data).encode("utf-8"))
             return
 
+        elif self.path == "/api/accounts":
+            env = load_env_file()
+            data = {
+                "dashboard_username": env.get("DASHBOARD_USERNAME", "andrex"),
+                "twitch_auth_token": env.get("TWITCH_AUTH_TOKEN", ""),
+                "twitch_priority_games": env.get("TWITCH_PRIORITY_GAMES", ""),
+                "eg_email": env.get("EG_EMAIL", ""),
+                "has_eg_password": bool(env.get("EG_PASSWORD")),
+                "eg_otp_secret": env.get("EG_OTP_SECRET", ""),
+                "pg_email": env.get("PG_EMAIL", ""),
+                "has_pg_password": bool(env.get("PG_PASSWORD")),
+                "pg_otp_secret": env.get("PG_OTP_SECRET", ""),
+                "gog_email": env.get("GOG_EMAIL", ""),
+                "has_gog_password": bool(env.get("GOG_PASSWORD")),
+                "discord_webhook_url": env.get("DISCORD_WEBHOOK_URL", ""),
+            }
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(data).encode("utf-8"))
+            return
+
         elif self.path == "/api/logs":
             log_paths = ["/var/log/twitch-drops.log", "/var/log/free-games.log", "/var/log/auto-loot-web.log"]
             combined = ""
@@ -289,8 +351,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             password = payload.get("password", "").strip()
 
             env = load_env_file()
-            expected_user = env.get("DASHBOARD_USERNAME", "admin").strip()
-            expected_pass = env.get("DASHBOARD_PASSWORD", "admin123").strip()
+            expected_user = env.get("DASHBOARD_USERNAME", "andrex").strip()
+            expected_pass = env.get("DASHBOARD_PASSWORD", "10140523Andy!").strip()
 
             user_matches = secrets.compare_digest(username, expected_user)
             pass_matches = secrets.compare_digest(password, expected_pass)
@@ -334,21 +396,164 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.wfile.write(json.dumps({"error": "Unauthorized"}).encode("utf-8"))
             return
 
-        if self.path == "/api/claim-drops":
-            env = load_env_file()
-            token = env.get("TWITCH_AUTH_TOKEN", "").strip()
-            claimed = 0
-            if token:
-                try:
-                    miner = DropsMiner(token)
-                    claimed = miner.claim_pending_drops()
-                except Exception as e:
-                    print("Error claiming drops:", e)
+        # 4. Save Account Credentials to .env from Web UI
+        if self.path == "/api/accounts":
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length)
+            try:
+                payload = json.loads(body.decode("utf-8"))
+            except Exception:
+                payload = {}
+
+            updates = {}
+            if "dashboard_username" in payload and payload["dashboard_username"].strip():
+                updates["DASHBOARD_USERNAME"] = payload["dashboard_username"].strip()
+            if "dashboard_password" in payload and payload["dashboard_password"].strip():
+                updates["DASHBOARD_PASSWORD"] = payload["dashboard_password"].strip()
+            if "twitch_auth_token" in payload:
+                updates["TWITCH_AUTH_TOKEN"] = payload["twitch_auth_token"].strip()
+            if "twitch_priority_games" in payload:
+                updates["TWITCH_PRIORITY_GAMES"] = payload["twitch_priority_games"].strip()
+            if "eg_email" in payload:
+                updates["EG_EMAIL"] = payload["eg_email"].strip()
+            if "eg_password" in payload and payload["eg_password"].strip():
+                updates["EG_PASSWORD"] = payload["eg_password"].strip()
+            if "eg_otp_secret" in payload:
+                updates["EG_OTP_SECRET"] = payload["eg_otp_secret"].strip()
+            if "pg_email" in payload:
+                updates["PG_EMAIL"] = payload["pg_email"].strip()
+            if "pg_password" in payload and payload["pg_password"].strip():
+                updates["PG_PASSWORD"] = payload["pg_password"].strip()
+            if "pg_otp_secret" in payload:
+                updates["PG_OTP_SECRET"] = payload["pg_otp_secret"].strip()
+            if "gog_email" in payload:
+                updates["GOG_EMAIL"] = payload["gog_email"].strip()
+            if "gog_password" in payload and payload["gog_password"].strip():
+                updates["GOG_PASSWORD"] = payload["gog_password"].strip()
+            if "discord_webhook_url" in payload:
+                updates["DISCORD_WEBHOOK_URL"] = payload["discord_webhook_url"].strip()
+
+            save_env_file(updates)
 
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(json.dumps({"success": True, "claimed": claimed}).encode("utf-8"))
+            self.wfile.write(json.dumps({"success": True, "message": "Account credentials saved successfully!"}).encode("utf-8"))
+            return
+
+        # 5. Test specific service connection
+        if self.path == "/api/test-service":
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length)
+            try:
+                payload = json.loads(body.decode("utf-8"))
+            except Exception:
+                payload = {}
+
+            service = payload.get("service")
+            env = load_env_file()
+
+            if service == "twitch":
+                token = payload.get("token") or env.get("TWITCH_AUTH_TOKEN", "")
+                if not token:
+                    res = {"success": False, "message": "No Twitch auth-token configured."}
+                else:
+                    client = TwitchClient(token)
+                    if client.validate_session():
+                        res = {"success": True, "message": f"Connected as {client.user_login} (User ID: {client.user_id})"}
+                    else:
+                        res = {"success": False, "message": "Twitch token invalid or expired."}
+
+            elif service == "discord":
+                url = payload.get("url") or env.get("DISCORD_WEBHOOK_URL", "")
+                if not url:
+                    res = {"success": False, "message": "No Discord webhook URL configured."}
+                else:
+                    try:
+                        req_data = json.dumps({"content": "[Auto Loot Claimer]: Test webhook alert connected successfully!"}).encode("utf-8")
+                        req = urllib.request.Request(url, data=req_data, headers={"Content-Type": "application/json", "User-Agent": "AutoLoot/1.0"}, method="POST")
+                        with urllib.request.urlopen(req, timeout=8):
+                            res = {"success": True, "message": "Test ping sent to Discord successfully!"}
+                    except Exception as e:
+                        res = {"success": False, "message": f"Webhook error: {e}"}
+
+            elif service == "epic":
+                promo_url = "https://store-site-backend-static.ak.epicgames.com/freeGamesPromotions?locale=en-US&country=US&allowCountries=US"
+                try:
+                    req = urllib.request.Request(promo_url, headers={"User-Agent": "Mozilla/5.0"}, method="GET")
+                    with urllib.request.urlopen(req, timeout=10) as resp:
+                        res = {"success": True, "message": "Epic Games Store API reachable (HTTP 200). Ready for automated claims."}
+                except Exception as e:
+                    res = {"success": False, "message": f"Could not reach Epic API: {e}"}
+
+            else:
+                res = {"success": True, "message": f"Configuration saved for {service}."}
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(res).encode("utf-8"))
+            return
+
+        if self.path == "/api/claim-drops":
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length) if content_length > 0 else b"{}"
+            try:
+                payload = json.loads(body.decode("utf-8"))
+            except Exception:
+                payload = {}
+
+            drop_instance_id = payload.get("drop_instance_id")
+
+            env = load_env_file()
+            token = env.get("TWITCH_AUTH_TOKEN", "").strip()
+            claimed = 0
+            message = "No drops were claimed."
+            if token:
+                try:
+                    if drop_instance_id:
+                        client = TwitchClient(token)
+                        if client.claim_drop(drop_instance_id):
+                            claimed = 1
+                            message = "Successfully claimed drop reward!"
+                        else:
+                            message = "Could not claim drop reward (it may have already been claimed)."
+                    else:
+                        miner = DropsMiner(token)
+                        claimed = miner.claim_pending_drops()
+                        message = f"Claimed {claimed} ready drop rewards!"
+                except Exception as e:
+                    message = f"Error claiming drops: {e}"
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"success": True, "claimed": claimed, "message": message}).encode("utf-8"))
+            return
+
+        elif self.path == "/api/twitch/priority":
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length)
+            try:
+                payload = json.loads(body.decode("utf-8"))
+            except Exception:
+                payload = {}
+
+            games = payload.get("games", [])
+            if isinstance(games, list):
+                priority_val = ", ".join([g.strip() for g in games if g.strip()])
+            else:
+                priority_val = str(games).strip()
+
+            save_env_file({"TWITCH_PRIORITY_GAMES": priority_val})
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                "success": True,
+                "priority_games": [g.strip() for g in priority_val.split(",") if g.strip()],
+                "message": "Twitch drop priorities updated successfully!"
+            }).encode("utf-8"))
             return
 
         elif self.path == "/api/trigger-games":
@@ -372,7 +577,7 @@ def run_server(port=8080):
     server_address = ("0.0.0.0", port)
     httpd = ThreadingHTTPServer(server_address, DashboardHandler)
     env = load_env_file()
-    user = env.get("DASHBOARD_USERNAME", "admin").strip()
+    user = env.get("DASHBOARD_USERNAME", "andrex").strip()
     print("===========================================================")
     print("  Auto Loot Claimer Web Dashboard running!")
     print(f"  Access in your browser: http://<your-server-ip>:{port}")
