@@ -23,6 +23,22 @@ GQL_URL = "https://gql.twitch.tv/gql"
 SPADE_URL = "https://spade.twitch.tv/batched"
 
 
+def clean_text(text: Any) -> str:
+    """Strip emojis and non-standard symbols to ensure clean terminal and UI rendering."""
+    if not text:
+        return ""
+    import re
+    emoji_pattern = re.compile(
+        "[\U00010000-\U0010ffff]|"
+        "[\u2600-\u27bf]|"
+        "[\u2300-\u23ff]|"
+        "[\u2b50-\u2b55]|"
+        "[\u203c-\u2049]"
+    )
+    cleaned = emoji_pattern.sub("", str(text))
+    return " ".join(cleaned.split()).strip()
+
+
 class TwitchClient:
     def __init__(self, auth_token: str, user_agent: Optional[str] = None):
         """
@@ -135,8 +151,14 @@ class TwitchClient:
             logger.error("Error fetching inventory via persisted query: %s", e)
             return {}
 
-    def get_all_active_campaigns(self) -> List[Dict[str, Any]]:
-        """Fetch all active drop campaigns currently streaming on Twitch merged with user progress."""
+    def get_all_active_campaigns(self, priority_games: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        """
+        Fetch all active drop campaigns currently streaming on Twitch merged with user progress.
+        Ensures campaigns for ALL provided games (in priority_games or popular drops directory)
+        are queried and returned.
+        """
+        import concurrent.futures
+
         campaigns_map: Dict[str, Dict[str, Any]] = {}
 
         # 1. Add any in-progress campaigns from user inventory
@@ -149,7 +171,41 @@ class TwitchClient:
             if cid:
                 campaigns_map[cid] = camp
 
-        # 2. Discover live campaigns from streams with drops tags
+        # 2. Targeted query for ALL provided priority games plus active drops roster
+        provided_games = [g.strip() for g in (priority_games or []) if g.strip()]
+        default_roster = [
+            "World of Warcraft", "Rainbow Six Siege", "Rust", "Overwatch 2",
+            "Apex Legends", "Rocket League", "Grand Theft Auto V", "Big Walk",
+            "WARDOGS", "Counter-Strike", "Escape from Tarkov", "Warframe"
+        ]
+        all_targets = list(dict.fromkeys(provided_games + default_roster))
+
+        def fetch_game_campaigns(game_name: str):
+            try:
+                channel = self.find_eligible_channel(game_name)
+                if channel and channel.get("channel_id"):
+                    drops_res = self.post_persisted_gql(
+                        operation_name="DropsHighlightService_AvailableDrops",
+                        sha256_hash="9a62a09bce5b53e26e64a671e530bc599cb6aab1e5ba3cbd5d85966d3940716f",
+                        variables={"channelID": str(channel["channel_id"])}
+                    )
+                    channel_obj = (drops_res.get("data") or {}).get("channel")
+                    if channel_obj and channel_obj.get("viewerDropCampaigns"):
+                        return game_name, channel_obj["viewerDropCampaigns"]
+            except Exception as err:
+                logger.debug("Failed fetching drops for %s: %s", game_name, err)
+            return game_name, []
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+            for gname, camps in executor.map(fetch_game_campaigns, all_targets):
+                for c in camps:
+                    cid = c.get("id")
+                    if cid and cid not in campaigns_map:
+                        if not c.get("game"):
+                            c["game"] = {"displayName": gname, "name": gname}
+                        campaigns_map[cid] = c
+
+        # 3. Discover live campaigns from streams with drops tags (catches any new games)
         query_streams = """
         query StreamsWithDrops {
             streams(first: 30, options: {tags: ["DropsEnabled", "Drops"]}) {
@@ -173,7 +229,7 @@ class TwitchClient:
                 if not g:
                     continue
                 gname = g.get("displayName") or g.get("name")
-                if not gname or gname in seen_games:
+                if not gname or gname in seen_games or any(c.get("game", {}).get("displayName") == gname for c in campaigns_map.values()):
                     continue
                 seen_games.add(gname)
 
@@ -199,7 +255,7 @@ class TwitchClient:
 
         return list(campaigns_map.values())
 
-    def get_drops_overview(self) -> Dict[str, Any]:
+    def get_drops_overview(self, priority_games: Optional[List[str]] = None) -> Dict[str, Any]:
         """
         Builds a comprehensive drops overview:
         - Cross-references every drop against the user's Twitch inventory (167+ claimed items).
@@ -227,7 +283,7 @@ class TwitchClient:
             if cname:
                 claimed_names.add(cname.lower().strip())
 
-        all_campaigns = self.get_all_active_campaigns()
+        all_campaigns = self.get_all_active_campaigns(priority_games)
 
         formatted_campaigns = []
         total_ready = 0
@@ -237,14 +293,14 @@ class TwitchClient:
         for camp in all_campaigns:
             cid = camp.get("id")
             game_obj = camp.get("game") or {}
-            gname = game_obj.get("displayName") or game_obj.get("name") or "Twitch Game"
-            camp_name = camp.get("name") or gname
+            gname = clean_text(game_obj.get("displayName") or game_obj.get("name") or "Twitch Game")
+            camp_name = clean_text(camp.get("name") or gname)
             timed_drops = camp.get("timeBasedDrops") or []
 
             formatted_drops = []
             for d in timed_drops:
                 d_id = d.get("id") or ""
-                d_name = d.get("name") or "Drop Reward"
+                d_name = clean_text(d.get("name") or "Drop Reward")
                 req_min = d.get("requiredMinutesWatched", 0)
                 self_data = d.get("self") or {}
                 watched_min = self_data.get("currentMinutesWatched", 0)
@@ -311,6 +367,23 @@ class TwitchClient:
                 "ready_count": sum(1 for d in formatted_drops if d["status"] == "READY_TO_CLAIM"),
                 "in_progress_count": sum(1 for d in formatted_drops if d["status"] == "IN_PROGRESS"),
             })
+
+        # Sort campaigns: Targeted / Priority games first, then ready to claim, then in-progress, then others
+        priority_clean = [p.lower().strip() for p in (priority_games or []) if p.strip()]
+
+        def campaign_sort_key(c):
+            g_low = (c["game"] or "").lower()
+            c_low = (c["name"] or "").lower()
+            is_prio = any(p in g_low or p in c_low for p in priority_clean)
+            return (
+                0 if is_prio else 1,
+                0 if c["ready_count"] > 0 else 1,
+                0 if c["in_progress_count"] > 0 else 1,
+                0 if c["status"] != "COMPLETED" else 1,
+                c["game"]
+            )
+
+        formatted_campaigns.sort(key=campaign_sort_key)
 
         return {
             "campaigns": formatted_campaigns,

@@ -98,25 +98,94 @@ def is_authenticated(headers):
     return True
 
 
-def get_claimed_epic_titles(data_dir):
-    """Scan local logs and data to find titles already claimed."""
-    claimed = set()
-    if not os.path.exists(data_dir):
-        return list(claimed)
-    for root, _, files in os.walk(data_dir):
-        for file in files:
-            if file.endswith(".json") or file.endswith(".log"):
-                filepath = os.path.join(root, file)
-                try:
-                    with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
-                        text = f.read()
-                        if "claimed" in text.lower():
-                            for line in text.splitlines():
-                                if "claimed" in line.lower():
-                                    claimed.add(line.strip())
-                except Exception:
-                    pass
-    return list(claimed)
+def get_claimed_store_titles():
+    """
+    Returns a dictionary of claimed titles per store:
+    {"epic": [...], "amazon": [...], "gog": [...]}
+    Reads persistent data/claimed_games.json and scans log files.
+    """
+    data_file = os.path.join(APP_DIR, "data", "claimed_games.json")
+    results = {"epic": set(), "amazon": set(), "gog": set()}
+
+    # 1. Read persistent JSON
+    if os.path.exists(data_file):
+        try:
+            with open(data_file, "r", encoding="utf-8") as f:
+                stored = json.load(f)
+                if isinstance(stored, dict):
+                    for k, titles in stored.items():
+                        if k in results and isinstance(titles, list):
+                            for t in titles:
+                                if t and isinstance(t, str):
+                                    results[k].add(t.strip())
+        except Exception:
+            pass
+
+    # 2. Scan log files and vendor data for claimed keywords
+    search_paths = [
+        "/var/log/free-games.log",
+        os.path.join(APP_DIR, "data", "fgc"),
+        os.path.join(APP_DIR, "vendor", "free-games-claimer", "data"),
+    ]
+    for sp in search_paths:
+        if os.path.isfile(sp):
+            targets = [sp]
+        elif os.path.isdir(sp):
+            targets = [os.path.join(root, f) for root, _, fs in os.walk(sp) for f in fs if f.endswith((".log", ".json", ".txt"))]
+        else:
+            continue
+
+        for tf in targets:
+            try:
+                with open(tf, "r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        line_low = line.lower()
+                        if any(kw in line_low for kw in ["claimed", "already claimed", "already in library", "successfully claimed"]):
+                            cleaned = line.strip()
+                            for prefix in ["claimed:", "already claimed:", "successfully claimed:"]:
+                                if prefix in line_low:
+                                    idx = line_low.find(prefix) + len(prefix)
+                                    cleaned = line[idx:].strip(" -:[]*\"'")
+                            if cleaned and len(cleaned) < 80:
+                                if "prime" in tf.lower() or "amazon" in tf.lower():
+                                    results["amazon"].add(cleaned)
+                                elif "gog" in tf.lower():
+                                    results["gog"].add(cleaned)
+                                else:
+                                    results["epic"].add(cleaned)
+            except Exception:
+                pass
+
+    return {k: sorted(list(v)) for k, v in results.items()}
+
+
+def save_claimed_store_title(store: str, title: str, is_claimed: bool = True):
+    """Saves or removes a claimed title in data/claimed_games.json."""
+    data_dir = os.path.join(APP_DIR, "data")
+    os.makedirs(data_dir, exist_ok=True)
+    data_file = os.path.join(data_dir, "claimed_games.json")
+    
+    current = {"epic": [], "amazon": [], "gog": []}
+    if os.path.exists(data_file):
+        try:
+            with open(data_file, "r", encoding="utf-8") as f:
+                current = json.load(f)
+        except Exception:
+            pass
+
+    store_key = store.lower().strip()
+    if store_key not in current:
+        current[store_key] = []
+
+    title_clean = title.strip()
+    if is_claimed:
+        if title_clean and title_clean not in current[store_key]:
+            current[store_key].append(title_clean)
+    else:
+        current[store_key] = [t for t in current[store_key] if t.lower() != title_clean.lower()]
+
+    with open(data_file, "w", encoding="utf-8") as f:
+        json.dump(current, f, indent=2)
 
 
 def build_status_payload():
@@ -149,7 +218,7 @@ def build_status_payload():
                 twitch_info["user_id"] = client.user_id
                 twitch_info["connected"] = True
 
-                overview = client.get_drops_overview()
+                overview = client.get_drops_overview(priority_games=priority_list)
                 twitch_info["campaigns"] = overview.get("campaigns", [])
                 twitch_info["active_campaigns_count"] = overview.get("total_campaigns", 0)
                 twitch_info["claimed_history_count"] = overview.get("claimed_history_count", 0)
@@ -176,7 +245,7 @@ def build_status_payload():
 
     # 2. Epic Games Status & Free Promotions
     active_free, upcoming_free = fetch_epic_freebies()
-    claimed_titles = get_claimed_epic_titles(data_dir)
+    claimed_store_map = get_claimed_store_titles()
 
     has_epic_cookies = False
     if os.path.exists(data_dir):
@@ -190,7 +259,7 @@ def build_status_payload():
         "has_saved_session": has_epic_cookies,
         "active_freebies": active_free,
         "upcoming_freebies": upcoming_free,
-        "claimed_titles": claimed_titles,
+        "claimed_titles": claimed_store_map.get("epic", []),
     }
 
     # 3. Amazon Prime Gaming & GOG
@@ -206,11 +275,13 @@ def build_status_payload():
     amazon_info = {
         "email": env.get("PG_EMAIL"),
         "has_saved_session": has_amazon_cookies,
+        "claimed_items": claimed_store_map.get("amazon", []),
     }
 
     gog_info = {
         "email": env.get("GOG_EMAIL"),
         "has_saved_session": has_gog_cookies,
+        "claimed_items": claimed_store_map.get("gog", []),
     }
 
     # 4. System / Daemon status
@@ -557,10 +628,25 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return
 
         elif self.path == "/api/trigger-games":
+            content_length = int(self.headers.get("Content-Length", 0))
+            payload = {}
+            if content_length > 0:
+                try:
+                    payload = json.loads(self.rfile.read(content_length).decode("utf-8"))
+                except Exception:
+                    pass
+            target_store = payload.get("store", "").strip().lower()
+
             script_path = os.path.join(APP_DIR, "scripts", "run_games_claimer.sh")
             if os.path.exists(script_path):
-                subprocess.Popen(["bash", script_path], cwd=APP_DIR)
-                msg = "Triggered game storefronts claim in the background!"
+                cmd = ["bash", script_path]
+                if target_store:
+                    cmd.append(target_store)
+                subprocess.Popen(cmd, cwd=APP_DIR)
+                if target_store:
+                    msg = f"Triggered {target_store.upper()} claim check in the background!"
+                else:
+                    msg = "Triggered game storefronts check in the background!"
             else:
                 msg = "Claimer script not found."
 
@@ -568,6 +654,36 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({"success": True, "message": msg}).encode("utf-8"))
+            return
+
+        elif self.path == "/api/claim-item":
+            content_length = int(self.headers.get("Content-Length", 0))
+            payload = {}
+            if content_length > 0:
+                try:
+                    payload = json.loads(self.rfile.read(content_length).decode("utf-8"))
+                except Exception:
+                    pass
+
+            store = payload.get("store", "epic").strip().lower()
+            title = payload.get("title", "").strip()
+            claimed = bool(payload.get("claimed", True))
+
+            if title:
+                save_claimed_store_title(store, title, claimed)
+
+            all_claimed = get_claimed_store_titles()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                "success": True,
+                "store": store,
+                "title": title,
+                "claimed": claimed,
+                "claimed_titles": all_claimed.get(store, []),
+                "message": f"Updated '{title}' as {'[CLAIMED]' if claimed else '[UNCLAIMED]'} for {store.upper()}."
+            }).encode("utf-8"))
             return
 
         self.send_error(404, "Not Found")
