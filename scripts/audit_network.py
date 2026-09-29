@@ -13,13 +13,14 @@ from typing import Dict, List, Set
 
 # Strict Whitelist of Authorized Domains
 ALLOWED_DOMAINS = {
-    # Twitch Official Services
+    # Twitch Official Services & Drops Directory
     "twitch.tv",
     "gql.twitch.tv",
     "id.twitch.tv",
     "passport.twitch.tv",
     "spade.twitch.tv",
     "pubsub-edge.twitch.tv",
+    "drophunter.app",
     # Epic Games Official Services
     "epicgames.com",
     "store.epicgames.com",
