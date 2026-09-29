@@ -1,18 +1,26 @@
 """
 Continuous Twitch Drops background miner daemon.
 Lightweight, zero-telemetry, streamless execution using Python standard library.
+Ensures watching 1 stream at a time under the user's authentic account.
+Supports both Default mode (mine all active drops) and Selective mode (only mine activated games).
 """
 
 import json
 import logging
+import os
 import random
 import sys
 import time
 import urllib.request
 import urllib.error
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from .twitch_api import TwitchClient
+
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+DATA_DIR = os.path.join(BASE_DIR, "data")
+STATUS_FILE = os.path.join(DATA_DIR, "miner_status.json")
+CONFIG_FILE = os.path.join(DATA_DIR, "mining_config.json")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -20,6 +28,32 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger("drops_miner")
+
+
+def load_mining_config() -> Dict[str, Any]:
+    """Load mining preferences (mode and activated games list)."""
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return {
+                        "mode": data.get("mode", "default"),
+                        "activated_games": [g.strip() for g in data.get("activated_games", []) if g.strip()],
+                    }
+        except Exception:
+            pass
+    return {"mode": "default", "activated_games": []}
+
+
+def save_miner_status(status_dict: Dict[str, Any]):
+    """Persist current stream status to disk for dashboard telemetry."""
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(STATUS_FILE, "w", encoding="utf-8") as f:
+            json.dump(status_dict, f, indent=2)
+    except Exception as e:
+        logger.debug("Could not write miner status: %s", e)
 
 
 class DropsMiner:
@@ -33,6 +67,7 @@ class DropsMiner:
         self.priority_games = [g.strip().lower() for g in (priority_games or []) if g.strip()]
         self.webhook_url = webhook_url
         self.running = False
+        self.current_stream: Optional[Dict[str, Any]] = None
 
     def notify(self, message: str):
         """Send notification to user-configured webhook (Discord/Telegram compatible)."""
@@ -40,7 +75,6 @@ class DropsMiner:
         if not self.webhook_url:
             return
         try:
-            # Discord webhook format
             payload = {"content": f"[Twitch Drops Miner]: {message}"}
             body = json.dumps(payload).encode("utf-8")
             req = urllib.request.Request(
@@ -86,8 +120,17 @@ class DropsMiner:
         return claimed_count
 
     def select_active_campaign(self) -> Optional[dict]:
-        """Select the highest priority campaign that still has unclaimed drops."""
-        campaigns = self.client.get_all_active_campaigns()
+        """
+        Select the highest priority campaign that still has unclaimed drops.
+        Respects 'mode' (default vs selective) and 'activated_games'.
+        """
+        config = load_mining_config()
+        mode = config.get("mode", "default")
+        activated_games = [g.lower().strip() for g in config.get("activated_games", []) if g.strip()]
+        if not activated_games and self.priority_games:
+            activated_games = self.priority_games
+
+        campaigns = self.client.get_all_active_campaigns(priority_games=activated_games)
         if not campaigns:
             logger.info("No active drop campaigns found on Twitch right now.")
             return None
@@ -100,75 +143,121 @@ class DropsMiner:
                 not d.get("self", {}).get("isClaimed", False)
                 for d in drops
             )
-            if has_unclaimed:
+            # If no drops array but has time_left or valid campaign
+            if has_unclaimed or (not drops and camp.get("name")):
                 eligible.append(camp)
 
         if not eligible:
             logger.info("All drops in currently active campaigns have already been claimed! You are all caught up.")
             return None
 
-        # Sort by user priority if provided
-        if self.priority_games:
-            for p_game in self.priority_games:
-                p_game_clean = p_game.strip().lower()
+        # If in 'selective' mode, strictly restrict to user-activated games
+        if mode == "selective":
+            if not activated_games:
+                logger.info("[SELECTIVE MODE] No games are currently activated for mining. Waiting for user selection.")
+                return None
+
+            filtered = []
+            for camp in eligible:
+                game_obj = camp.get("game") or {}
+                gname = (game_obj.get("displayName") or game_obj.get("name") or "").lower()
+                cname = (camp.get("name") or "").lower()
+                if any(ag in gname or ag in cname for ag in activated_games):
+                    filtered.append(camp)
+
+            if not filtered:
+                logger.info("[SELECTIVE MODE] No active drops match your activated games %s right now.", activated_games)
+                return None
+            return filtered[0]
+
+        # 'default' mode: Prioritize activated games, then fallback to any active drop campaign
+        if activated_games:
+            for p_game in activated_games:
                 for camp in eligible:
                     game_obj = camp.get("game") or {}
                     gname = (game_obj.get("displayName") or game_obj.get("name") or "").lower()
                     cname = (camp.get("name") or "").lower()
-                    if p_game_clean in gname or p_game_clean in cname:
+                    if p_game in gname or p_game in cname:
                         return camp
 
-        # Fallback to the first available campaign with the most viewers / earliest end
+        # Fallback to the first available campaign with unclaimed items
         return eligible[0]
 
     def run_cycle(self):
-        """Single iteration of the mining loop."""
+        """Single iteration of the mining loop - watches ONLY 1 stream at a time."""
         # 1. Claim anything ready
         self.claim_pending_drops()
 
-        # 2. Pick a campaign
+        # 2. Pick a single campaign
         campaign = self.select_active_campaign()
         if not campaign:
-            logger.info("Sleeping for 15 minutes before checking for new campaigns...")
-            time.sleep(900)
+            save_miner_status({"active": False, "message": "No eligible campaigns to mine at this moment."})
+            logger.info("Sleeping for 10 minutes before checking for active campaigns...")
+            time.sleep(600)
             return
 
-        game_name = campaign.get("game", {}).get("name", "Unknown")
+        game_name = campaign.get("game", {}).get("displayName") or campaign.get("game", {}).get("name", "Unknown")
         camp_name = campaign.get("name", game_name)
-        logger.info("Target campaign: '%s' for game '%s'", camp_name, game_name)
+        logger.info("[MINER] Target campaign: '%s' for game '%s'", camp_name, game_name)
 
-        # 3. Find a live stream with drops enabled
+        # 3. Find exactly 1 live stream with drops enabled (Only 1 stream at a time)
         channel = self.client.find_eligible_channel(game_name)
         if not channel:
-            logger.warning("No live streams with drops enabled for '%s'. Waiting 5 minutes...", game_name)
-            time.sleep(300)
+            logger.warning("[MINER] No live streams with drops enabled for '%s'. Checking next game in 3 minutes...", game_name)
+            save_miner_status({
+                "active": False,
+                "game": game_name,
+                "campaign": camp_name,
+                "message": f"No live streams currently online with drops enabled for {game_name}.",
+            })
+            time.sleep(180)
             return
 
+        stream_url = f"https://www.twitch.tv/{channel['channel_login']}"
         logger.info(
-            "Mining on channel: %s (%s) with %d viewers",
-            channel["channel_name"], channel["channel_login"], channel["viewers"]
+            "[MINER] Watching 1 stream: %s (%s) with %d viewers | URL: %s",
+            channel["channel_name"], channel["channel_login"], channel["viewers"], stream_url
         )
 
-        # 4. Streamless watch loop (sending heartbeat every ~60s)
-        # Run for up to 15 minutes or until stream goes offline
+        # 4. Streamless watch loop under user account (sending heartbeat every ~60s)
+        # Strictly watches ONLY this single stream for a block of up to 15 minutes
         for minute in range(15):
             success = self.client.send_minute_watched_heartbeat(
                 channel_id=channel["channel_id"],
                 stream_id=channel["stream_id"],
             )
+
+            current_status = {
+                "active": True,
+                "game": game_name,
+                "campaign": camp_name,
+                "channel_name": channel["channel_name"],
+                "channel_login": channel["channel_login"],
+                "stream_url": stream_url,
+                "viewers": channel["viewers"],
+                "minutes_watched": minute + 1,
+                "user_login": self.client.user_login,
+                "user_id": self.client.user_id,
+                "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }
+            save_miner_status(current_status)
+
             if success:
                 logger.info(
-                    "Heartbeat %d/15 sent successfully for %s (%s)",
+                    "[MINER] Heartbeat minute %d/15 sent successfully for %s on channel %s",
                     minute + 1, game_name, channel["channel_name"]
                 )
             else:
-                logger.warning("Heartbeat failed, checking if stream is still active...")
+                logger.warning("[MINER] Heartbeat returned non-204, verifying stream status...")
 
-            # Check if drop completed during this interval
+            # Claim any drops completed during this minute
             self.claim_pending_drops()
 
-            # Randomize delay between 57 and 63 seconds to match realistic browser behavior
-            time.sleep(random.uniform(57.0, 63.0))
+            # Randomize delay between 58 and 62 seconds to mimic authentic browser behavior
+            time.sleep(random.uniform(58.0, 62.0))
+
+        # Reset active status when switching streams
+        save_miner_status({"active": False, "message": "Switching or checking for next campaign."})
 
     def start(self):
         """Start the miner daemon."""
@@ -178,7 +267,10 @@ class DropsMiner:
             sys.exit(1)
 
         self.running = True
-        logger.info("Twitch session valid! Priorities: %s", self.priority_games or "Auto (All)")
+        logger.info(
+            "Twitch session valid! Mining as: %s (ID: %s)",
+            self.client.user_login, self.client.user_id
+        )
 
         while self.running:
             try:
@@ -186,7 +278,9 @@ class DropsMiner:
             except KeyboardInterrupt:
                 logger.info("Stopping miner daemon upon user request.")
                 self.running = False
+                save_miner_status({"active": False, "message": "Miner stopped by user."})
                 break
             except Exception as err:
                 logger.error("Unexpected error in mining loop: %s. Retrying in 60s...", err, exc_info=True)
+                save_miner_status({"active": False, "message": f"Error: {err}"})
                 time.sleep(60)

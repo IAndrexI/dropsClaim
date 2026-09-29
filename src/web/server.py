@@ -188,13 +188,59 @@ def save_claimed_store_title(store: str, title: str, is_claimed: bool = True):
         json.dump(current, f, indent=2)
 
 
+def get_mining_config():
+    config_file = os.path.join(APP_DIR, "data", "mining_config.json")
+    if os.path.exists(config_file):
+        try:
+            with open(config_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return {
+                        "mode": data.get("mode", "default"),
+                        "activated_games": [g.strip() for g in data.get("activated_games", []) if g.strip()],
+                    }
+        except Exception:
+            pass
+    env = load_env_file()
+    default_priority = [g.strip() for g in env.get("TWITCH_PRIORITY_GAMES", "").split(",") if g.strip()]
+    return {
+        "mode": "default",
+        "activated_games": default_priority or ["World of Warcraft", "Rust", "Rainbow Six Siege"],
+    }
+
+
+def save_mining_config(mode: str, activated_games: list):
+    data_dir = os.path.join(APP_DIR, "data")
+    os.makedirs(data_dir, exist_ok=True)
+    config_file = os.path.join(data_dir, "mining_config.json")
+    clean_mode = "selective" if mode == "selective" else "default"
+    clean_games = list(dict.fromkeys([g.strip() for g in activated_games if g.strip()]))
+    cfg = {"mode": clean_mode, "activated_games": clean_games}
+    with open(config_file, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2)
+    save_env_file({"TWITCH_PRIORITY_GAMES": ", ".join(clean_games)})
+    return cfg
+
+
+def get_miner_status():
+    status_file = os.path.join(APP_DIR, "data", "miner_status.json")
+    if os.path.exists(status_file):
+        try:
+            with open(status_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"active": False}
+
+
 def build_status_payload():
     env = load_env_file()
     data_dir = os.path.join(APP_DIR, "data", "fgc")
     twitch_token = env.get("TWITCH_AUTH_TOKEN", "").strip()
 
-    priority_str = env.get("TWITCH_PRIORITY_GAMES", "").strip()
-    priority_list = [g.strip() for g in priority_str.split(",") if g.strip()]
+    mining_cfg = get_mining_config()
+    miner_stat = get_miner_status()
+    priority_list = mining_cfg.get("activated_games", [])
 
     # 1. Twitch Status & Personal Inventory
     twitch_info = {
@@ -204,6 +250,10 @@ def build_status_payload():
         "campaigns": [],
         "drops_in_progress": [],
         "priority_games": priority_list,
+        "mining_config": mining_cfg,
+        "miner_status": miner_stat,
+        "inventory_url": "https://www.twitch.tv/drops/inventory",
+        "campaigns_url": "https://www.twitch.tv/drops/campaigns",
         "active_campaigns_count": 0,
         "claimed_history_count": 0,
         "ready_to_claim_count": 0,
@@ -219,14 +269,19 @@ def build_status_payload():
                 twitch_info["connected"] = True
 
                 overview = client.get_drops_overview(priority_games=priority_list)
-                twitch_info["campaigns"] = overview.get("campaigns", [])
+                camps = overview.get("campaigns", [])
+                act_games_low = [ag.lower() for ag in priority_list]
+                for c in camps:
+                    c["is_activated"] = (c.get("game", "").lower() in act_games_low)
+
+                twitch_info["campaigns"] = camps
                 twitch_info["active_campaigns_count"] = overview.get("total_campaigns", 0)
                 twitch_info["claimed_history_count"] = overview.get("claimed_history_count", 0)
                 twitch_info["ready_to_claim_count"] = overview.get("ready_to_claim_count", 0)
                 twitch_info["in_progress_count"] = overview.get("in_progress_count", 0)
                 
                 # Maintain legacy drops_in_progress flat list for backwards compatibility
-                for camp in overview.get("campaigns", []):
+                for camp in camps:
                     for d in camp.get("drops", []):
                         if d.get("status") in ("IN_PROGRESS", "READY_TO_CLAIM"):
                             twitch_info["drops_in_progress"].append({
@@ -247,6 +302,9 @@ def build_status_payload():
     active_free, upcoming_free = fetch_epic_freebies()
     claimed_store_map = get_claimed_store_titles()
 
+    for game in active_free:
+        game["store_url"] = f"https://store.epicgames.com/browse?q={urllib.parse.quote(game.get('title', ''))}"
+
     has_epic_cookies = False
     if os.path.exists(data_dir):
         for root, _, files in os.walk(data_dir):
@@ -260,6 +318,8 @@ def build_status_payload():
         "active_freebies": active_free,
         "upcoming_freebies": upcoming_free,
         "claimed_titles": claimed_store_map.get("epic", []),
+        "store_url": "https://store.epicgames.com/free-games",
+        "library_url": "https://www.epicgames.com/account/transactions",
     }
 
     # 3. Amazon Prime Gaming & GOG
@@ -276,12 +336,16 @@ def build_status_payload():
         "email": env.get("PG_EMAIL"),
         "has_saved_session": has_amazon_cookies,
         "claimed_items": claimed_store_map.get("amazon", []),
+        "claim_url": "https://gaming.amazon.com/home",
+        "loot_url": "https://gaming.amazon.com/loot",
     }
 
     gog_info = {
         "email": env.get("GOG_EMAIL"),
         "has_saved_session": has_gog_cookies,
         "claimed_items": claimed_store_map.get("gog", []),
+        "store_url": "https://www.gog.com",
+        "library_url": "https://www.gog.com/account",
     }
 
     # 4. System / Daemon status
@@ -297,6 +361,8 @@ def build_status_payload():
                     break
             except Exception:
                 pass
+    if not miner_running and miner_stat.get("active"):
+        miner_running = True
 
     return {
         "twitch": twitch_info,
@@ -624,6 +690,70 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 "success": True,
                 "priority_games": [g.strip() for g in priority_val.split(",") if g.strip()],
                 "message": "Twitch drop priorities updated successfully!"
+            }).encode("utf-8"))
+            return
+
+        elif self.path == "/api/twitch/mining-config":
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length)
+            try:
+                payload = json.loads(body.decode("utf-8"))
+            except Exception:
+                payload = {}
+
+            mode = payload.get("mode", "default")
+            games = payload.get("activated_games", [])
+            if not isinstance(games, list):
+                games = [g.strip() for g in str(games).split(",") if g.strip()]
+
+            cfg = save_mining_config(mode=mode, activated_games=games)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                "success": True,
+                "mining_config": cfg,
+                "message": f"Mining configuration set to '{cfg['mode']}' mode with {len(cfg['activated_games'])} active games."
+            }).encode("utf-8"))
+            return
+
+        elif self.path == "/api/twitch/toggle-activation":
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length)
+            try:
+                payload = json.loads(body.decode("utf-8"))
+            except Exception:
+                payload = {}
+
+            game = payload.get("game", "").strip()
+            activated = bool(payload.get("activated", True))
+            current_cfg = get_mining_config()
+            curr_games = current_cfg.get("activated_games", [])
+
+            # Case-insensitive update while preserving display casing
+            new_games = []
+            matched = False
+            for g in curr_games:
+                if g.lower() == game.lower():
+                    matched = True
+                    if activated:
+                        new_games.append(g)
+                else:
+                    new_games.append(g)
+
+            if activated and not matched and game:
+                new_games.append(game)
+
+            cfg = save_mining_config(mode=current_cfg.get("mode", "default"), activated_games=new_games)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                "success": True,
+                "game": game,
+                "activated": activated,
+                "mining_config": cfg,
+                "message": f"{'Activated' if activated else 'Deactivated'} '{game}' for mining."
             }).encode("utf-8"))
             return
 

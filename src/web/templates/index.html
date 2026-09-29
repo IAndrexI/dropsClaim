@@ -118,6 +118,44 @@
     
     .empty-state { text-align: center; padding: 48px 16px; color: var(--text-muted); grid-column: 1 / -1; }
     
+    /* Quick Claim Links Bar */
+    .quick-links-bar { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; background: #101626; border: 1px solid var(--card-border); border-radius: 8px; padding: 10px 16px; align-items: center; font-size: 0.82rem; }
+    .quick-link-label { font-weight: 700; text-transform: uppercase; color: var(--text-muted); font-size: 0.72rem; letter-spacing: 0.05em; margin-right: 4px; }
+    .quick-link { color: #60a5fa; text-decoration: none; display: inline-flex; align-items: center; gap: 4px; font-weight: 500; transition: color 0.15s; }
+    .quick-link:hover { text-decoration: underline; color: #93c5fd; }
+    .quick-link.twitch { color: #c084fc; }
+    .quick-link.twitch:hover { color: #d8b4fe; }
+    .quick-link.amazon { color: #fbbf24; }
+    .quick-link.amazon:hover { color: #fde68a; }
+    .quick-link.gog { color: #e879f9; }
+    .quick-link.gog:hover { color: #f0abfc; }
+
+    /* Live Miner Telemetry Card */
+    .live-miner-banner { background: #131b2e; border: 1px solid #9146ff; border-radius: 10px; padding: 16px 20px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 14px; position: relative; }
+    .live-stream-badge { background: rgba(145, 70, 255, 0.2); border: 1px solid #9146ff; color: #d8b4fe; font-weight: 700; padding: 4px 10px; border-radius: 9999px; font-size: 0.75rem; display: inline-flex; align-items: center; gap: 6px; }
+    .live-indicator-dot { width: 8px; height: 8px; border-radius: 50%; background: #10b981; display: inline-block; box-shadow: 0 0 8px #10b981; animation: pulse 1.5s infinite; }
+    .live-indicator-dot.idle { background: #64748b; box-shadow: none; animation: none; }
+    .miner-details { display: flex; flex-direction: column; gap: 4px; }
+    .miner-title { font-size: 1.05rem; font-weight: 700; color: #f8fafc; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .miner-sub { font-size: 0.82rem; color: var(--text-muted); }
+    .miner-telemetry-stats { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; font-size: 0.8rem; color: #cbd5e1; }
+    .miner-stat-pill { background: #0c1322; border: 1px solid #1e293b; padding: 4px 10px; border-radius: 6px; }
+
+    /* Mode Switcher */
+    .mode-switch-box { background: #0c1322; border: 1px solid #1e293b; border-radius: 8px; padding: 3px; display: inline-flex; gap: 4px; }
+    .mode-btn { background: none; border: none; color: var(--text-muted); padding: 5px 12px; border-radius: 6px; cursor: pointer; font-size: 0.8rem; font-weight: 600; transition: all 0.2s; }
+    .mode-btn.active { background: #1e293b; color: white; border: 1px solid #3b82f6; }
+
+    /* Campaign Cards with Image and Links */
+    .camp-card-body { display: flex; gap: 14px; }
+    .camp-cover { width: 56px; height: 75px; object-fit: cover; border-radius: 6px; border: 1px solid #1e293b; flex-shrink: 0; background: #0c1322; }
+    .camp-info { flex: 1; min-width: 0; }
+    .camp-actions { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
+    .btn-link { color: #60a5fa; text-decoration: none; font-size: 0.8rem; font-weight: 500; display: inline-flex; align-items: center; gap: 4px; }
+    .btn-link:hover { text-decoration: underline; color: #93c5fd; }
+    .btn-danger { background: #dc2626; border-color: #dc2626; }
+    .btn-danger:hover { background: #b91c1c; }
+    
     /* Toast alert */
     #toast { position: fixed; bottom: 20px; right: 20px; background: #1e293b; border: 1px solid #3b82f6; color: white; padding: 12px 20px; border-radius: 8px; font-size: 0.9rem; z-index: 9999; display: none; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5); }
   </style>
@@ -157,6 +195,23 @@
       </div>
     </div>
 
+    <!-- Quick Claim Links to Storefronts & Claim Hubs -->
+    <div class="quick-links-bar">
+      <span class="quick-link-label">Direct Claim Links:</span>
+      <a href="https://store.epicgames.com/free-games" target="_blank" rel="noopener noreferrer" class="quick-link">[Epic Free Games Hub]</a>
+      <a href="https://www.epicgames.com/account/transactions" target="_blank" rel="noopener noreferrer" class="quick-link">[Epic Library & Transactions]</a>
+      <span style="color: #334155;">|</span>
+      <a href="https://gaming.amazon.com/home" target="_blank" rel="noopener noreferrer" class="quick-link amazon">[Prime Gaming Home]</a>
+      <a href="https://gaming.amazon.com/loot" target="_blank" rel="noopener noreferrer" class="quick-link amazon">[Prime Claimed Loot]</a>
+      <span style="color: #334155;">|</span>
+      <a href="https://www.gog.com" target="_blank" rel="noopener noreferrer" class="quick-link gog">[GOG Storefront]</a>
+      <a href="https://www.gog.com/account" target="_blank" rel="noopener noreferrer" class="quick-link gog">[GOG Account Library]</a>
+      <span style="color: #334155;">|</span>
+      <a href="https://www.twitch.tv/drops/inventory" target="_blank" rel="noopener noreferrer" class="quick-link twitch">[Twitch Inventory]</a>
+      <a href="https://www.twitch.tv/drops/campaigns" target="_blank" rel="noopener noreferrer" class="quick-link twitch">[Twitch Drop Campaigns]</a>
+      <a href="https://drophunter.app/drops" target="_blank" rel="noopener noreferrer" class="quick-link twitch">[DropHunter Live Catalog]</a>
+    </div>
+
     <!-- Navigation Tabs -->
     <div class="tabs">
       <button class="tab-btn active" onclick="switchTab('drops', event)">Twitch Drops</button>
@@ -168,31 +223,60 @@
 
     <!-- TAB 1: TWITCH DROPS (WITH SELECTION & INVENTORY CROSS-REFERENCE) -->
     <div id="tab-drops" class="tab-content">
-      <!-- Target Game Selection Control -->
+      <!-- Live Miner Telemetry Banner (Pretending to watch stream under account - strictly 1 stream at a time) -->
+      <div class="live-miner-banner" id="live-miner-banner">
+        <div class="miner-details">
+          <div class="miner-title">
+            <span class="live-indicator-dot" id="miner-dot"></span>
+            <span id="miner-status-heading">Twitch Drops Miner</span>
+            <span class="live-stream-badge" id="miner-stream-badge">1 STREAM ACTIVE</span>
+          </div>
+          <p class="miner-sub" id="miner-status-sub">
+            Pretending to watch stream under your account. Strictly 1 stream at a time (zero bandwidth browser simulation).
+          </p>
+        </div>
+        <div class="miner-telemetry-stats" id="miner-telemetry-stats">
+          <span class="miner-stat-pill" id="miner-stream-channel">Channel: Searching...</span>
+          <span class="miner-stat-pill" id="miner-stream-progress">Session: 0/15 mins</span>
+          <span class="miner-stat-pill" id="miner-stream-viewers">0 Viewers</span>
+          <a href="#" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-primary" id="miner-stream-link" style="display: none;">Open Watched Stream</a>
+        </div>
+      </div>
+
+      <!-- Mining Mode & Target Drop Activation Control -->
       <div class="target-bar">
         <div class="target-bar-top">
           <div>
-            <span style="font-weight: 700; font-size: 0.95rem;">Mining Targets & Priority Games</span>
-            <p style="font-size: 0.8rem; color: var(--text-muted); margin-top: 2px;">
-              Select which games you want the streamless miner to target. If empty, the miner automatically farms all available drops.
+            <span style="font-weight: 700; font-size: 0.95rem;">Mining Mode & Drop Campaign Selection</span>
+            <p style="font-size: 0.8rem; color: var(--text-muted); margin-top: 2px;" id="mining-mode-desc">
+              Default Mode automatically mines all live campaigns (prioritizing activated games). Selective Mode strictly mines only games you activate.
             </p>
           </div>
-          <div style="display: flex; gap: 8px;">
-            <button class="btn btn-sm" onclick="clearPriorityGames()">Target All Games</button>
-            <button class="btn btn-sm btn-primary" onclick="savePrioritySelection()">Save Targets</button>
+          <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+            <div class="mode-switch-box">
+              <button class="mode-btn active" id="btn-mode-default" onclick="setMiningMode('default')">Default Mode (All Drops)</button>
+              <button class="mode-btn" id="btn-mode-selective" onclick="setMiningMode('selective')">Selective Mode (Activated Only)</button>
+            </div>
+            <button class="btn btn-sm btn-primary" onclick="activateAllLiveGames()">Activate All</button>
+            <button class="btn btn-sm" onclick="deactivateAllGames()">Deactivate All</button>
+            <button class="btn btn-sm" onclick="resetToDefaultMode()">Reset to Default</button>
           </div>
         </div>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px; font-size: 0.78rem; color: var(--text-muted); flex-wrap: wrap; gap: 6px;">
+          <span>Activated Games for Mining (<span id="activated-count">0</span>):</span>
+          <span id="mode-badge-label" style="font-weight: 600; color: #a855f7;">[MODE: DEFAULT - AUTO-MINE ALL]</span>
+        </div>
         <div class="target-chips" id="selected-targets-chips">
-          <span style="font-size: 0.8rem; color: #94a3b8;">No target filter active (mining all active campaigns)</span>
+          <span style="font-size: 0.8rem; color: #94a3b8;">No specific games activated (mining all available campaigns)</span>
         </div>
       </div>
 
       <!-- Filter Controls -->
       <div class="filter-group">
-        <button class="filter-btn active" onclick="setDropsFilter('all', event)">All Campaigns</button>
-        <button class="filter-btn" onclick="setDropsFilter('targets', event)">Targeted Games Only</button>
-        <button class="filter-btn" onclick="setDropsFilter('in_progress', event)">In Progress</button>
-        <button class="filter-btn" onclick="setDropsFilter('ready', event)">Ready to Claim</button>
+        <button class="filter-btn active" onclick="setDropsFilter('all', event)">All Live Campaigns (<span id="flt-all-count">0</span>)</button>
+        <button class="filter-btn" onclick="setDropsFilter('activated', event)">Activated for Mining (<span id="flt-act-count">0</span>)</button>
+        <button class="filter-btn" onclick="setDropsFilter('in_progress', event)">In Progress (<span id="flt-prog-count">0</span>)</button>
+        <button class="filter-btn" onclick="setDropsFilter('ready', event)">Ready to Claim (<span id="flt-ready-count">0</span>)</button>
       </div>
 
       <!-- Drops Campaigns Grid -->
@@ -210,8 +294,10 @@
             Weekly 100% off promotional giveaways tracked and claimed automatically.
           </p>
         </div>
-        <div style="display: flex; gap: 8px;">
-          <button class="btn btn-sm btn-primary" onclick="triggerGamesCheck('epic')">Claim Epic Freebies Now</button>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+          <a href="https://store.epicgames.com/free-games" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-primary">[Open Free Games Hub]</a>
+          <a href="https://www.epicgames.com/account/transactions" target="_blank" rel="noopener noreferrer" class="btn btn-sm">[Open Account Transactions]</a>
+          <button class="btn btn-sm" onclick="triggerGamesCheck('epic')">Claim Epic Freebies Now</button>
           <button class="btn btn-sm" onclick="promptAddClaimed('epic')">+ Record Claimed Title</button>
         </div>
       </div>
@@ -369,6 +455,7 @@
   <script>
     let currentData = null;
     let selectedPriorityGames = [];
+    let currentMiningMode = "default";
     let currentDropsFilter = "all";
 
     function showToast(message) {
@@ -413,7 +500,7 @@
       
       // 1. Stats bar
       document.getElementById("stat-twitch-user").innerHTML = twitch.username 
-        ? `<span style="color: #a855f7;">${twitch.username}</span>`
+        ? `<span style="color: #a855f7;">@${twitch.username}</span>`
         : `<span style="color: #ef4444;">Not Connected</span>`;
 
       const totalClaimedCount = (twitch.claimed_history_count || 0) + 
@@ -424,29 +511,130 @@
       document.getElementById("stat-active-campaigns").innerText = `${twitch.active_campaigns_count || 0} Active`;
       document.getElementById("stat-ready-count").innerText = `${twitch.ready_to_claim_count || 0} Items`;
 
-      // 2. Priority games setup
-      selectedPriorityGames = (twitch.priority_games || []).map(g => g.trim());
+      // 2. Mining Mode & Configuration
+      const miningCfg = twitch.mining_config || { mode: "default", activated_games: [] };
+      currentMiningMode = miningCfg.mode || "default";
+      selectedPriorityGames = (miningCfg.activated_games || []).map(g => g.trim());
+
+      const btnDefault = document.getElementById("btn-mode-default");
+      const btnSelective = document.getElementById("btn-mode-selective");
+      if (btnDefault && btnSelective) {
+        btnDefault.classList.toggle("active", currentMiningMode === "default");
+        btnSelective.classList.toggle("active", currentMiningMode === "selective");
+      }
+
+      const modeBadge = document.getElementById("mode-badge-label");
+      if (modeBadge) {
+        modeBadge.innerText = currentMiningMode === "selective" 
+          ? "[MODE: SELECTIVE - ONLY ACTIVATED GAMES]" 
+          : "[MODE: DEFAULT - AUTO-MINE ALL LIVE DROPS]";
+        modeBadge.style.color = currentMiningMode === "selective" ? "#38bdf8" : "#a855f7";
+      }
+
+      const modeDesc = document.getElementById("mining-mode-desc");
+      if (modeDesc) {
+        modeDesc.innerText = currentMiningMode === "selective"
+          ? "Selective Mode: strictly mines ONLY campaigns for your activated games below. Pauses if none are currently online."
+          : "Default Mode: automatically farms all available drops across Twitch (prioritizes activated games if selected below).";
+      }
+
+      const actCountElem = document.getElementById("activated-count");
+      if (actCountElem) actCountElem.innerText = selectedPriorityGames.length;
+
       renderTargetChips();
 
-      // 3. Render Twitch Drops Tab
+      // 3. Live Miner Telemetry Card (strictly 1 stream at a time under account)
+      renderMinerTelemetry(twitch);
+
+      // 4. Update Filter counts
+      updateFilterCounts(twitch);
+
+      // 5. Render Twitch Drops Tab
       renderDropsGrid(twitch);
 
-      // 4. Render Epic Games Store Tab
+      // 6. Render Epic Games Store Tab
       renderEpicGrid(data.epic || {});
 
-      // 5. Render Other Stores Tab
+      // 7. Render Other Stores Tab
       renderStoresGrid(data.amazon || {}, data.gog || {});
+    }
+
+    function renderMinerTelemetry(twitch) {
+      const minerStat = twitch.miner_status || {};
+      const minerDot = document.getElementById("miner-dot");
+      const minerHeading = document.getElementById("miner-status-heading");
+      const minerBadge = document.getElementById("miner-stream-badge");
+      const minerSub = document.getElementById("miner-status-sub");
+      const channelPill = document.getElementById("miner-stream-channel");
+      const progressPill = document.getElementById("miner-stream-progress");
+      const viewersPill = document.getElementById("miner-stream-viewers");
+      const streamLink = document.getElementById("miner-stream-link");
+
+      if (!minerDot) return;
+
+      if (minerStat.active) {
+        minerDot.className = "live-indicator-dot";
+        const cname = minerStat.channel_name || minerStat.channel_login || "Live Streamer";
+        const gname = minerStat.game || "Live Drop";
+        minerHeading.innerText = `Pretending to Watch: ${cname} (${gname})`;
+        minerBadge.innerText = "1 STREAM ACTIVE";
+        minerBadge.style.display = "inline-flex";
+
+        const ulogin = minerStat.user_login || twitch.username || "iandrexi";
+        minerSub.innerText = `Pretending to watch under @${ulogin} (User ID: ${minerStat.user_id || "130742243"}) - strictly 1 stream at a time (zero bandwidth browser simulation).`;
+
+        channelPill.innerText = `Channel: ${cname}`;
+        progressPill.innerText = `Watch Time: ${minerStat.minutes_watched || 1}/15 mins`;
+        viewersPill.innerText = `${(minerStat.viewers || 0).toLocaleString()} Viewers`;
+        
+        const targetUrl = minerStat.stream_url || `https://www.twitch.tv/${minerStat.channel_login || ''}`;
+        streamLink.href = targetUrl;
+        streamLink.innerText = `Open Stream (${minerStat.channel_login || 'Twitch'})`;
+        streamLink.style.display = "inline-flex";
+      } else {
+        minerDot.className = "live-indicator-dot idle";
+        minerHeading.innerText = "Twitch Drops Miner (Idle / Between Cycles)";
+        minerBadge.innerText = "STANDBY";
+        minerBadge.style.display = "inline-flex";
+
+        const msg = minerStat.message || "Miner is standing by. Prepares to watch 1 stream at a time when eligible drops are available.";
+        minerSub.innerText = `${msg} Strictly 1 stream at a time.`;
+
+        channelPill.innerText = "Channel: None";
+        progressPill.innerText = "Session: Idle";
+        viewersPill.innerText = "0 Viewers";
+        streamLink.style.display = "none";
+      }
+    }
+
+    function updateFilterCounts(twitch) {
+      const campaigns = twitch.campaigns || [];
+      const totalCount = campaigns.length;
+      const actCount = campaigns.filter(c => isGameTargeted(c.game) || c.is_activated).length;
+      const progCount = campaigns.filter(c => c.in_progress_count > 0).length;
+      const readyCount = campaigns.filter(c => c.ready_count > 0).length;
+
+      const elAll = document.getElementById("flt-all-count");
+      const elAct = document.getElementById("flt-act-count");
+      const elProg = document.getElementById("flt-prog-count");
+      const elReady = document.getElementById("flt-ready-count");
+
+      if (elAll) elAll.innerText = totalCount;
+      if (elAct) elAct.innerText = actCount;
+      if (elProg) elProg.innerText = progCount;
+      if (elReady) elReady.innerText = readyCount;
     }
 
     function renderTargetChips() {
       const container = document.getElementById("selected-targets-chips");
+      if (!container) return;
       if (selectedPriorityGames.length === 0) {
-        container.innerHTML = `<span style="font-size: 0.8rem; color: #94a3b8;">No target filter active (mining all active campaigns)</span>`;
+        container.innerHTML = `<span style="font-size: 0.8rem; color: #94a3b8;">${currentMiningMode === 'selective' ? 'No games activated. Miner will wait for your selection.' : 'No filter active (mining all active campaigns).'}</span>`;
       } else {
         container.innerHTML = selectedPriorityGames.map(game => `
           <div class="chip active">
-            <span>${game}</span>
-            <span class="chip-remove" onclick="removeTargetGame('${game.replace(/'/g, "\\'")}')">&times;</span>
+            <span>${escapeHtml(game)}</span>
+            <span class="chip-remove" title="Deactivate" onclick="toggleGameActivation('${escapeHtml(game)}', false)">&times;</span>
           </div>
         `).join("");
       }
@@ -455,46 +643,94 @@
     function isGameTargeted(gameName) {
       if (!gameName) return false;
       const lower = gameName.toLowerCase().trim();
-      return selectedPriorityGames.some(pg => pg.toLowerCase().trim() === lower || lower.includes(pg.toLowerCase().trim()));
+      return selectedPriorityGames.some(pg => pg.toLowerCase().trim() === lower || lower.includes(pg.toLowerCase().trim()) || pg.toLowerCase().trim().includes(lower));
     }
 
-    function toggleTargetGame(gameName) {
-      if (!gameName) return;
-      const clean = gameName.trim();
-      const existingIdx = selectedPriorityGames.findIndex(g => g.toLowerCase() === clean.toLowerCase());
-      if (existingIdx !== -1) {
-        selectedPriorityGames.splice(existingIdx, 1);
-      } else {
-        selectedPriorityGames.push(clean);
-      }
-      renderTargetChips();
-      savePrioritySelection();
-    }
-
-    function removeTargetGame(gameName) {
-      selectedPriorityGames = selectedPriorityGames.filter(g => g.toLowerCase() !== gameName.toLowerCase());
-      renderTargetChips();
-      savePrioritySelection();
-    }
-
-    function clearPriorityGames() {
-      selectedPriorityGames = [];
-      renderTargetChips();
-      savePrioritySelection();
-    }
-
-    async function savePrioritySelection() {
+    async function setMiningMode(mode) {
+      currentMiningMode = mode;
+      showToast(`Setting mining mode to ${mode.toUpperCase()}...`);
       try {
-        const res = await fetch("/api/twitch/priority", {
+        const res = await fetch("/api/twitch/mining-config", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: jsonStringify({ games: selectedPriorityGames })
+          body: jsonStringify({ mode: mode, activated_games: selectedPriorityGames })
         });
         const data = await res.json();
-        showToast(data.message || "Twitch priority games updated!");
+        showToast(data.message || `Switched to ${mode} mode.`);
         fetchData();
       } catch (err) {
-        showToast("Error updating priorities: " + err.message);
+        showToast("Error updating mining mode: " + err.message);
+      }
+    }
+
+    async function toggleGameActivation(gameName, activated) {
+      if (!gameName) return;
+      showToast(`${activated ? "Activating" : "Deactivating"} ${gameName}...`);
+      try {
+        const res = await fetch("/api/twitch/toggle-activation", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: jsonStringify({ game: gameName, activated: activated })
+        });
+        const data = await res.json();
+        showToast(data.message || `${gameName} updated.`);
+        fetchData();
+      } catch (err) {
+        showToast("Error updating activation: " + err.message);
+      }
+    }
+
+    async function activateAllLiveGames() {
+      if (!currentData || !currentData.twitch || !currentData.twitch.campaigns) return;
+      const allGames = Array.from(new Set(currentData.twitch.campaigns.map(c => (c.game || '').trim()).filter(Boolean)));
+      if (allGames.length === 0) {
+        showToast("No live campaigns found to activate.");
+        return;
+      }
+      showToast(`Activating all ${allGames.length} live games for mining...`);
+      try {
+        const res = await fetch("/api/twitch/mining-config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: jsonStringify({ mode: currentMiningMode, activated_games: allGames })
+        });
+        const data = await res.json();
+        showToast(data.message || `Activated all ${allGames.length} games.`);
+        fetchData();
+      } catch (err) {
+        showToast("Error activating games: " + err.message);
+      }
+    }
+
+    async function deactivateAllGames() {
+      showToast("Deactivating all games...");
+      try {
+        const res = await fetch("/api/twitch/mining-config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: jsonStringify({ mode: currentMiningMode, activated_games: [] })
+        });
+        const data = await res.json();
+        showToast(data.message || "Deactivated all games.");
+        fetchData();
+      } catch (err) {
+        showToast("Error deactivating games: " + err.message);
+      }
+    }
+
+    async function resetToDefaultMode() {
+      showToast("Resetting to Default mode (auto-mine all live drops)...");
+      try {
+        const res = await fetch("/api/twitch/mining-config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: jsonStringify({ mode: "default", activated_games: [] })
+        });
+        const data = await res.json();
+        showToast(data.message || "Reset to Default mode.");
+        fetchData();
+      } catch (err) {
+        showToast("Error resetting mode: " + err.message);
       }
     }
 
@@ -503,14 +739,14 @@
       const campaigns = twitch.campaigns || [];
 
       if (campaigns.length === 0) {
-        dropsGrid.innerHTML = `<div class="empty-state">No drop campaigns found right now. Verify your Twitch auth-token in Accounts tab.</div>`;
+        dropsGrid.innerHTML = `<div class="empty-state">No drop campaigns found right now. Verify your Twitch auth-token in Accounts tab or check DropHunter.</div>`;
         return;
       }
 
       // Filter campaigns based on current active filter
       const filtered = campaigns.filter(camp => {
-        const isTargeted = isGameTargeted(camp.game);
-        if (currentDropsFilter === "targets") return isTargeted;
+        const isTargeted = isGameTargeted(camp.game) || Boolean(camp.is_activated);
+        if (currentDropsFilter === "activated") return isTargeted;
         if (currentDropsFilter === "in_progress") return camp.in_progress_count > 0;
         if (currentDropsFilter === "ready") return camp.ready_count > 0;
         return true;
@@ -522,7 +758,7 @@
       }
 
       dropsGrid.innerHTML = filtered.map(camp => {
-        const isTarget = isGameTargeted(camp.game);
+        const isTarget = isGameTargeted(camp.game) || Boolean(camp.is_activated);
         const campStatusBadge = camp.status === "COMPLETED" 
           ? `<span class="badge badge-claimed">ALL CLAIMED</span>`
           : camp.ready_count > 0
@@ -530,6 +766,20 @@
           : camp.in_progress_count > 0
           ? `<span class="badge badge-progress">IN PROGRESS</span>`
           : `<span class="badge badge-available">ACTIVE</span>`;
+
+        const actBadge = isTarget
+          ? `<span class="badge badge-target">[ACTIVATED FOR MINING]</span>`
+          : (currentMiningMode === 'selective'
+              ? `<span class="badge badge-available">[INACTIVE]</span>`
+              : `<span class="badge badge-available">[DEFAULT AUTO-MINE]</span>`);
+
+        const timeBadge = camp.time_left 
+          ? `<span class="badge badge-upcoming">${escapeHtml(camp.time_left)}</span>`
+          : '';
+
+        const coverHtml = camp.cover_url
+          ? `<img src="${camp.cover_url}" alt="${escapeHtml(camp.game)}" class="camp-cover" referrerpolicy="no-referrer" onerror="this.style.display='none'">`
+          : '';
 
         const dropsHtml = (camp.drops || []).map(drop => {
           let badge = `<span class="badge badge-available">[AVAILABLE]</span>`;
@@ -550,7 +800,7 @@
           return `
             <div class="drop-entry">
               <div class="drop-header">
-                <span class="drop-name">${drop.name}</span>
+                <span class="drop-name">${escapeHtml(drop.name)}</span>
                 <div style="display: flex; gap: 6px; align-items: center;">
                   ${badge}
                   ${actionBtn}
@@ -571,23 +821,35 @@
           `;
         }).join("");
 
+        const streamUrl = camp.stream_url || `https://www.twitch.tv/directory/category/${encodeURIComponent(camp.game)}?filter=drops`;
+        const campaignUrl = camp.campaigns_url || "https://www.twitch.tv/drops/campaigns";
+
         return `
           <div class="card">
             <div>
               <div class="card-top">
-                <span class="store-tag store-twitch">${camp.game || "Twitch Game"}</span>
-                <div style="display: flex; gap: 6px; align-items: center;">
-                  ${isTarget ? `<span class="badge badge-target">TARGETED</span>` : ''}
+                <span class="store-tag store-twitch">${escapeHtml(camp.game || "Twitch Game")}</span>
+                <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: flex-end;">
+                  ${timeBadge}
+                  ${actBadge}
                   ${campStatusBadge}
                 </div>
               </div>
-              <div class="item-title">${camp.name}</div>
-              <div class="item-sub" style="display: flex; justify-content: space-between; align-items: center;">
-                <span>Drops: ${camp.claimed_count}/${camp.total_drops} Claimed</span>
-                <label style="cursor: pointer; font-size: 0.8rem; display: flex; align-items: center; gap: 4px; color: ${isTarget ? '#c084fc' : '#94a3b8'};">
-                  <input type="checkbox" ${isTarget ? 'checked' : ''} onchange="toggleTargetGame('${(camp.game || '').replace(/'/g, "\\'")}')">
-                  Auto-Mine Target
-                </label>
+              <div class="camp-card-body">
+                ${coverHtml}
+                <div class="camp-info">
+                  <div class="item-title">${escapeHtml(camp.name)}</div>
+                  <div class="item-sub" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; flex-wrap: wrap; gap: 4px;">
+                    <span>Drops: ${camp.claimed_count || 0}/${camp.total_drops || (camp.drops ? camp.drops.length : 0)} Claimed</span>
+                  </div>
+                  <div class="camp-actions">
+                    <button class="btn btn-sm ${isTarget ? 'btn-danger' : 'btn-primary'}" onclick="toggleGameActivation('${escapeHtml(camp.game)}', ${!isTarget})">
+                      ${isTarget ? 'Deactivate' : 'Activate for Mining'}
+                    </button>
+                    <a href="${streamUrl}" target="_blank" rel="noopener noreferrer" class="btn-link">[Watch Streams with Drops]</a>
+                    <a href="${campaignUrl}" target="_blank" rel="noopener noreferrer" class="btn-link" style="color: var(--text-muted);">[Campaign Info]</a>
+                  </div>
+                </div>
               </div>
               <div class="drops-list">
                 ${dropsHtml}
@@ -645,6 +907,10 @@
           ? `<button class="btn btn-sm" onclick="toggleClaimItem('epic', '${escapeHtml(game.title)}', false)">Unmark Claimed</button>`
           : `<button class="btn btn-sm btn-success" onclick="toggleClaimItem('epic', '${escapeHtml(game.title)}', true)">Mark as Claimed</button>`;
 
+        const storeLink = game.store_url 
+          ? `<a href="${game.store_url}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-primary">[View on Epic Store]</a>`
+          : `<a href="https://store.epicgames.com/free-games" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-primary">[View on Epic Store]</a>`;
+
         return `
           <div class="card">
             <div>
@@ -652,10 +918,11 @@
                 <span class="store-tag store-epic">Epic Games Store</span>
                 ${badge}
               </div>
-              <div class="item-title">${game.title}</div>
+              <div class="item-title">${escapeHtml(game.title)}</div>
               <div class="item-sub">Ends: ${new Date(game.end).toLocaleDateString()}</div>
             </div>
-            <div style="margin-top: 14px; display: flex; gap: 8px; justify-content: flex-end;">
+            <div style="margin-top: 14px; display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap;">
+              ${storeLink}
               ${actionBtn}
             </div>
           </div>
@@ -669,7 +936,7 @@
               <span class="store-tag store-epic">Upcoming Freebie</span>
               <span class="badge badge-upcoming">Next Week</span>
             </div>
-            <div class="item-title">${game.title}</div>
+            <div class="item-title">${escapeHtml(game.title)}</div>
             <div class="item-sub">Available starting: ${new Date(game.start).toLocaleDateString()}</div>
           </div>
         </div>
@@ -686,7 +953,7 @@
             <div style="display: flex; flex-wrap: wrap; gap: 8px;">
               ${claimedTitles.map(t => `
                 <div class="chip active">
-                  <span>${t}</span>
+                  <span>${escapeHtml(t)}</span>
                   <span class="chip-remove" title="Unmark" onclick="toggleClaimItem('epic', '${escapeHtml(t)}', false)">&times;</span>
                 </div>
               `).join("")}
@@ -709,7 +976,7 @@
           <div style="display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto;">
             ${amazonItems.map(item => `
               <div style="display: flex; justify-content: space-between; align-items: center; background: #0c1322; border: 1px solid #1e293b; padding: 6px 10px; border-radius: 6px;">
-                <span style="font-size: 0.85rem; font-weight: 500;">${item}</span>
+                <span style="font-size: 0.85rem; font-weight: 500;">${escapeHtml(item)}</span>
                 <div style="display: flex; gap: 6px; align-items: center;">
                   <span class="badge badge-claimed">[CLAIMED]</span>
                   <span class="chip-remove" title="Unmark" onclick="toggleClaimItem('amazon', '${escapeHtml(item)}', false)">&times;</span>
@@ -732,7 +999,7 @@
           <div style="display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto;">
             ${gogItems.map(item => `
               <div style="display: flex; justify-content: space-between; align-items: center; background: #0c1322; border: 1px solid #1e293b; padding: 6px 10px; border-radius: 6px;">
-                <span style="font-size: 0.85rem; font-weight: 500;">${item}</span>
+                <span style="font-size: 0.85rem; font-weight: 500;">${escapeHtml(item)}</span>
                 <div style="display: flex; gap: 6px; align-items: center;">
                   <span class="badge badge-claimed">[CLAIMED]</span>
                   <span class="chip-remove" title="Unmark" onclick="toggleClaimItem('gog', '${escapeHtml(item)}', false)">&times;</span>
@@ -757,9 +1024,11 @@
               </span>
             </div>
             <div class="item-title">Prime Monthly Games & Loot</div>
-            <div class="item-sub">Account: ${amazon.email || 'Not configured'}</div>
-            <div style="display: flex; gap: 8px; margin-top: 12px;">
-              <button class="btn btn-sm btn-primary" onclick="triggerGamesCheck('prime')">Claim Prime Loot Now</button>
+            <div class="item-sub">Account: ${escapeHtml(amazon.email || 'Not configured')}</div>
+            <div style="display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap;">
+              <a href="https://gaming.amazon.com/home" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-primary">[Open Prime Gaming]</a>
+              <a href="https://gaming.amazon.com/loot" target="_blank" rel="noopener noreferrer" class="btn btn-sm">[Open Claimed Loot]</a>
+              <button class="btn btn-sm" onclick="triggerGamesCheck('prime')">Check Prime Loot</button>
               <button class="btn btn-sm" onclick="promptAddClaimed('amazon')">+ Mark Claimed</button>
             </div>
             ${amazonItemsHtml}
@@ -774,9 +1043,11 @@
               </span>
             </div>
             <div class="item-title">DRM-Free Giveaways</div>
-            <div class="item-sub">Account: ${gog.email || 'Not configured'}</div>
-            <div style="display: flex; gap: 8px; margin-top: 12px;">
-              <button class="btn btn-sm btn-primary" onclick="triggerGamesCheck('gog')">Claim GOG Games Now</button>
+            <div class="item-sub">Account: ${escapeHtml(gog.email || 'Not configured')}</div>
+            <div style="display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap;">
+              <a href="https://www.gog.com" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-primary">[Open GOG.com]</a>
+              <a href="https://www.gog.com/account" target="_blank" rel="noopener noreferrer" class="btn btn-sm">[Open GOG Library]</a>
+              <button class="btn btn-sm" onclick="triggerGamesCheck('gog')">Check GOG Games</button>
               <button class="btn btn-sm" onclick="promptAddClaimed('gog')">+ Mark Claimed</button>
             </div>
             ${gogItemsHtml}
