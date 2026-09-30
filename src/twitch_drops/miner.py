@@ -15,7 +15,7 @@ import urllib.request
 import urllib.error
 from typing import Any, Dict, List, Optional
 
-from .twitch_api import TwitchClient
+from .twitch_api import TwitchClient, is_campaign_expired
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -135,9 +135,11 @@ class DropsMiner:
             logger.info("No active drop campaigns found on Twitch right now.")
             return None
 
-        # Filter out campaigns where all drops are already claimed
+        # Filter out campaigns where all drops are already claimed or campaign is expired
         eligible = []
         for camp in campaigns:
+            if is_campaign_expired(camp):
+                continue
             drops = camp.get("timeBasedDrops", [])
             has_unclaimed = any(
                 not d.get("self", {}).get("isClaimed", False)
@@ -146,6 +148,7 @@ class DropsMiner:
             # If no drops array but has time_left or valid campaign
             if has_unclaimed or (not drops and camp.get("name")):
                 eligible.append(camp)
+
 
         if not eligible:
             logger.info("All drops in currently active campaigns have already been claimed! You are all caught up.")
@@ -215,16 +218,26 @@ class DropsMiner:
 
         stream_url = f"https://www.twitch.tv/{channel['channel_login']}"
         logger.info(
-            "[MINER] Watching 1 stream: %s (%s) with %d viewers | URL: %s",
-            channel["channel_name"], channel["channel_login"], channel["viewers"], stream_url
+            "[MINER] Watching 1 stream: %s (@%s) with %d viewers | Drops Verified: %s | URL: %s",
+            channel["channel_name"], channel["channel_login"], channel["viewers"],
+            channel.get("verified_drops", False), stream_url
         )
+
+        # Pre-fetch authentic playback stream info (Usher m3u8 playlist and sub-playlist url)
+        playback_info = self.client.get_playback_stream_info(channel["channel_login"])
+        broadcast_id = playback_info.get("broadcast_id") or channel.get("stream_id", "")
+        sub_playlist_url = playback_info.get("sub_playlist_url")
 
         # 4. Streamless watch loop under user account (sending heartbeat every ~60s)
         # Strictly watches ONLY this single stream for a block of up to 15 minutes
         for minute in range(15):
             success = self.client.send_minute_watched_heartbeat(
                 channel_id=channel["channel_id"],
-                stream_id=channel["stream_id"],
+                stream_id=broadcast_id,
+                channel_login=channel["channel_login"],
+                game_name=game_name,
+                game_id=channel.get("game_id"),
+                sub_playlist_url=sub_playlist_url,
             )
 
             current_status = {
@@ -255,6 +268,7 @@ class DropsMiner:
 
             # Randomize delay between 58 and 62 seconds to mimic authentic browser behavior
             time.sleep(random.uniform(58.0, 62.0))
+
 
         # Reset active status when switching streams
         save_miner_status({"active": False, "message": "Switching or checking for next campaign."})

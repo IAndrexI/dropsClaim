@@ -20,7 +20,10 @@ ALLOWED_DOMAINS = {
     "passport.twitch.tv",
     "spade.twitch.tv",
     "pubsub-edge.twitch.tv",
+    "usher.ttvnw.net",
+    "ttvnw.net",
     "drophunter.app",
+
     # Epic Games Official Services
     "epicgames.com",
     "store.epicgames.com",
