@@ -7,12 +7,17 @@ All network requests in this module are strictly restricted to official Twitch e
 - https://gql.twitch.tv/gql
 - https://id.twitch.tv
 - https://spade.twitch.tv
+- https://usher.ttvnw.net
 No third-party analytics, tracking, or proxy endpoints are contacted.
+
 """
 
 import base64
+import concurrent.futures
+from datetime import datetime, timezone
 import json
 import logging
+import random
 import re
 import time
 import urllib.error
@@ -21,6 +26,7 @@ import urllib.request
 from typing import Any, Dict, List, Optional, Set
 
 logger = logging.getLogger("twitch_api")
+
 
 TWITCH_CLIENT_ID = "kimne78kx3ncx6brgo4mv6wki5h1ko"  # Official Twitch Web Client ID
 GQL_URL = "https://gql.twitch.tv/gql"
@@ -43,6 +49,24 @@ def clean_text(text: Any) -> str:
     )
     cleaned = emoji_pattern.sub("", str(text))
     return " ".join(cleaned.split()).strip()
+ 
+ 
+def is_campaign_expired(camp: Optional[Dict[str, Any]]) -> bool:
+    """Check if a campaign has expired based on status or endAt timestamp."""
+    if not camp:
+        return True
+    if camp.get("status") == "EXPIRED":
+        return True
+    end_at_str = camp.get("endAt")
+    if end_at_str:
+        try:
+            clean_end = str(end_at_str).replace("Z", "+00:00")
+            if datetime.fromisoformat(clean_end) < datetime.now(timezone.utc):
+                return True
+        except Exception:
+            pass
+    return False
+
 
 
 def fetch_drophunter_live_campaigns() -> List[Dict[str, Any]]:
@@ -273,6 +297,8 @@ class TwitchClient:
             in_prog = [in_prog]
 
         for camp in in_prog:
+            if is_campaign_expired(camp):
+                continue
             cid = camp.get("id")
             gname = (camp.get("game") or {}).get("displayName") or (camp.get("game") or {}).get("name") or ""
             # Match drophunter campaign by game name or ID
@@ -426,7 +452,9 @@ class TwitchClient:
                 })
 
             camp_status = "ACTIVE"
-            if all(d["status"] == "CLAIMED" for d in formatted_drops) and formatted_drops:
+            if is_campaign_expired(camp):
+                camp_status = "EXPIRED"
+            elif all(d["status"] == "CLAIMED" for d in formatted_drops) and formatted_drops:
                 camp_status = "COMPLETED"
             elif any(d["status"] == "READY_TO_CLAIM" for d in formatted_drops):
                 camp_status = "READY"
@@ -449,20 +477,23 @@ class TwitchClient:
                 "in_progress_count": sum(1 for d in formatted_drops if d["status"] == "IN_PROGRESS"),
             })
 
-        # Sort campaigns: Targeted / Priority games first, then ready to claim, then in-progress, then others
+        # Sort campaigns: Targeted / Priority games first, then ready to claim, then in-progress, then others (expired last)
         priority_clean = [p.lower().strip() for p in (priority_games or []) if p.strip()]
 
         def campaign_sort_key(c):
             g_low = (c["game"] or "").lower()
             c_low = (c["name"] or "").lower()
             is_prio = any(p in g_low or p in c_low for p in priority_clean)
+            is_expired = c["status"] == "EXPIRED"
             return (
+                1 if is_expired else 0,
                 0 if is_prio else 1,
                 0 if c["ready_count"] > 0 else 1,
                 0 if c["in_progress_count"] > 0 else 1,
                 0 if c["status"] != "COMPLETED" else 1,
                 c["game"]
             )
+
 
         formatted_campaigns.sort(key=campaign_sort_key)
 
@@ -475,11 +506,16 @@ class TwitchClient:
         }
 
     def find_eligible_channel(self, game_name: str) -> Optional[Dict[str, Any]]:
-        """Find a live channel streaming the specified game with drops enabled."""
+        """
+        Find a live channel streaming the specified game with verified drops enabled.
+        Selects a random channel from all verified drop channels.
+        """
         query = """
         query DirectoryPage_Game($name: String!) {
             game(name: $name) {
-                streams(first: 20, options: {tags: ["DropsEnabled", "Drops"]}) {
+                id
+                name
+                streams(first: 30, options: {tags: ["DropsEnabled", "Drops"]}) {
                     edges {
                         node {
                             id
@@ -498,35 +534,224 @@ class TwitchClient:
         """
         try:
             res = self.post_gql(query, variables={"name": game_name}, operation_name="DirectoryPage_Game")
-            edges = res.get("data", {}).get("game", {}).get("streams", {}).get("edges", [])
-            if edges:
-                best_stream = edges[0]["node"]
-                return {
-                    "channel_id": str(best_stream["broadcaster"]["id"]),
-                    "channel_login": best_stream["broadcaster"]["login"],
-                    "channel_name": best_stream["broadcaster"]["displayName"],
-                    "stream_id": str(best_stream["id"]),
-                    "viewers": best_stream["viewersCount"],
+            game_obj = res.get("data", {}).get("game") or {}
+            game_id = str(game_obj.get("id") or "")
+            edges = game_obj.get("streams", {}).get("edges", [])
+
+            # Fallback if no streams found with Drops tags
+            if not edges:
+                query_fallback = """
+                query DirectoryPage_GameFallback($name: String!) {
+                    game(name: $name) {
+                        id
+                        name
+                        streams(first: 30) {
+                            edges {
+                                node {
+                                    id
+                                    title
+                                    viewersCount
+                                    broadcaster {
+                                        id
+                                        login
+                                        displayName
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
+                """
+                res_fb = self.post_gql(query_fallback, variables={"name": game_name}, operation_name="DirectoryPage_GameFallback")
+                game_obj = res_fb.get("data", {}).get("game") or {}
+                game_id = str(game_obj.get("id") or "")
+                edges = game_obj.get("streams", {}).get("edges", [])
+
+            if not edges:
+                logger.info("No live streams found for game '%s'", game_name)
+                return None
+
+            candidate_nodes = [e["node"] for e in edges if e.get("node")]
+
+            # Verify which channels actually have active drops enabled via DropsHighlightService_AvailableDrops
+            def verify_channel(node: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+                try:
+                    broadcaster = node.get("broadcaster") or {}
+                    b_id = str(broadcaster.get("id") or "")
+                    if not b_id:
+                        return None
+                    drops_res = self.post_persisted_gql(
+                        operation_name="DropsHighlightService_AvailableDrops",
+                        sha256_hash="9a62a09bce5b53e26e64a671e530bc599cb6aab1e5ba3cbd5d85966d3940716f",
+                        variables={"channelID": b_id}
+                    )
+                    camps = (drops_res.get("data") or {}).get("channel", {}).get("viewerDropCampaigns") or []
+                    has_active = any(bool(c.get("timeBasedDrops")) for c in camps)
+                    if has_active:
+                        return {
+                            "channel_id": b_id,
+                            "channel_login": broadcaster.get("login"),
+                            "channel_name": broadcaster.get("displayName"),
+                            "stream_id": str(node.get("id") or ""),
+                            "viewers": node.get("viewersCount", 0),
+                            "game_name": game_name,
+                            "game_id": game_id,
+                            "verified_drops": True,
+                        }
+                except Exception as err:
+                    logger.debug("Failed verifying channel drops for node: %s", err)
+                return None
+
+            verified_channels: List[Dict[str, Any]] = []
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                results = executor.map(verify_channel, candidate_nodes[:25])
+                for r in results:
+                    if r:
+                        verified_channels.append(r)
+
+            if verified_channels:
+                chosen = random.choice(verified_channels)
+                logger.info(
+                    "Found %d verified drop channel(s) for '%s'. Randomly selected: %s (@%s) with %d viewers",
+                    len(verified_channels), game_name, chosen["channel_name"], chosen["channel_login"], chosen["viewers"]
+                )
+                return chosen
+
+            logger.warning("None of the checked channels for '%s' returned active drops. Selecting random candidate.", game_name)
+            fallback_node = random.choice(candidate_nodes)
+            b = fallback_node.get("broadcaster") or {}
+            return {
+                "channel_id": str(b.get("id") or ""),
+                "channel_login": b.get("login"),
+                "channel_name": b.get("displayName"),
+                "stream_id": str(fallback_node.get("id") or ""),
+                "viewers": fallback_node.get("viewersCount", 0),
+                "game_name": game_name,
+                "game_id": game_id,
+                "verified_drops": False,
+            }
+
         except Exception as e:
             logger.warning("Error finding channel for %s: %s", game_name, e)
-        return None
+            return None
 
-    def send_minute_watched_heartbeat(self, channel_id: str, stream_id: str) -> bool:
+    def get_playback_stream_info(self, channel_login: str) -> Dict[str, Any]:
+        """
+        Fetch PlaybackAccessToken and Usher m3u8 playlist to obtain authentic broadcast_id and chunk playlist URL.
+        """
+        info: Dict[str, Any] = {"broadcast_id": "", "sub_playlist_url": ""}
+        try:
+            token_res = self.post_persisted_gql(
+                operation_name="PlaybackAccessToken",
+                sha256_hash="ed230aa1e33e07eebb8928504583da78a5173989fadfb1ac94be06a04f3cdbe9",
+                variables={
+                    "isLive": True,
+                    "isVod": False,
+                    "login": channel_login,
+                    "platform": "web",
+                    "playerType": "site",
+                    "vodID": "",
+                }
+            )
+            spat = (token_res.get("data") or {}).get("streamPlaybackAccessToken")
+            if not spat:
+                return info
+            sig = spat.get("signature")
+            tok = spat.get("value")
+            if not sig or not tok:
+                return info
+
+            usher_url = (
+                f"https://usher.ttvnw.net/api/channel/hls/{channel_login}.m3u8?"
+                f"sig={sig}&token={urllib.parse.quote(tok)}&allow_source=true&p={int(time.time())}"
+            )
+            req = urllib.request.Request(
+                usher_url,
+                headers={
+                    "User-Agent": self.user_agent,
+                    "Client-Id": TWITCH_CLIENT_ID,
+                }
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                playlist = resp.read().decode("utf-8", errors="ignore")
+
+            for line in playlist.splitlines():
+                if 'BROADCAST-ID="' in line:
+                    info["broadcast_id"] = line.split('BROADCAST-ID="')[1].split('"')[0]
+                if line.startswith("https://") and not info["sub_playlist_url"]:
+                    info["sub_playlist_url"] = line
+
+        except Exception as e:
+            logger.debug("Playback stream info error for %s: %s", channel_login, e)
+        return info
+
+    def touch_stream_chunk(self, sub_playlist_url: str) -> bool:
+        """
+        Perform a lightweight HEAD request against the latest stream video segment.
+        Verifies client playback presence without downloading video data.
+        """
+        if not sub_playlist_url:
+            return False
+        try:
+            req = urllib.request.Request(
+                sub_playlist_url,
+                headers={"User-Agent": self.user_agent, "Connection": "close"}
+            )
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                data = resp.read().decode("utf-8", errors="ignore")
+            chunks = [c for c in data.splitlines() if c.startswith("https://")]
+            if chunks:
+                latest_chunk = chunks[-1]
+                h_req = urllib.request.Request(
+                    latest_chunk,
+                    headers={"User-Agent": self.user_agent, "Connection": "close"},
+                    method="HEAD"
+                )
+                with urllib.request.urlopen(h_req, timeout=6) as h_resp:
+                    return h_resp.status in (200, 204, 206)
+        except Exception as e:
+            logger.debug("Stream chunk touch error: %s", e)
+        return False
+
+    def send_minute_watched_heartbeat(
+        self,
+        channel_id: str,
+        stream_id: str,
+        channel_login: Optional[str] = None,
+        game_name: Optional[str] = None,
+        game_id: Optional[str] = None,
+        sub_playlist_url: Optional[str] = None,
+    ) -> bool:
         """
         Send a stream-viewing progress heartbeat to Twitch's tracking endpoint (https://spade.twitch.tv/track).
         Simulates watching the stream under the user's account without video bandwidth.
         """
+        if sub_playlist_url:
+            self.touch_stream_chunk(sub_playlist_url)
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        properties: Dict[str, Any] = {
+            "broadcast_id": str(stream_id),
+            "channel_id": str(channel_id),
+            "channel": str(channel_login) if channel_login else "",
+            "client_time": now_iso,
+            "game": str(game_name) if game_name else "",
+            "game_id": str(game_id) if game_id else "",
+            "hidden": False,
+            "is_live": True,
+            "live": True,
+            "logged_in": True,
+            "minutes_logged": 1,
+            "muted": False,
+            "player": "site",
+            "user_id": str(self.user_id) if self.user_id else "",
+        }
+
         payload = [
             {
                 "event": "minute-watched",
-                "properties": {
-                    "channel_id": str(channel_id),
-                    "broadcast_id": str(stream_id),
-                    "player": "site",
-                    "user_id": str(self.user_id) if self.user_id else "",
-                    "live": True,
-                }
+                "properties": properties
             }
         ]
         raw_json = json.dumps(payload, separators=(',', ':'))
@@ -548,6 +773,7 @@ class TwitchClient:
             except Exception as err:
                 logger.debug("Heartbeat error on %s: %s", track_url, err)
         return False
+
 
     def claim_drop(self, drop_instance_id: str) -> bool:
         """
