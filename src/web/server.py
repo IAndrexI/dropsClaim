@@ -23,6 +23,7 @@ sys.path.insert(0, APP_DIR)
 from src.free_games.preview_promotions import fetch_epic_freebies
 from src.twitch_drops.twitch_api import TwitchClient
 from src.twitch_drops.miner import DropsMiner
+from src.twitch_drops.process_guard import get_running_bot_processes, kill_pid, PID_FILE, is_pid_alive
 
 # In-memory session store: token -> expiration timestamp
 ACTIVE_SESSIONS = {}
@@ -231,6 +232,73 @@ def get_miner_status():
         except Exception:
             pass
     return {"active": False}
+ 
+ 
+def get_git_status():
+    status = {
+        "is_git": False,
+        "commit_hash": "",
+        "commit_short": "",
+        "commit_date": "",
+        "commit_message": "",
+        "branch": "main",
+        "remote_url": "https://github.com/IAndrexI/dropsClaim",
+        "updates_available": False,
+        "remote_commit": "",
+        "error": None,
+    }
+    if not os.path.exists(os.path.join(APP_DIR, ".git")):
+        return status
+    status["is_git"] = True
+    try:
+        status["commit_short"] = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"], cwd=APP_DIR, text=True, stderr=subprocess.DEVNULL
+        ).strip()
+        status["commit_hash"] = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=APP_DIR, text=True, stderr=subprocess.DEVNULL
+        ).strip()
+        status["commit_message"] = subprocess.check_output(
+            ["git", "log", "-1", "--pretty=%B"], cwd=APP_DIR, text=True, stderr=subprocess.DEVNULL
+        ).strip().split("\n")[0]
+        status["commit_date"] = subprocess.check_output(
+            ["git", "log", "-1", "--pretty=%cd", "--date=iso"], cwd=APP_DIR, text=True, stderr=subprocess.DEVNULL
+        ).strip()
+    except Exception as e:
+        status["error"] = str(e)
+
+    try:
+        r = subprocess.check_output(
+            ["git", "remote", "get-url", "origin"], cwd=APP_DIR, text=True, stderr=subprocess.DEVNULL
+        ).strip()
+        if r:
+            status["remote_url"] = r
+    except Exception:
+        pass
+
+    try:
+        remote_ls = subprocess.check_output(
+            ["git", "ls-remote", "origin", "refs/heads/main"],
+            cwd=APP_DIR, text=True, stderr=subprocess.DEVNULL, timeout=8
+        ).strip()
+        if remote_ls:
+            remote_hash = remote_ls.split()[0]
+            status["remote_commit"] = remote_hash[:7]
+            if remote_hash and remote_hash != status["commit_hash"]:
+                status["updates_available"] = True
+    except Exception:
+        pass
+
+    return status
+
+
+def perform_git_update():
+    update_script = os.path.join(APP_DIR, "scripts", "update_from_github.sh")
+    if os.path.exists(update_script) and os.name != "nt":
+        res = subprocess.run(["bash", update_script], cwd=APP_DIR, capture_output=True, text=True, timeout=90)
+        return {"success": res.returncode == 0, "output": (res.stdout or "") + "\n" + (res.stderr or "")}
+    else:
+        res = subprocess.run(["git", "pull", "origin", "main"], cwd=APP_DIR, capture_output=True, text=True, timeout=90)
+        return {"success": res.returncode == 0, "output": (res.stdout or "") + "\n" + (res.stderr or "")}
 
 
 def build_status_payload():
@@ -364,6 +432,9 @@ def build_status_payload():
     if not miner_running and miner_stat.get("active"):
         miner_running = True
 
+    git_info = get_git_status()
+    running_bots = get_running_bot_processes()
+
     return {
         "twitch": twitch_info,
         "epic": epic_info,
@@ -371,8 +442,12 @@ def build_status_payload():
         "gog": gog_info,
         "system": {
             "miner_running": miner_running,
+            "git": git_info,
+            "bots": running_bots,
+            "bot_count": len(running_bots),
         }
     }
+
 
 
 class DashboardHandler(SimpleHTTPRequestHandler):
@@ -470,6 +545,21 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({"logs": combined}).encode("utf-8"))
+            return
+
+        elif self.path == "/api/system/git-status":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(get_git_status()).encode("utf-8"))
+            return
+
+        elif self.path == "/api/system/bots":
+            bots = get_running_bot_processes()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"bots": bots, "count": len(bots)}).encode("utf-8"))
             return
 
         self.send_error(404, "Not Found")
@@ -813,6 +903,51 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 "claimed": claimed,
                 "claimed_titles": all_claimed.get(store, []),
                 "message": f"Updated '{title}' as {'[CLAIMED]' if claimed else '[UNCLAIMED]'} for {store.upper()}."
+            }).encode("utf-8"))
+            return
+
+        # 9. System: Update from GitHub
+        if self.path == "/api/system/git-update":
+            result = perform_git_update()
+            self.send_response(200 if result.get("success") else 500)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(result).encode("utf-8"))
+            return
+
+        # 10. System: Export & Sync Claimed Loot to GitHub
+        if self.path == "/api/system/sync-github":
+            sync_script = os.path.join(APP_DIR, "scripts", "sync_loot_to_github.py")
+            res = subprocess.run([sys.executable, sync_script, "--push"], cwd=APP_DIR, capture_output=True, text=True, timeout=60)
+            self.send_response(200 if res.returncode == 0 else 500)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                "success": res.returncode == 0,
+                "output": (res.stdout or "") + "\n" + (res.stderr or "")
+            }).encode("utf-8"))
+            return
+
+        # 11. System: Terminate Conflicting Bots
+        if self.path == "/api/system/kill-bots":
+            bots = get_running_bot_processes()
+            killed = 0
+            for b in bots:
+                p = int(b.get("pid", 0))
+                if p > 0 and kill_pid(p):
+                    killed += 1
+            if os.path.exists(PID_FILE):
+                try:
+                    os.remove(PID_FILE)
+                except Exception:
+                    pass
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                "success": True,
+                "killed": killed,
+                "message": f"Terminated {killed} bot process(es) and released PID lock."
             }).encode("utf-8"))
             return
 

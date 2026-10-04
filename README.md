@@ -168,18 +168,48 @@ python3 -m src.twitch_drops.main --claim-now
 python3 scripts/audit_network.py
 ```
 
+### Check and Manage Bot Processes (Single Viewing)
+```bash
+# Check if any bots or miners are running on the system
+python3 scripts/check_bots.py
+
+# Terminate duplicate or conflicting bots to ensure single viewing
+python3 scripts/check_bots.py --kill-duplicates
+
+# Terminate all running miners and clear PID lockfile
+python3 scripts/check_bots.py --kill-all
+```
+
 ---
 
-## Git Repository Status
+## Updating from GitHub
 
-This project is fully initialized as a local Git repository with all credentials, session files, and cache excluded in `.gitignore`.
+### 1. In-Browser One-Click Update
+Open the Web Dashboard (`http://<server-ip>:8080`), go to the **System & GitHub** tab, and click **Update Now from GitHub**. The server pulls the latest code and reloads automatically.
 
-**To push this repository to your new Git provider (GitHub, GitLab, Gitea):**
+### 2. Command-Line Updater
+Run the dedicated updater script:
 ```bash
-# 1. Add your remote repository URL:
-git remote add origin <YOUR_GIT_REPO_URL>
-
-# 2. Push the codebase:
-git branch -M main
-git push -u origin main
+bash scripts/update_from_github.sh
 ```
+
+### 3. Automated Daily Background Updates (Alpine Linux LXC)
+Enable automatic daily updates via Alpine's daily periodic cron:
+```bash
+bash scripts/update_from_github.sh --install-cron
+```
+
+---
+
+## Sync Claimed Loot to GitHub
+
+To generate a human-readable summary of confirmed games and Twitch drops and automatically commit/push it to your GitHub repository:
+```bash
+# Generate CLAIMED_LOOT.md locally
+python3 scripts/sync_loot_to_github.py
+
+# Generate and push directly to GitHub origin/main
+python3 scripts/sync_loot_to_github.py --push
+```
+Or click **Sync & Push to GitHub** in the Web Dashboard under **System & GitHub**.
+
