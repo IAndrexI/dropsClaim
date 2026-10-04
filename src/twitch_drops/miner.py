@@ -5,10 +5,12 @@ Ensures watching 1 stream at a time under the user's authentic account.
 Supports both Default mode (mine all active drops) and Selective mode (only mine activated games).
 """
 
+import atexit
 import json
 import logging
 import os
 import random
+import signal
 import sys
 import time
 import urllib.request
@@ -21,6 +23,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 DATA_DIR = os.path.join(BASE_DIR, "data")
 STATUS_FILE = os.path.join(DATA_DIR, "miner_status.json")
 CONFIG_FILE = os.path.join(DATA_DIR, "mining_config.json")
+PID_FILE = os.path.join(DATA_DIR, "miner.pid")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,7 +33,12 @@ logging.basicConfig(
 logger = logging.getLogger("drops_miner")
 
 
+from .process_guard import acquire_pid_lock, release_pid_lock, is_pid_alive
+
+
+
 def load_mining_config() -> Dict[str, Any]:
+
     """Load mining preferences (mode and activated games list)."""
     if os.path.exists(CONFIG_FILE):
         try:
@@ -191,7 +199,20 @@ class DropsMiner:
         # 1. Claim anything ready
         self.claim_pending_drops()
 
-        # 2. Pick a single campaign
+        # 2. Check if user is currently using Twitch on any browser or device
+        if self.client.is_user_actively_using_twitch():
+            logger.info("[MINER] User is currently using Twitch. Pausing miner to ensure ONLY 1 viewing of Twitch.")
+            save_miner_status({
+                "active": False,
+                "paused": True,
+                "user_active": True,
+                "message": "Miner paused: You are currently using Twitch. Mining will resume automatically when you finish.",
+                "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            })
+            time.sleep(60)
+            return
+
+        # 3. Pick a single campaign
         campaign = self.select_active_campaign()
         if not campaign:
             save_miner_status({"active": False, "message": "No eligible campaigns to mine at this moment."})
@@ -203,7 +224,7 @@ class DropsMiner:
         camp_name = campaign.get("name", game_name)
         logger.info("[MINER] Target campaign: '%s' for game '%s'", camp_name, game_name)
 
-        # 3. Find exactly 1 live stream with drops enabled (Only 1 stream at a time)
+        # 4. Find exactly 1 live stream with drops enabled (Only 1 stream at a time)
         channel = self.client.find_eligible_channel(game_name)
         if not channel:
             logger.warning("[MINER] No live streams with drops enabled for '%s'. Checking next game in 3 minutes...", game_name)
@@ -228,9 +249,21 @@ class DropsMiner:
         broadcast_id = playback_info.get("broadcast_id") or channel.get("stream_id", "")
         sub_playlist_url = playback_info.get("sub_playlist_url")
 
-        # 4. Streamless watch loop under user account (sending heartbeat every ~60s)
+        # 5. Streamless watch loop under user account (sending heartbeat every ~60s)
         # Strictly watches ONLY this single stream for a block of up to 15 minutes
         for minute in range(15):
+            # Check if user started using Twitch mid-stream
+            if self.client.is_user_actively_using_twitch():
+                logger.info("[MINER] User started using Twitch. Stopping stream viewing immediately to ensure ONLY 1 viewing.")
+                save_miner_status({
+                    "active": False,
+                    "paused": True,
+                    "user_active": True,
+                    "message": "Miner paused: You started using Twitch. Mining will resume automatically when you finish.",
+                    "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                })
+                break
+
             success = self.client.send_minute_watched_heartbeat(
                 channel_id=channel["channel_id"],
                 stream_id=broadcast_id,
@@ -242,6 +275,8 @@ class DropsMiner:
 
             current_status = {
                 "active": True,
+                "paused": False,
+                "user_active": False,
                 "game": game_name,
                 "campaign": camp_name,
                 "channel_name": channel["channel_name"],
@@ -269,20 +304,39 @@ class DropsMiner:
             # Randomize delay between 58 and 62 seconds to mimic authentic browser behavior
             time.sleep(random.uniform(58.0, 62.0))
 
-
         # Reset active status when switching streams
         save_miner_status({"active": False, "message": "Switching or checking for next campaign."})
 
     def start(self):
         """Start the miner daemon."""
         logger.info("Starting Twitch Drops Miner Daemon...")
+        if not acquire_pid_lock():
+            logger.critical("Aborting startup: Another Twitch Drops Miner process is already active. Only 1 viewing instance is allowed.")
+            sys.exit(1)
+
+        atexit.register(release_pid_lock)
+
+        def handle_signal(sig, frame):
+            logger.info("Received termination signal (%s). Exiting gracefully...", sig)
+            self.running = False
+            release_pid_lock()
+            save_miner_status({"active": False, "message": "Miner stopped by system signal."})
+            sys.exit(0)
+
+        try:
+            signal.signal(signal.SIGINT, handle_signal)
+            signal.signal(signal.SIGTERM, handle_signal)
+        except Exception:
+            pass
+
         if not self.client.validate_session():
             logger.critical("Authentication failed! Please verify your TWITCH_AUTH_TOKEN.")
+            release_pid_lock()
             sys.exit(1)
 
         self.running = True
         logger.info(
-            "Twitch session valid! Mining as: %s (ID: %s)",
+            "Twitch session valid! Mining as: %s (ID: %s) [Single viewing enforced]",
             self.client.user_login, self.client.user_id
         )
 
@@ -292,9 +346,13 @@ class DropsMiner:
             except KeyboardInterrupt:
                 logger.info("Stopping miner daemon upon user request.")
                 self.running = False
+                release_pid_lock()
                 save_miner_status({"active": False, "message": "Miner stopped by user."})
                 break
             except Exception as err:
                 logger.error("Unexpected error in mining loop: %s. Retrying in 60s...", err, exc_info=True)
                 save_miner_status({"active": False, "message": f"Error: {err}"})
                 time.sleep(60)
+
+        release_pid_lock()
+

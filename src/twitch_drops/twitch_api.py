@@ -261,7 +261,42 @@ class TwitchClient:
             logger.error("Error validating session: %s", e)
             return False
 
+    def is_user_actively_using_twitch(self) -> bool:
+        """
+        Detect if the user is currently using Twitch on any browser, mobile app, or device.
+        Queries Twitch currentUser presence, availability, and activity.
+        Returns True if user status indicates an active session (ONLINE, AWAY, IDLE, or active activity).
+        """
+        query = """
+        query CheckUserPresence {
+            currentUser {
+                id
+                login
+                availability
+                activity {
+                    type
+                }
+            }
+        }
+        """
+        try:
+            res = self.post_gql(query, operation_name="CheckUserPresence")
+            user = (res.get("data") or {}).get("currentUser")
+            if user:
+                availability = user.get("availability")
+                activity = user.get("activity")
+                if availability in ("ONLINE", "AWAY", "IDLE") or activity is not None:
+                    logger.info(
+                        "Detected active user presence on Twitch: availability=%s, activity=%s",
+                        availability, activity
+                    )
+                    return True
+        except Exception as e:
+            logger.debug("Error checking user active presence: %s", e)
+        return False
+
     def get_inventory(self) -> Dict[str, Any]:
+
         """Fetch the user's active drop campaigns, progress, and claimed items via persisted query."""
         try:
             res = self.post_persisted_gql(

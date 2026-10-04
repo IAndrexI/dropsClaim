@@ -7,6 +7,7 @@ import os
 import sys
 
 from .miner import DropsMiner
+from .process_guard import PID_FILE, get_running_bot_processes, kill_pid
 from .twitch_api import TwitchClient
 
 
@@ -35,8 +36,35 @@ def main():
     parser.add_argument("--inventory", action="store_true", help="Print active drops progress and claimed loot")
     parser.add_argument("--campaigns", action="store_true", help="List all currently active Twitch drop campaigns")
     parser.add_argument("--claim-now", action="store_true", help="Immediately claim any drops at 100% and exit")
+    parser.add_argument("--check-bots", action="store_true", help="Check for running Twitch bot processes and active viewing")
+    parser.add_argument("--kill-bots", action="store_true", help="Terminate conflicting bot processes to ensure single viewing")
     parser.add_argument("--token", type=str, default=None, help="Twitch auth-token cookie (or set TWITCH_AUTH_TOKEN in env)")
     args = parser.parse_args()
+
+    if args.check_bots:
+        bots = get_running_bot_processes()
+        print(f"=== Active Twitch Bot Processes Detected: {len(bots)} ===")
+        if not bots:
+            print("[OK] No conflicting background Twitch bots detected on this system.")
+        for idx, bot in enumerate(bots, 1):
+            print(f" [{idx}] PID: {bot['pid']} | Command: {bot['cmdline']}")
+        return
+
+    if args.kill_bots:
+        bots = get_running_bot_processes()
+        print(f"=== Terminating {len(bots)} Twitch Bot Process(es) ===")
+        for bot in bots:
+            p = int(bot['pid'])
+            if kill_pid(p):
+                print(f"  [OK] Terminated PID {p}")
+            else:
+                print(f"  [FAIL] Could not terminate PID {p}")
+        if os.path.exists(PID_FILE):
+            try:
+                os.remove(PID_FILE)
+            except Exception:
+                pass
+        return
 
     auth_token = args.token or os.environ.get("TWITCH_AUTH_TOKEN", "").strip()
     if not auth_token:
@@ -57,9 +85,12 @@ def main():
         client = TwitchClient(auth_token)
         if client.validate_session():
             print(f"[SUCCESS] Connected to Twitch! Logged in as: {client.user_login} (User ID: {client.user_id})")
+            user_active = client.is_user_actively_using_twitch()
+            print(f"User actively using Twitch right now: {user_active}")
         else:
             print("[FAIL] Could not validate token. Please verify your auth-token cookie.")
         return
+
 
     if args.inventory:
         client = TwitchClient(auth_token)
