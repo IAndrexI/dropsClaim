@@ -219,6 +219,7 @@
       <button class="tab-btn" onclick="switchTab('stores', event)">Amazon & GOG</button>
       <button class="tab-btn" onclick="switchTab('accounts', event)">Accounts & Logins</button>
       <button class="tab-btn" onclick="switchTab('logs', event)">Live Logs</button>
+      <button class="tab-btn" onclick="switchTab('system', event)">System & GitHub</button>
     </div>
 
     <!-- TAB 1: TWITCH DROPS (WITH SELECTION & INVENTORY CROSS-REFERENCE) -->
@@ -448,6 +449,102 @@
       </div>
       <div class="log-container" id="log-view">Loading logs...</div>
     </div>
+
+    <!-- TAB 6: SYSTEM & GITHUB -->
+    <div id="tab-system" class="tab-content" style="display: none;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 8px;">
+        <div>
+          <h2 style="font-size: 1.15rem; font-weight: 700;">System, GitHub Updates & Diagnostics</h2>
+          <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 2px;">
+            Manage updates directly from GitHub, monitor single-viewing bot processes, and synchronize claimed loot.
+          </p>
+        </div>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+          <a href="https://github.com/IAndrexI/dropsClaim" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-primary">[Open GitHub Repository]</a>
+          <button class="btn btn-sm" onclick="checkGitUpdates()">Check for Updates</button>
+        </div>
+      </div>
+
+      <div class="accounts-grid">
+        <!-- GitHub Version & Updater Card -->
+        <div class="account-card">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <h3 style="margin-bottom: 0;">[GitHub] Repository Updates</h3>
+            <span id="git-status-badge" class="badge" style="background: rgba(34, 197, 94, 0.15); color: #4ade80;">[CHECKING...]</span>
+          </div>
+          <p style="font-size: 0.82rem; color: #94a3b8; margin-bottom: 12px;">
+            Repository: <a href="https://github.com/IAndrexI/dropsClaim" target="_blank" rel="noopener noreferrer" style="color: #60a5fa;">IAndrexI/dropsClaim (main)</a>
+          </p>
+
+          <div style="background: rgba(15, 23, 42, 0.6); padding: 12px; border-radius: 8px; border: 1px solid #334155; margin-bottom: 14px; font-size: 0.82rem; line-height: 1.6;">
+            <div><strong>Installed Commit:</strong> <code id="git-local-hash" style="color: #38bdf8;">--</code></div>
+            <div><strong>Commit Message:</strong> <span id="git-local-msg" style="color: #cbd5e1;">--</span></div>
+            <div><strong>Last Updated:</strong> <span id="git-local-date" style="color: #94a3b8;">--</span></div>
+            <div id="git-remote-info" style="margin-top: 6px; padding-top: 6px; border-top: 1px solid #1e293b; display: none;">
+              <strong>Remote GitHub HEAD:</strong> <code id="git-remote-hash" style="color: #facc15;">--</code>
+            </div>
+          </div>
+
+          <div class="form-row-actions">
+            <button class="btn btn-sm btn-primary" id="btn-git-update" onclick="runGitUpdate()">Update Now from GitHub</button>
+            <button class="btn btn-sm" onclick="checkGitUpdates()">Check Updates</button>
+          </div>
+          <div id="git-update-output" style="display: none; margin-top: 12px; padding: 10px; background: #0f172a; border-radius: 6px; font-family: monospace; font-size: 0.78rem; white-space: pre-wrap; max-height: 150px; overflow-y: auto; color: #cbd5e1; border: 1px solid #334155;"></div>
+        </div>
+
+        <!-- Bot Process Guard & Single Viewing Card -->
+        <div class="account-card">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <h3 style="margin-bottom: 0;">[Twitch] Single Viewing Process Guard</h3>
+            <span id="bot-guard-badge" class="badge" style="background: rgba(34, 197, 94, 0.15); color: #4ade80;">[1 ACTIVE]</span>
+          </div>
+          <p style="font-size: 0.82rem; color: #94a3b8; margin-bottom: 12px;">
+            Twitch rules require strictly only 1 stream earning drops per account. Process Guard blocks duplicates.
+          </p>
+
+          <div id="bots-list-box" style="background: rgba(15, 23, 42, 0.6); padding: 12px; border-radius: 8px; border: 1px solid #334155; margin-bottom: 14px; font-size: 0.82rem; line-height: 1.6;">
+            <div><strong>Running Bot Processes:</strong> <span id="bots-count-label">Loading...</span></div>
+            <div id="bots-details" style="font-family: monospace; font-size: 0.78rem; color: #94a3b8; margin-top: 6px;"></div>
+          </div>
+
+          <div class="form-row-actions">
+            <button class="btn btn-sm" onclick="fetchBotsStatus()">Scan Processes</button>
+            <button class="btn btn-sm" style="border-color: #ef4444; color: #f87171;" onclick="killConflictingBots()">Terminate Conflicting Bots</button>
+          </div>
+        </div>
+
+        <!-- Sync Claimed Loot to GitHub Card -->
+        <div class="account-card">
+          <h3>[Sync] Export Claimed Loot to GitHub</h3>
+          <p style="font-size: 0.82rem; color: #94a3b8; margin-bottom: 12px;">
+            Generates <code>CLAIMED_LOOT.md</code> records and commits/pushes confirmed free games and drops to your GitHub repository.
+          </p>
+
+          <div style="background: rgba(15, 23, 42, 0.6); padding: 12px; border-radius: 8px; border: 1px solid #334155; margin-bottom: 14px; font-size: 0.82rem; line-height: 1.6;">
+            <div>Target File: <code>CLAIMED_LOOT.md</code></div>
+            <div>GitHub Target: <code>origin/main</code></div>
+          </div>
+
+          <div class="form-row-actions">
+            <button class="btn btn-sm btn-success" onclick="syncLootToGitHub()">Sync & Push to GitHub</button>
+          </div>
+          <div id="sync-loot-output" style="display: none; margin-top: 12px; padding: 10px; background: #0f172a; border-radius: 6px; font-family: monospace; font-size: 0.78rem; white-space: pre-wrap; max-height: 120px; overflow-y: auto; color: #cbd5e1; border: 1px solid #334155;"></div>
+        </div>
+
+        <!-- Automated Alpine Schedule Card -->
+        <div class="account-card">
+          <h3>[Alpine Linux] Auto-Update Schedule</h3>
+          <p style="font-size: 0.82rem; color: #94a3b8; margin-bottom: 12px;">
+            Set up automatic daily background updates so your server automatically syncs with GitHub changes.
+          </p>
+
+          <div style="background: rgba(15, 23, 42, 0.6); padding: 12px; border-radius: 8px; border: 1px solid #334155; margin-bottom: 14px; font-size: 0.82rem; line-height: 1.6; font-family: monospace;">
+            <div style="color: #94a3b8;"># Enable automatic daily updates in Alpine:</div>
+            <div style="color: #38bdf8;">bash scripts/update_from_github.sh --install-cron</div>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <div id="toast"></div>
@@ -472,6 +569,7 @@
       if (evt && evt.target) evt.target.classList.add("active");
       if (name === "logs") fetchLogs();
       if (name === "accounts") fetchAccounts();
+      if (name === "system") { checkGitUpdates(); fetchBotsStatus(); }
     }
 
     function setDropsFilter(filterName, evt) {
@@ -529,6 +627,33 @@
           ? "[MODE: SELECTIVE - ONLY ACTIVATED GAMES]" 
           : "[MODE: DEFAULT - AUTO-MINE ALL LIVE DROPS]";
         modeBadge.style.color = currentMiningMode === "selective" ? "#38bdf8" : "#a855f7";
+      }
+
+      // Update Git status in System tab automatically if data present
+      if (data.system && data.system.git) {
+        const g = data.system.git;
+        const badge = document.getElementById("git-status-badge");
+        if (badge) {
+          if (g.updates_available) {
+            badge.innerText = "[UPDATE AVAILABLE]";
+            badge.style.color = "#facc15";
+            badge.style.background = "rgba(250, 204, 21, 0.15)";
+            const remoteInfo = document.getElementById("git-remote-info");
+            const remoteHash = document.getElementById("git-remote-hash");
+            if (remoteInfo) remoteInfo.style.display = "block";
+            if (remoteHash) remoteHash.innerText = g.remote_commit || "Newer commit on GitHub";
+          } else {
+            badge.innerText = "[UP TO DATE]";
+            badge.style.color = "#4ade80";
+            badge.style.background = "rgba(34, 197, 94, 0.15)";
+          }
+        }
+        const lHash = document.getElementById("git-local-hash");
+        if (lHash && g.commit_short) lHash.innerText = g.commit_short;
+        const lMsg = document.getElementById("git-local-msg");
+        if (lMsg && g.commit_message) lMsg.innerText = g.commit_message;
+        const lDate = document.getElementById("git-local-date");
+        if (lDate && g.commit_date) lDate.innerText = g.commit_date;
       }
 
       const modeDesc = document.getElementById("mining-mode-desc");
@@ -1181,6 +1306,129 @@
         logBox.scrollTop = logBox.scrollHeight;
       } catch (e) {
         document.getElementById("log-view").innerText = "Could not fetch logs.";
+      }
+    }
+
+    async function checkGitUpdates() {
+      const badge = document.getElementById("git-status-badge");
+      if (!badge) return;
+      badge.innerText = "[CHECKING...]";
+      badge.style.color = "#38bdf8";
+      badge.style.background = "rgba(56, 189, 248, 0.15)";
+      try {
+        const res = await fetch("/api/system/git-status");
+        const data = await res.json();
+        document.getElementById("git-local-hash").innerText = data.commit_short || "Unknown";
+        document.getElementById("git-local-msg").innerText = data.commit_message || "Unknown";
+        document.getElementById("git-local-date").innerText = data.commit_date || "Unknown";
+        
+        const remoteInfo = document.getElementById("git-remote-info");
+        const remoteHash = document.getElementById("git-remote-hash");
+
+        if (data.updates_available) {
+          badge.innerText = "[UPDATE AVAILABLE]";
+          badge.style.color = "#facc15";
+          badge.style.background = "rgba(250, 204, 21, 0.15)";
+          remoteInfo.style.display = "block";
+          remoteHash.innerText = data.remote_commit || "Newer commit on GitHub";
+        } else {
+          badge.innerText = "[UP TO DATE]";
+          badge.style.color = "#4ade80";
+          badge.style.background = "rgba(34, 197, 94, 0.15)";
+          remoteInfo.style.display = "none";
+        }
+      } catch (err) {
+        badge.innerText = "[OFFLINE/ERROR]";
+        badge.style.color = "#f87171";
+      }
+    }
+
+    async function runGitUpdate() {
+      const btn = document.getElementById("btn-git-update");
+      const outBox = document.getElementById("git-update-output");
+      btn.disabled = true;
+      btn.innerText = "Updating...";
+      outBox.style.display = "block";
+      outBox.innerText = "Connecting to GitHub and pulling latest commits...";
+
+      try {
+        const res = await fetch("/api/system/git-update", { method: "POST" });
+        const data = await res.json();
+        outBox.innerText = data.output || (data.success ? "Update applied successfully!" : "Update failed.");
+        if (data.success) {
+          showToast("Successfully updated from GitHub!");
+          checkGitUpdates();
+        } else {
+          showToast("Update encountered an error.");
+        }
+      } catch (err) {
+        outBox.innerText = "Error triggering update: " + err.message;
+        showToast("Error updating from GitHub: " + err.message);
+      } finally {
+        btn.disabled = false;
+        btn.innerText = "Update Now from GitHub";
+      }
+    }
+
+    async function fetchBotsStatus() {
+      const botsBox = document.getElementById("bots-details");
+      const botsCountLabel = document.getElementById("bots-count-label");
+      const botBadge = document.getElementById("bot-guard-badge");
+      if (!botsBox || !botsCountLabel) return;
+      try {
+        const res = await fetch("/api/system/bots");
+        const data = await res.json();
+        const bots = data.bots || [];
+        botsCountLabel.innerText = `${bots.length} active process(es)`;
+        if (bots.length === 0) {
+          botBadge.innerText = "[0 ACTIVE (IDLE)]";
+          botBadge.style.color = "#94a3b8";
+          botBadge.style.background = "rgba(148, 163, 184, 0.15)";
+          botsBox.innerText = "No bot processes currently running.";
+        } else if (bots.length === 1) {
+          botBadge.innerText = "[1 ACTIVE (OPTIMAL)]";
+          botBadge.style.color = "#4ade80";
+          botBadge.style.background = "rgba(34, 197, 94, 0.15)";
+          botsBox.innerText = `PID: ${bots[0].pid} | Command: ${bots[0].cmdline}`;
+        } else {
+          botBadge.innerText = `[${bots.length} RUNNING - CONFLICT!]`;
+          botBadge.style.color = "#f87171";
+          botBadge.style.background = "rgba(239, 68, 68, 0.15)";
+          botsBox.innerText = bots.map((b, i) => `[${i+1}] PID: ${b.pid}\n    ${b.cmdline}`).join("\n\n");
+        }
+      } catch (e) {
+        botsCountLabel.innerText = "Error loading";
+      }
+    }
+
+    async function killConflictingBots() {
+      if (!confirm("Terminate all running Twitch miner bot processes and clear PID lock?")) return;
+      try {
+        const res = await fetch("/api/system/kill-bots", { method: "POST" });
+        const data = await res.json();
+        showToast(data.message || "Bots terminated.");
+        fetchBotsStatus();
+      } catch (err) {
+        showToast("Error killing bots: " + err.message);
+      }
+    }
+
+    async function syncLootToGitHub() {
+      const outBox = document.getElementById("sync-loot-output");
+      outBox.style.display = "block";
+      outBox.innerText = "Generating CLAIMED_LOOT.md and syncing to GitHub origin/main...";
+      try {
+        const res = await fetch("/api/system/sync-github", { method: "POST" });
+        const data = await res.json();
+        outBox.innerText = data.output || "Completed.";
+        if (data.success) {
+          showToast("Claimed loot synced and pushed to GitHub!");
+        } else {
+          showToast("Sync finished with notes (see output box).");
+        }
+      } catch (err) {
+        outBox.innerText = "Error syncing to GitHub: " + err.message;
+        showToast("Sync error: " + err.message);
       }
     }
 
