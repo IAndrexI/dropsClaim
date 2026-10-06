@@ -8,6 +8,7 @@ import argparse
 import json
 import os
 import secrets
+import shutil
 import subprocess
 import sys
 import threading
@@ -301,6 +302,42 @@ def perform_git_update():
         return {"success": res.returncode == 0, "output": (res.stdout or "") + "\n" + (res.stderr or "")}
 
 
+def get_autostart_status():
+    status = {
+        "init_system": "unknown",
+        "enabled": False,
+        "services": {},
+        "error": None,
+    }
+    # OpenRC (Alpine Linux)
+    if shutil.which("rc-update") or os.path.exists("/sbin/rc-update") or os.path.exists("/usr/sbin/rc-update"):
+        status["init_system"] = "openrc"
+        try:
+            rc_cmd = shutil.which("rc-update") or "/sbin/rc-update"
+            out = subprocess.check_output([rc_cmd, "show", "default"], text=True, stderr=subprocess.DEVNULL)
+            status["services"]["twitch-drops"] = "twitch-drops" in out
+            status["services"]["auto-loot-web"] = "auto-loot-web" in out
+            status["services"]["crond"] = "crond" in out
+            status["enabled"] = bool(status["services"]["twitch-drops"] and status["services"]["auto-loot-web"])
+        except Exception as e:
+            status["error"] = str(e)
+    # systemd (Debian / Ubuntu)
+    elif shutil.which("systemctl") or os.path.exists("/bin/systemctl") or os.path.exists("/usr/bin/systemctl"):
+        status["init_system"] = "systemd"
+        try:
+            sys_cmd = shutil.which("systemctl") or "/bin/systemctl"
+            td = subprocess.run([sys_cmd, "is-enabled", "twitch-drops.service"], capture_output=True, text=True)
+            web = subprocess.run([sys_cmd, "is-enabled", "auto-loot-web.service"], capture_output=True, text=True)
+            fg = subprocess.run([sys_cmd, "is-enabled", "free-games.timer"], capture_output=True, text=True)
+            status["services"]["twitch-drops"] = (td.stdout.strip() == "enabled")
+            status["services"]["auto-loot-web"] = (web.stdout.strip() == "enabled")
+            status["services"]["free-games.timer"] = (fg.stdout.strip() == "enabled")
+            status["enabled"] = bool(status["services"]["twitch-drops"] and status["services"]["auto-loot-web"])
+        except Exception as e:
+            status["error"] = str(e)
+    return status
+
+
 def build_status_payload():
     env = load_env_file()
     data_dir = os.path.join(APP_DIR, "data", "fgc")
@@ -445,6 +482,7 @@ def build_status_payload():
             "git": git_info,
             "bots": running_bots,
             "bot_count": len(running_bots),
+            "autostart": get_autostart_status(),
         }
     }
 
@@ -560,6 +598,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({"bots": bots, "count": len(bots)}).encode("utf-8"))
+            return
+
+        elif self.path == "/api/system/autostart":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(get_autostart_status()).encode("utf-8"))
             return
 
         self.send_error(404, "Not Found")
@@ -948,6 +993,21 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 "success": True,
                 "killed": killed,
                 "message": f"Terminated {killed} bot process(es) and released PID lock."
+            }).encode("utf-8"))
+            return
+
+        # 12. System: Enable Autostart on Reboot
+        if self.path == "/api/system/autostart":
+            script_path = os.path.join(APP_DIR, "scripts", "enable_autostart.sh")
+            res = subprocess.run(["bash", script_path], cwd=APP_DIR, capture_output=True, text=True, timeout=60)
+            status_after = get_autostart_status()
+            self.send_response(200 if res.returncode == 0 else 500)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                "success": res.returncode == 0,
+                "output": (res.stdout or "") + "\n" + (res.stderr or ""),
+                "status": status_after
             }).encode("utf-8"))
             return
 

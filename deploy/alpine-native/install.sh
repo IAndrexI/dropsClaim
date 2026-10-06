@@ -68,27 +68,9 @@ fi
 echo "[4/6] Setting up script permissions..."
 chmod +x "$APP_DIR/scripts/"*.sh
 
-echo "[5/7] Installing OpenRC service for Twitch Drops Miner..."
-cp "$APP_DIR/deploy/alpine-native/openrc/twitch-drops" /etc/init.d/twitch-drops
-chmod 755 /etc/init.d/twitch-drops
-rc-update add twitch-drops default
+echo "[5/6] Configuring autostart services on reboot..."
+bash "$APP_DIR/scripts/enable_autostart.sh"
 
-echo "[6/7] Installing OpenRC service for Web Dashboard..."
-cp "$APP_DIR/deploy/alpine-native/openrc/auto-loot-web" /etc/init.d/auto-loot-web
-chmod 755 /etc/init.d/auto-loot-web
-rc-update add auto-loot-web default
-
-echo "[7/7] Setting up daily cron schedule for Free Games Claimer..."
-# Create daily cron runner in /etc/periodic/daily/free-games
-cat << 'EOF' > /etc/periodic/daily/free-games
-#!/bin/sh
-/opt/auto-loot-claimer/scripts/run_games_claimer.sh >> /var/log/free-games.log 2>&1
-EOF
-chmod +x /etc/periodic/daily/free-games
-
-# Ensure Busybox crond is enabled and running
-rc-update add crond default
-rc-service crond start || true
 
 echo "========================================================="
 echo "Installation on Alpine Linux Complete!"

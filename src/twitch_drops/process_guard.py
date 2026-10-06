@@ -34,6 +34,13 @@ def is_pid_alive(pid: int) -> bool:
             return False
         else:
             os.kill(pid, 0)
+            if os.path.exists(f"/proc/{pid}/cmdline"):
+                try:
+                    with open(f"/proc/{pid}/cmdline", "rb") as f:
+                        cmd = f.read().replace(b"\x00", b" ").decode("utf-8", errors="ignore").lower()
+                    return any(k in cmd for k in ["twitch_drops", "miner.py", "twitchdropsminer"])
+                except Exception:
+                    return False
             return True
     except (OSError, ProcessLookupError, PermissionError):
         return False

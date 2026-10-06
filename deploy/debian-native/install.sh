@@ -62,15 +62,9 @@ fi
 echo "[4/6] Setting up script permissions..."
 chmod +x "$APP_DIR/scripts/"*.sh
 
-echo "[5/6] Installing systemd services and timers..."
-cp "$APP_DIR/deploy/debian-native/systemd/twitch-drops.service" /etc/systemd/system/
-cp "$APP_DIR/deploy/debian-native/systemd/free-games.service" /etc/systemd/system/
-cp "$APP_DIR/deploy/debian-native/systemd/free-games.timer" /etc/systemd/system/
+echo "[5/6] Configuring autostart services on reboot..."
+bash "$APP_DIR/scripts/enable_autostart.sh"
 
-systemctl daemon-reload
-systemctl enable twitch-drops.service
-systemctl enable free-games.timer
-systemctl start free-games.timer
 
 echo "[6/6] Installation Complete!"
 echo "========================================================="

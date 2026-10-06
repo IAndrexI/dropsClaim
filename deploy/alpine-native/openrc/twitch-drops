@@ -18,6 +18,7 @@ depend() {
 
 start_pre() {
     touch /var/log/twitch-drops.log
+    rm -f /run/twitch-drops.pid /opt/auto-loot-claimer/data/miner.pid 2>/dev/null || true
     export PYTHONUNBUFFERED=1
     if [ -f "/opt/auto-loot-claimer/.env" ]; then
         set -a
