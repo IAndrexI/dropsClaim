@@ -74,7 +74,8 @@ if [ "$LOCAL_HEAD" = "$REMOTE_HEAD" ] && [ "$ACTION" != "--force" ]; then
 fi
 
 echo "[1/4] Pulling latest updates from origin/$REMOTE_BRANCH..."
-git pull origin "$REMOTE_BRANCH"
+git pull origin "$REMOTE_BRANCH" --rebase || git reset --hard "origin/$REMOTE_BRANCH"
+
 
 echo "[2/4] Ensuring script execute permissions..."
 chmod +x "$DIR/scripts/"*.sh || true
