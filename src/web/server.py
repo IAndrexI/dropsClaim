@@ -298,7 +298,7 @@ def perform_git_update():
         res = subprocess.run(["bash", update_script], cwd=APP_DIR, capture_output=True, text=True, timeout=90)
         return {"success": res.returncode == 0, "output": (res.stdout or "") + "\n" + (res.stderr or "")}
     else:
-        res = subprocess.run(["git", "pull", "origin", "main"], cwd=APP_DIR, capture_output=True, text=True, timeout=90)
+        res = subprocess.run(["git", "pull", "--rebase", "origin", "main"], cwd=APP_DIR, capture_output=True, text=True, timeout=90)
         return {"success": res.returncode == 0, "output": (res.stdout or "") + "\n" + (res.stderr or "")}
 
 
