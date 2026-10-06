@@ -543,6 +543,30 @@
             <div style="color: #38bdf8;">bash scripts/update_from_github.sh --install-cron</div>
           </div>
         </div>
+
+        <!-- System Reboot Autostart Card -->
+        <div class="account-card">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <h3 style="margin-bottom: 0;">[Autostart] Boot & Reboot Persistence</h3>
+            <span id="autostart-badge" class="badge" style="background: rgba(34, 197, 94, 0.15); color: #4ade80;">[CHECKING...]</span>
+          </div>
+          <p style="font-size: 0.82rem; color: #94a3b8; margin-bottom: 12px;">
+            Ensures Twitch Drops Miner, Web Dashboard, and cron claimers automatically start when Alpine Linux or your LXC container reboots.
+          </p>
+
+          <div style="background: rgba(15, 23, 42, 0.6); padding: 12px; border-radius: 8px; border: 1px solid #334155; margin-bottom: 14px; font-size: 0.82rem; line-height: 1.6;">
+            <div><strong>Init System:</strong> <span id="autostart-init" style="color: #38bdf8;">Loading...</span></div>
+            <div><strong>Twitch Drops Miner:</strong> <span id="autostart-twitch-status" style="color: #cbd5e1;">--</span></div>
+            <div><strong>Web Dashboard:</strong> <span id="autostart-web-status" style="color: #cbd5e1;">--</span></div>
+            <div><strong>Free Games Cron/Timer:</strong> <span id="autostart-cron-status" style="color: #cbd5e1;">--</span></div>
+          </div>
+
+          <div class="form-row-actions">
+            <button class="btn btn-sm btn-primary" id="btn-enable-autostart" onclick="enableAutostartOnBoot()">Enable Autostart on Reboot</button>
+            <button class="btn btn-sm" onclick="fetchAutostartStatus()">Refresh Status</button>
+          </div>
+          <div id="autostart-output" style="display: none; margin-top: 12px; padding: 10px; background: #0f172a; border-radius: 6px; font-family: monospace; font-size: 0.78rem; white-space: pre-wrap; max-height: 140px; overflow-y: auto; color: #cbd5e1; border: 1px solid #334155;"></div>
+        </div>
       </div>
     </div>
   </div>
@@ -569,7 +593,7 @@
       if (evt && evt.target) evt.target.classList.add("active");
       if (name === "logs") fetchLogs();
       if (name === "accounts") fetchAccounts();
-      if (name === "system") { checkGitUpdates(); fetchBotsStatus(); }
+      if (name === "system") { checkGitUpdates(); fetchBotsStatus(); fetchAutostartStatus(); }
     }
 
     function setDropsFilter(filterName, evt) {
@@ -654,6 +678,23 @@
         if (lMsg && g.commit_message) lMsg.innerText = g.commit_message;
         const lDate = document.getElementById("git-local-date");
         if (lDate && g.commit_date) lDate.innerText = g.commit_date;
+      }
+
+      // Update Autostart badge in System tab if present
+      if (data.system && data.system.autostart) {
+        const a = data.system.autostart;
+        const autoBadge = document.getElementById("autostart-badge");
+        if (autoBadge) {
+          if (a.enabled) {
+            autoBadge.innerText = "[ENABLED ON REBOOT]";
+            autoBadge.style.color = "#4ade80";
+            autoBadge.style.background = "rgba(34, 197, 94, 0.15)";
+          } else {
+            autoBadge.innerText = "[NOT CONFIGURED]";
+            autoBadge.style.color = "#facc15";
+            autoBadge.style.background = "rgba(250, 204, 21, 0.15)";
+          }
+        }
       }
 
       const modeDesc = document.getElementById("mining-mode-desc");
@@ -1429,6 +1470,69 @@
       } catch (err) {
         outBox.innerText = "Error syncing to GitHub: " + err.message;
         showToast("Sync error: " + err.message);
+      }
+    }
+
+    async function fetchAutostartStatus() {
+      const badge = document.getElementById("autostart-badge");
+      const initEl = document.getElementById("autostart-init");
+      const tdEl = document.getElementById("autostart-twitch-status");
+      const webEl = document.getElementById("autostart-web-status");
+      const cronEl = document.getElementById("autostart-cron-status");
+      if (!badge || !initEl) return;
+
+      try {
+        const res = await fetch("/api/system/autostart");
+        const data = await res.json();
+        const initName = data.init_system === "openrc" ? "OpenRC (Alpine Linux)" : (data.init_system === "systemd" ? "systemd (Debian/Ubuntu)" : "Custom / Unknown");
+        initEl.innerText = initName;
+
+        const svcs = data.services || {};
+        if (tdEl) tdEl.innerHTML = svcs["twitch-drops"] ? '<span style="color: #4ade80;">[ENABLED - Boots on reboot]</span>' : '<span style="color: #f87171;">[DISABLED - Not in default runlevel]</span>';
+        if (webEl) webEl.innerHTML = svcs["auto-loot-web"] ? '<span style="color: #4ade80;">[ENABLED - Boots on reboot]</span>' : '<span style="color: #f87171;">[DISABLED - Not in default runlevel]</span>';
+        if (cronEl) {
+          const cronActive = svcs["crond"] || svcs["free-games.timer"];
+          cronEl.innerHTML = cronActive ? '<span style="color: #4ade80;">[ENABLED - Boots on reboot]</span>' : '<span style="color: #f87171;">[DISABLED]</span>';
+        }
+
+        if (data.enabled) {
+          badge.innerText = "[ENABLED ON REBOOT]";
+          badge.style.color = "#4ade80";
+          badge.style.background = "rgba(34, 197, 94, 0.15)";
+        } else {
+          badge.innerText = "[NOT CONFIGURED]";
+          badge.style.color = "#facc15";
+          badge.style.background = "rgba(250, 204, 21, 0.15)";
+        }
+      } catch (e) {
+        if (badge) badge.innerText = "[ERROR CHECKING]";
+      }
+    }
+
+    async function enableAutostartOnBoot() {
+      const btn = document.getElementById("btn-enable-autostart");
+      const outBox = document.getElementById("autostart-output");
+      btn.disabled = true;
+      btn.innerText = "Configuring...";
+      outBox.style.display = "block";
+      outBox.innerText = "Running enable_autostart.sh to register OpenRC / systemd boot services...";
+
+      try {
+        const res = await fetch("/api/system/autostart", { method: "POST" });
+        const data = await res.json();
+        outBox.innerText = data.output || "Completed.";
+        if (data.success) {
+          showToast("Autostart successfully enabled on system reboot!");
+          fetchAutostartStatus();
+        } else {
+          showToast("Autostart configuration finished with notes.");
+        }
+      } catch (err) {
+        outBox.innerText = "Error enabling autostart: " + err.message;
+        showToast("Error: " + err.message);
+      } finally {
+        btn.disabled = false;
+        btn.innerText = "Enable Autostart on Reboot";
       }
     }
 

@@ -213,3 +213,27 @@ python3 scripts/sync_loot_to_github.py --push
 ```
 Or click **Sync & Push to GitHub** in the Web Dashboard under **System & GitHub**.
 
+---
+
+## Autostart on System Reboot
+
+Ensure the Twitch Drops Miner daemon, Web Dashboard, and cron claimers automatically start whenever your container or server reboots:
+
+### 1. One-Command Autostart Setup
+```bash
+bash scripts/enable_autostart.sh
+```
+This automatically registers `twitch-drops`, `auto-loot-web`, and `crond` into OpenRC's `default` runlevel on Alpine Linux (or systemd enabled units on Debian/Ubuntu).
+
+### 2. Verify Autostart Registration
+```bash
+# Verify services registered for boot
+bash scripts/enable_autostart.sh --status
+
+# On Alpine Linux:
+rc-update show default
+```
+
+### 3. In-Browser One-Click
+Navigate to **System & GitHub** in the Web Dashboard and click **Enable Autostart on Reboot**.
+
