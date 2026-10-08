@@ -384,6 +384,7 @@ def build_status_payload():
                 twitch_info["claimed_history_count"] = overview.get("claimed_history_count", 0)
                 twitch_info["ready_to_claim_count"] = overview.get("ready_to_claim_count", 0)
                 twitch_info["in_progress_count"] = overview.get("in_progress_count", 0)
+                twitch_info["last_refreshed_at"] = overview.get("last_refreshed_at")
                 
                 # Maintain legacy drops_in_progress flat list for backwards compatibility
                 for camp in camps:
@@ -402,6 +403,20 @@ def build_status_payload():
                             })
         except Exception as err:
             twitch_info["error"] = str(err)
+
+    if not twitch_info["campaigns"]:
+        try:
+            fallback_client = TwitchClient(twitch_token or "")
+            overview = fallback_client.get_drops_overview(priority_games=priority_list)
+            camps = overview.get("campaigns", [])
+            act_games_low = [ag.lower() for ag in priority_list]
+            for c in camps:
+                c["is_activated"] = (c.get("game", "").lower() in act_games_low)
+            twitch_info["campaigns"] = camps
+            twitch_info["active_campaigns_count"] = overview.get("total_campaigns", 0)
+            twitch_info["last_refreshed_at"] = overview.get("last_refreshed_at")
+        except Exception as fb_err:
+            logger.debug("Could not load fallback campaign overview: %s", fb_err)
 
     # 2. Epic Games Status & Free Promotions
     active_free, upcoming_free = fetch_epic_freebies()
@@ -1008,6 +1023,27 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 "success": res.returncode == 0,
                 "output": (res.stdout or "") + "\n" + (res.stderr or ""),
                 "status": status_after
+            }).encode("utf-8"))
+            return
+
+        # 13. Twitch: Daily / Manual Campaign Refresh
+        if self.path == "/api/campaigns/refresh":
+            env = load_env_file()
+            token = env.get("TWITCH_AUTH_TOKEN", "").strip()
+            priority_str = env.get("TWITCH_PRIORITY_GAMES", "")
+            priority_games = [g.strip() for g in priority_str.split(",") if g.strip()]
+
+            client = TwitchClient(token)
+            overview = client.get_drops_overview(priority_games=priority_games, force_refresh=True)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                "success": True,
+                "message": f"Successfully refreshed live campaigns! Found {overview.get('total_campaigns', 0)} active campaigns.",
+                "total_campaigns": overview.get("total_campaigns", 0),
+                "last_refreshed_at": overview.get("last_refreshed_at", ""),
+                "campaigns": overview.get("campaigns", []),
             }).encode("utf-8"))
             return
 

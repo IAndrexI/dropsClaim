@@ -76,6 +76,7 @@ class DropsMiner:
         self.webhook_url = webhook_url
         self.running = False
         self.current_stream: Optional[Dict[str, Any]] = None
+        self.last_campaign_refresh: float = 0.0
 
     def notify(self, message: str):
         """Send notification to user-configured webhook (Discord/Telegram compatible)."""
@@ -131,6 +132,7 @@ class DropsMiner:
         """
         Select the highest priority campaign that still has unclaimed drops.
         Respects 'mode' (default vs selective) and 'activated_games'.
+        Periodically refreshes campaign roster (at least hourly / daily) to discover new drops.
         """
         config = load_mining_config()
         mode = config.get("mode", "default")
@@ -138,7 +140,13 @@ class DropsMiner:
         if not activated_games and self.priority_games:
             activated_games = self.priority_games
 
-        campaigns = self.client.get_all_active_campaigns(priority_games=activated_games)
+        now = time.time()
+        force_refresh = (now - self.last_campaign_refresh >= 3600)  # Hourly / daily refresh
+        campaigns = self.client.get_all_active_campaigns(priority_games=activated_games, force_refresh=force_refresh)
+        if force_refresh:
+            self.last_campaign_refresh = now
+            logger.info("[MINER] Refreshed active drop campaigns roster (Found %d campaigns)", len(campaigns))
+
         if not campaigns:
             logger.info("No active drop campaigns found on Twitch right now.")
             return None
