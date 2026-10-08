@@ -69,6 +69,12 @@ if command -v rc-update >/dev/null 2>&1; then
 EOF
     chmod +x /etc/periodic/daily/free-games
 
+    cat << 'EOF' > /etc/periodic/daily/refresh-twitch-campaigns
+#!/bin/sh
+python3 /opt/auto-loot-claimer/scripts/refresh_campaigns.py >> /var/log/twitch-campaigns.log 2>&1
+EOF
+    chmod +x /etc/periodic/daily/refresh-twitch-campaigns
+
     echo "[4/4] Starting services now if not already active..."
     rc-service crond start 2>/dev/null || true
     rc-service twitch-drops restart 2>/dev/null || rc-service twitch-drops start 2>/dev/null || true

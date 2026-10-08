@@ -17,6 +17,7 @@ import concurrent.futures
 from datetime import datetime, timezone
 import json
 import logging
+import os
 import random
 import re
 import time
@@ -27,13 +28,16 @@ from typing import Any, Dict, List, Optional, Set
 
 logger = logging.getLogger("twitch_api")
 
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+DATA_DIR = os.path.join(BASE_DIR, "data")
+CAMPAIGNS_CACHE_FILE = os.path.join(DATA_DIR, "twitch_campaigns_cache.json")
 
 TWITCH_CLIENT_ID = "kimne78kx3ncx6brgo4mv6wki5h1ko"  # Official Twitch Web Client ID
 GQL_URL = "https://gql.twitch.tv/gql"
 SPADE_URL = "https://spade.twitch.tv/track"
 SPADE_FALLBACK_URL = "https://spade.twitch.tv/batched"
 
-DROPHUNTER_CACHE: Dict[str, Any] = {"timestamp": 0, "campaigns": []}
+DROPHUNTER_CACHE: Dict[str, Any] = {"timestamp": 0, "campaigns": [], "updated_at": ""}
 
 
 def clean_text(text: Any) -> str:
@@ -49,13 +53,16 @@ def clean_text(text: Any) -> str:
     )
     cleaned = emoji_pattern.sub("", str(text))
     return " ".join(cleaned.split()).strip()
- 
- 
+
+
 def is_campaign_expired(camp: Optional[Dict[str, Any]]) -> bool:
-    """Check if a campaign has expired based on status or endAt timestamp."""
+    """Check if a campaign has expired based on status, time_left, or endAt timestamp."""
     if not camp:
         return True
     if camp.get("status") == "EXPIRED":
+        return True
+    time_left = str(camp.get("time_left", "")).lower()
+    if any(k in time_left for k in ["ended", "expired", "past"]):
         return True
     end_at_str = camp.get("endAt")
     if end_at_str:
@@ -69,16 +76,31 @@ def is_campaign_expired(camp: Optional[Dict[str, Any]]) -> bool:
 
 
 
-def fetch_drophunter_live_campaigns() -> List[Dict[str, Any]]:
+def fetch_drophunter_live_campaigns(force_refresh: bool = False) -> List[Dict[str, Any]]:
     """
     Fetch all active drop campaigns from drophunter.app/drops.
-    Returns 80+ games and 120+ live campaigns with active drop items.
-    Cached for 10 minutes to maintain fast responses and low resource usage.
+    Returns 80+ games and 115+ live campaigns with active drop items.
+    Cached for 10 minutes in memory and persisted to data/twitch_campaigns_cache.json for daily freshness.
     """
     global DROPHUNTER_CACHE
     now = time.time()
-    if now - DROPHUNTER_CACHE["timestamp"] < 600 and DROPHUNTER_CACHE["campaigns"]:
+    if not force_refresh and (now - DROPHUNTER_CACHE["timestamp"] < 600) and DROPHUNTER_CACHE["campaigns"]:
         return DROPHUNTER_CACHE["campaigns"]
+
+    # Try loading from disk if in-memory cache is empty and not force_refresh
+    if not force_refresh and not DROPHUNTER_CACHE["campaigns"] and os.path.exists(CAMPAIGNS_CACHE_FILE):
+        try:
+            with open(CAMPAIGNS_CACHE_FILE, "r", encoding="utf-8") as f:
+                disk_cache = json.load(f)
+                c_list = disk_cache.get("campaigns", [])
+                c_time = disk_cache.get("timestamp", 0)
+                if c_list and (now - c_time < 3600):  # Valid for 1 hour from disk
+                    DROPHUNTER_CACHE["timestamp"] = c_time
+                    DROPHUNTER_CACHE["campaigns"] = c_list
+                    DROPHUNTER_CACHE["updated_at"] = disk_cache.get("updated_at", "")
+                    return c_list
+        except Exception:
+            pass
 
     req = urllib.request.Request(
         "https://drophunter.app/drops",
@@ -95,69 +117,168 @@ def fetch_drophunter_live_campaigns() -> List[Dict[str, Any]]:
         with urllib.request.urlopen(req, timeout=12) as resp:
             html = resp.read().decode("utf-8", errors="ignore")
 
-        game_blocks = html.split('<div class="game-item')
-        for b in game_blocks[1:]:
-            if "platform-twitch" not in b and "Twitch" not in b:
-                continue
+        # 1. Primary parser: New DropHunter HTML structure (pk-card)
+        if 'class="pk-card"' in html or 'class="pk-card ' in html:
+            cards = html.split('class="pk-card"')
+            for card in cards[1:]:
+                # Only include Twitch drop campaigns
+                if "fa-twitch" not in card and "Twitch" not in card:
+                    continue
 
-            m_game = re.search(r'class="mb-0 dl-game-name"[^>]*>\s*<a[^>]*>([^<]+)</a>', b)
-            game_name = clean_text(m_game.group(1)) if m_game else ""
-            if not game_name:
-                continue
+                m_game = re.search(r'class="pk-game"[^>]*>\s*<a[^>]*>([^<]+)</a>', card)
+                game_name = clean_text(m_game.group(1)) if m_game else ""
+                if not game_name:
+                    continue
 
-            m_img = re.search(r'class="game-cover"[^>]*src="([^"]+)"', b)
-            cover_url = m_img.group(1).strip() if m_img else ""
+                m_cover = re.search(r'class="pk-cover"[^>]*>[\s\S]*?<img[^>]*src="([^"]+)"', card)
+                cover_url = m_cover.group(1).strip() if m_cover else ""
 
-            camp_blocks = b.split('class="campaign-mini-item"')
-            for cb in camp_blocks[1:]:
-                m_cname = re.search(r'class="campaign-name"[^>]*title="([^"]+)"', cb) or re.search(
-                    r'class="campaign-name"[^>]*>[\s\S]*?</div>', cb
-                )
-                cname = ""
-                if m_cname:
-                    cname = m_cname.group(1) if len(m_cname.groups()) > 0 else re.sub(r"<[^>]+>", "", m_cname.group(0)).strip()
-                cname = clean_text(cname) or f"{game_name} Drops"
+                camp_blocks = card.split('class="pk-camp"')
+                for cb in camp_blocks[1:]:
+                    m_cname = re.search(r'class="pk-camp-name"[^>]*>([^<]+)</span>', cb)
+                    cname = clean_text(m_cname.group(1)) if m_cname else f"{game_name} Drops"
 
-                rewards = [clean_text(r) for r in re.findall(r'class="reward-label">([^<]+)</div>', cb) if clean_text(r)]
+                    m_time = re.search(r'class="pk-camp-time"[^>]*>[\s\S]*?</i>\s*([^<]+)</span>', cb)
+                    time_left = clean_text(m_time.group(1)) if m_time else ""
 
-                m_time = re.search(r'class="campaign-time"[^>]*>[\s\S]*?<strong>([^<]+)</strong>', cb)
-                time_left = clean_text(m_time.group(1)) if m_time else ""
+                    rewards = []
+                    rw_matches = re.findall(r'data-reward-name="([^"]+)"(?:\s+data-reward-req="([^"]+)")?', cb)
+                    if rw_matches:
+                        for r_name, r_req in rw_matches:
+                            rewards.append({"name": clean_text(r_name), "req": clean_text(r_req)})
+                    else:
+                        names = re.findall(r'class="pk-rw-name"[^>]*>([^<]+)</div>', cb)
+                        for n in names:
+                            rewards.append({"name": clean_text(n), "req": ""})
 
-                # Construct drop entries
-                time_based_drops = []
-                for idx, r_name in enumerate(rewards):
-                    time_based_drops.append({
-                        "id": f"dh_{game_name}_{idx}_{r_name}".replace(" ", "_"),
-                        "name": r_name,
-                        "requiredMinutesWatched": 0,
-                        "self": {
-                            "currentMinutesWatched": 0,
-                            "isClaimed": False,
-                            "dropInstanceID": None,
-                        },
+                    time_based_drops = []
+                    for idx, rw in enumerate(rewards):
+                        r_name = rw["name"]
+                        req_str = rw["req"]
+                        req_mins = 0
+                        m_h = re.search(r'(\d+)\s*h', req_str)
+                        m_m = re.search(r'(\d+)\s*m', req_str)
+                        if m_h:
+                            req_mins += int(m_h.group(1)) * 60
+                        if m_m:
+                            req_mins += int(m_m.group(1))
+
+                        time_based_drops.append({
+                            "id": f"dh_{game_name}_{idx}_{r_name}".replace(" ", "_"),
+                            "name": r_name,
+                            "requiredMinutesWatched": req_mins,
+                            "self": {
+                                "currentMinutesWatched": 0,
+                                "isClaimed": False,
+                                "dropInstanceID": None,
+                            },
+                        })
+
+                    camp_id = f"dh_{game_name}_{cname}".replace(" ", "_")
+                    game_slug = game_name.lower().replace(" ", "-").replace(":", "").replace("'", "")
+                    stream_url = f"https://www.twitch.tv/directory/category/{urllib.parse.quote(game_slug)}?filter=drops"
+
+                    results.append({
+                        "id": camp_id,
+                        "name": cname,
+                        "game": {"displayName": game_name, "name": game_name},
+                        "cover_url": cover_url,
+                        "time_left": time_left,
+                        "timeBasedDrops": time_based_drops,
+                        "stream_url": stream_url,
+                        "source": "drophunter",
                     })
 
-                camp_id = f"dh_{game_name}_{cname}".replace(" ", "_")
-                game_slug = game_name.lower().replace(" ", "-").replace(":", "").replace("'", "")
-                stream_url = f"https://www.twitch.tv/directory/category/{urllib.parse.quote(game_slug)}?filter=drops"
+        # 2. Fallback parser: Legacy DropHunter HTML structure (game-item)
+        if not results and '<div class="game-item' in html:
+            game_blocks = html.split('<div class="game-item')
+            for b in game_blocks[1:]:
+                if "platform-twitch" not in b and "Twitch" not in b:
+                    continue
 
-                results.append({
-                    "id": camp_id,
-                    "name": cname,
-                    "game": {"displayName": game_name, "name": game_name},
-                    "cover_url": cover_url,
-                    "time_left": time_left,
-                    "timeBasedDrops": time_based_drops,
-                    "stream_url": stream_url,
-                    "source": "drophunter",
-                })
+                m_game = re.search(r'class="mb-0 dl-game-name"[^>]*>\s*<a[^>]*>([^<]+)</a>', b)
+                game_name = clean_text(m_game.group(1)) if m_game else ""
+                if not game_name:
+                    continue
+
+                m_img = re.search(r'class="game-cover"[^>]*src="([^"]+)"', b)
+                cover_url = m_img.group(1).strip() if m_img else ""
+
+                camp_blocks = b.split('class="campaign-mini-item"')
+                for cb in camp_blocks[1:]:
+                    m_cname = re.search(r'class="campaign-name"[^>]*title="([^"]+)"', cb) or re.search(
+                        r'class="campaign-name"[^>]*>[\s\S]*?</div>', cb
+                    )
+                    cname = ""
+                    if m_cname:
+                        cname = m_cname.group(1) if len(m_cname.groups()) > 0 else re.sub(r"<[^>]+>", "", m_cname.group(0)).strip()
+                    cname = clean_text(cname) or f"{game_name} Drops"
+
+                    rewards = [clean_text(r) for r in re.findall(r'class="reward-label">([^<]+)</div>', cb) if clean_text(r)]
+                    m_time = re.search(r'class="campaign-time"[^>]*>[\s\S]*?<strong>([^<]+)</strong>', cb)
+                    time_left = clean_text(m_time.group(1)) if m_time else ""
+
+                    time_based_drops = []
+                    for idx, r_name in enumerate(rewards):
+                        time_based_drops.append({
+                            "id": f"dh_{game_name}_{idx}_{r_name}".replace(" ", "_"),
+                            "name": r_name,
+                            "requiredMinutesWatched": 0,
+                            "self": {
+                                "currentMinutesWatched": 0,
+                                "isClaimed": False,
+                                "dropInstanceID": None,
+                            },
+                        })
+
+                    camp_id = f"dh_{game_name}_{cname}".replace(" ", "_")
+                    game_slug = game_name.lower().replace(" ", "-").replace(":", "").replace("'", "")
+                    stream_url = f"https://www.twitch.tv/directory/category/{urllib.parse.quote(game_slug)}?filter=drops"
+
+                    results.append({
+                        "id": camp_id,
+                        "name": cname,
+                        "game": {"displayName": game_name, "name": game_name},
+                        "cover_url": cover_url,
+                        "time_left": time_left,
+                        "timeBasedDrops": time_based_drops,
+                        "stream_url": stream_url,
+                        "source": "drophunter",
+                    })
 
         if results:
+            updated_iso = datetime.now(timezone.utc).isoformat()
             DROPHUNTER_CACHE["timestamp"] = now
             DROPHUNTER_CACHE["campaigns"] = results
+            DROPHUNTER_CACHE["updated_at"] = updated_iso
             logger.info("Retrieved %d active drop campaigns from drophunter.app", len(results))
+
+            # Persist to disk cache
+            try:
+                os.makedirs(DATA_DIR, exist_ok=True)
+                with open(CAMPAIGNS_CACHE_FILE, "w", encoding="utf-8") as f:
+                    json.dump({
+                        "timestamp": now,
+                        "updated_at": updated_iso,
+                        "total_campaigns": len(results),
+                        "campaigns": results,
+                    }, f, indent=2)
+            except Exception as save_err:
+                logger.debug("Could not save campaigns disk cache: %s", save_err)
+
     except Exception as e:
-        logger.warning("Could not fetch drophunter.app campaigns (%s), using native Twitch fallback", e)
+        logger.warning("Could not fetch drophunter.app campaigns (%s), attempting disk cache fallback", e)
+        if not results and os.path.exists(CAMPAIGNS_CACHE_FILE):
+            try:
+                with open(CAMPAIGNS_CACHE_FILE, "r", encoding="utf-8") as f:
+                    disk_cache = json.load(f)
+                    results = disk_cache.get("campaigns", [])
+                    if results:
+                        DROPHUNTER_CACHE["timestamp"] = disk_cache.get("timestamp", now)
+                        DROPHUNTER_CACHE["campaigns"] = results
+                        DROPHUNTER_CACHE["updated_at"] = disk_cache.get("updated_at", "")
+            except Exception:
+                pass
 
     return results or DROPHUNTER_CACHE.get("campaigns", [])
 
@@ -309,7 +430,9 @@ class TwitchClient:
             logger.error("Error fetching inventory via persisted query: %s", e)
             return {}
 
-    def get_all_active_campaigns(self, priority_games: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    def get_all_active_campaigns(
+        self, priority_games: Optional[List[str]] = None, force_refresh: bool = False
+    ) -> List[Dict[str, Any]]:
         """
         Fetch all active drop campaigns currently streaming on Twitch merged with user progress.
         Combines drophunter.app/drops (all 85+ games & 120+ live campaigns) + user inventory progress + GQL.
@@ -319,7 +442,7 @@ class TwitchClient:
         campaigns_map: Dict[str, Dict[str, Any]] = {}
 
         # 1. Fetch comprehensive live campaigns roster from drophunter.app (all 85+ games)
-        dh_campaigns = fetch_drophunter_live_campaigns()
+        dh_campaigns = fetch_drophunter_live_campaigns(force_refresh=force_refresh)
         for dh_c in dh_campaigns:
             cid = dh_c.get("id")
             if cid:
@@ -389,7 +512,9 @@ class TwitchClient:
 
         return list(campaigns_map.values())
 
-    def get_drops_overview(self, priority_games: Optional[List[str]] = None) -> Dict[str, Any]:
+    def get_drops_overview(
+        self, priority_games: Optional[List[str]] = None, force_refresh: bool = False
+    ) -> Dict[str, Any]:
         """
         Builds a comprehensive drops overview:
         - Cross-references every drop against the user's Twitch inventory (167+ claimed items).
@@ -417,7 +542,7 @@ class TwitchClient:
             if cname:
                 claimed_names.add(cname.lower().strip())
 
-        all_campaigns = self.get_all_active_campaigns(priority_games)
+        all_campaigns = self.get_all_active_campaigns(priority_games, force_refresh=force_refresh)
 
         formatted_campaigns = []
         total_ready = 0
@@ -538,6 +663,7 @@ class TwitchClient:
             "claimed_history_count": len(claimed_events),
             "ready_to_claim_count": total_ready,
             "in_progress_count": total_in_prog,
+            "last_refreshed_at": DROPHUNTER_CACHE.get("updated_at") or datetime.now(timezone.utc).isoformat(),
         }
 
     def find_eligible_channel(self, game_name: str) -> Optional[Dict[str, Any]]:

@@ -272,12 +272,18 @@
         </div>
       </div>
 
-      <!-- Filter Controls -->
-      <div class="filter-group">
-        <button class="filter-btn active" onclick="setDropsFilter('all', event)">All Live Campaigns (<span id="flt-all-count">0</span>)</button>
-        <button class="filter-btn" onclick="setDropsFilter('activated', event)">Activated for Mining (<span id="flt-act-count">0</span>)</button>
-        <button class="filter-btn" onclick="setDropsFilter('in_progress', event)">In Progress (<span id="flt-prog-count">0</span>)</button>
-        <button class="filter-btn" onclick="setDropsFilter('ready', event)">Ready to Claim (<span id="flt-ready-count">0</span>)</button>
+      <!-- Campaign Controls: Category Filters & Daily Refresh -->
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 8px;">
+        <div class="filter-group" style="margin-bottom: 0;">
+          <button class="filter-btn active" onclick="setDropsFilter('all', event)">All Live Campaigns (<span id="flt-all-count">0</span>)</button>
+          <button class="filter-btn" onclick="setDropsFilter('activated', event)">Activated for Mining (<span id="flt-act-count">0</span>)</button>
+          <button class="filter-btn" onclick="setDropsFilter('in_progress', event)">In Progress (<span id="flt-prog-count">0</span>)</button>
+          <button class="filter-btn" onclick="setDropsFilter('ready', event)">Ready to Claim (<span id="flt-ready-count">0</span>)</button>
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <span style="font-size: 0.78rem; color: var(--text-muted);" id="campaigns-last-refreshed">Daily Refresh: Active</span>
+          <button class="btn btn-sm btn-primary" id="btn-refresh-campaigns" onclick="refreshLiveCampaigns()">Refresh Campaigns</button>
+        </div>
       </div>
 
       <!-- Drops Campaigns Grid -->
@@ -596,6 +602,31 @@
       if (name === "system") { checkGitUpdates(); fetchBotsStatus(); fetchAutostartStatus(); }
     }
 
+    async function refreshLiveCampaigns() {
+      const btn = document.getElementById("btn-refresh-campaigns");
+      if (btn) {
+        btn.disabled = true;
+        btn.innerText = "Refreshing...";
+      }
+      try {
+        const res = await fetch("/api/campaigns/refresh", { method: "POST" });
+        const d = await res.json();
+        if (d.success) {
+          showToast(d.message || "Live campaigns refreshed!");
+          await fetchData();
+        } else {
+          showToast("Failed to refresh campaigns: " + (d.error || "Unknown error"));
+        }
+      } catch (err) {
+        showToast("Error refreshing campaigns: " + err.message);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerText = "Refresh Campaigns";
+        }
+      }
+    }
+
     function setDropsFilter(filterName, evt) {
       currentDropsFilter = filterName;
       document.querySelectorAll(".filter-btn").forEach(b => b.classList.remove("active"));
@@ -632,6 +663,18 @@
       document.getElementById("stat-inventory-count").innerText = `${totalClaimedCount} Claimed`;
       document.getElementById("stat-active-campaigns").innerText = `${twitch.active_campaigns_count || 0} Active`;
       document.getElementById("stat-ready-count").innerText = `${twitch.ready_to_claim_count || 0} Items`;
+
+      if (twitch.last_refreshed_at) {
+        const refElem = document.getElementById("campaigns-last-refreshed");
+        if (refElem) {
+          try {
+            const d = new Date(twitch.last_refreshed_at);
+            refElem.innerText = "Refreshed: " + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          } catch(e) {
+            refElem.innerText = "Refreshed: Today";
+          }
+        }
+      }
 
       // 2. Mining Mode & Configuration
       const miningCfg = twitch.mining_config || { mode: "default", activated_games: [] };
