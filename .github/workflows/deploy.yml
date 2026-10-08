@@ -1,0 +1,30 @@
+name: Deploy dropsClaim to LXC
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    timeout-minutes: 10
+    steps:
+      - name: Pull and restart dropsClaim in LXC
+        run: |
+          TARGET_DIR="/opt/dropsClaim"
+          if [ ! -d "$TARGET_DIR" ]; then
+            TARGET_DIR="/opt/auto-loot-claimer"
+          fi
+          if [ ! -d "$TARGET_DIR" ]; then
+            TARGET_DIR="$(pwd)"
+          fi
+          cd "$TARGET_DIR"
+          git fetch origin main
+          git reset --hard origin/main
+          if [ -d ".venv" ]; then
+            .venv/bin/pip install -r requirements.txt -q || true
+          fi
+          if systemctl is-active --quiet dropsclaim 2>/dev/null; then
+            systemctl restart dropsclaim
+          fi
