@@ -513,7 +513,71 @@ def build_status_payload():
 
 class DashboardHandler(SimpleHTTPRequestHandler):
     def do_GET(self):
-        # 1. Login Page
+        # 1. Public PWA & Static Asset Handlers (Do not require authentication)
+        if self.path == "/manifest.json":
+            manifest_path = os.path.join(os.path.dirname(__file__), "static", "manifest.json")
+            if os.path.exists(manifest_path):
+                self.send_response(200)
+                self.send_header("Content-Type", "application/manifest+json; charset=utf-8")
+                self.send_header("Cache-Control", "public, max-age=3600")
+                self.end_headers()
+                with open(manifest_path, "rb") as f:
+                    self.wfile.write(f.read())
+            else:
+                self.send_error(404, "Manifest not found")
+            return
+
+        if self.path == "/sw.js":
+            sw_path = os.path.join(os.path.dirname(__file__), "static", "sw.js")
+            if os.path.exists(sw_path):
+                self.send_response(200)
+                self.send_header("Content-Type", "application/javascript; charset=utf-8")
+                self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+                self.send_header("Service-Worker-Allowed", "/")
+                self.end_headers()
+                with open(sw_path, "rb") as f:
+                    self.wfile.write(f.read())
+            else:
+                self.send_error(404, "Service Worker not found")
+            return
+
+        if self.path.startswith("/static/"):
+            clean_path = self.path.split("?")[0].lstrip("/")
+            full_path = os.path.join(os.path.dirname(__file__), clean_path)
+            if os.path.exists(full_path) and os.path.isfile(full_path):
+                ext = os.path.splitext(full_path)[1].lower()
+                mime_map = {
+                    ".svg": "image/svg+xml",
+                    ".png": "image/png",
+                    ".ico": "image/x-icon",
+                    ".js": "application/javascript",
+                    ".json": "application/json",
+                    ".css": "text/css",
+                }
+                ctype = mime_map.get(ext, "application/octet-stream")
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Cache-Control", "public, max-age=86400")
+                self.end_headers()
+                with open(full_path, "rb") as f:
+                    self.wfile.write(f.read())
+            else:
+                self.send_error(404, "Static asset not found")
+            return
+
+        if self.path == "/favicon.ico":
+            ico_path = os.path.join(os.path.dirname(__file__), "static", "icons", "favicon.ico")
+            if os.path.exists(ico_path):
+                self.send_response(200)
+                self.send_header("Content-Type", "image/x-icon")
+                self.end_headers()
+                with open(ico_path, "rb") as f:
+                    self.wfile.write(f.read())
+            else:
+                self.send_error(404, "Favicon not found")
+            return
+
+        # 2. Login Page
         if self.path == "/login":
             if is_authenticated(self.headers):
                 self.send_response(302)

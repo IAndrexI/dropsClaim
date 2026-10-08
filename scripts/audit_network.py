@@ -44,6 +44,9 @@ ALLOWED_DOMAINS = {
     # Official Open-Source Repositories (installers only)
     "github.com",
     "ghcr.io",
+    # W3C Standards & XML namespaces (SVG / HTML)
+    "w3.org",
+    "www.w3.org",
     # Local loopback
     "localhost",
     "127.0.0.1",

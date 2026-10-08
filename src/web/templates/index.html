@@ -4,6 +4,14 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Loot Claimer Dashboard</title>
+  <link rel="manifest" href="/manifest.json">
+  <link rel="icon" type="image/svg+xml" href="/static/icons/icon.svg">
+  <link rel="icon" type="image/png" sizes="192x192" href="/static/icons/icon-192.png">
+  <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
+  <meta name="theme-color" content="#6366f1">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="AutoLoot">
   <style>
     :root {
       --bg: #0b0f19;
@@ -38,6 +46,33 @@
     .btn-success { background: #059669; border-color: #059669; }
     .btn-success:hover { background: #047857; }
     .btn-sm { padding: 4px 10px; font-size: 0.78rem; }
+    
+    /* Live Sync Badge & Pulse Dot */
+    .sync-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: #94a3b8;
+      background: rgba(30, 41, 59, 0.6);
+      padding: 5px 10px;
+      border-radius: 9999px;
+      border: 1px solid #334155;
+    }
+    .sync-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #22c55e;
+      display: inline-block;
+      box-shadow: 0 0 6px #22c55e;
+      transition: background 0.3s, box-shadow 0.3s;
+    }
+    .sync-dot.pulsing {
+      background: #38bdf8;
+      box-shadow: 0 0 8px #38bdf8;
+    }
     
     /* Status banner */
     .status-bar { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 24px; }
@@ -168,6 +203,12 @@
         <p>Continuous inventory cross-referencing, drop selection, and multi-store auto-claim</p>
       </div>
       <div class="header-actions">
+        <span id="sync-status-indicator" class="sync-badge" title="Live bidirectional sync with server">
+          <span class="sync-dot"></span>
+          <span id="sync-text">LIVE SYNCED</span>
+        </span>
+        <button id="btn-install-app" class="btn btn-sm" onclick="installAppPrompt()" style="display: none; border-color: #8b5cf6; color: #c084fc;" title="Install as desktop or mobile app">Install App</button>
+        <span id="app-mode-badge" class="badge" style="display: none; background: rgba(99, 102, 241, 0.15); color: #818cf8;">[APP MODE]</span>
         <button class="btn btn-primary" onclick="claimDropsNow()">Claim Ready Drops</button>
         <button class="btn btn-success" onclick="triggerGamesCheck()">Check All Stores</button>
         <button class="btn" onclick="fetchData()">Refresh</button>
@@ -617,6 +658,7 @@
         if (d.success) {
           showToast(d.message || "Live campaigns refreshed!");
           await fetchData();
+          broadcastSyncEvent("campaigns");
         } else {
           showToast("Failed to refresh campaigns: " + (d.error || "Unknown error"));
         }
@@ -637,7 +679,7 @@
       if (currentData) renderDropsGrid(currentData.twitch || {});
     }
 
-    async function fetchData() {
+    async function fetchData(silent = false) {
       try {
         const res = await fetch("/api/status");
         if (res.status === 401) {
@@ -646,14 +688,24 @@
         }
         currentData = await res.json();
         renderDashboard(currentData);
+        pulseSyncIndicator();
       } catch (err) {
-        showToast("Error connecting to server API: " + err.message);
+        if (!silent) {
+          showToast("Error connecting to server API: " + err.message);
+        }
       }
     }
 
     function renderDashboard(data) {
       const twitch = data.twitch || {};
       
+      // App Mode vs Browser Detection
+      const isApp = isStandaloneApp();
+      const appBadge = document.getElementById("app-mode-badge");
+      const installBtn = document.getElementById("btn-install-app");
+      if (appBadge) appBadge.style.display = isApp ? "inline-flex" : "none";
+      if (installBtn && isApp) installBtn.style.display = "none";
+
       // 1. Stats bar
       document.getElementById("stat-twitch-user").innerHTML = twitch.username 
         ? `<span style="color: #a855f7;">@${twitch.username}</span>`
@@ -870,6 +922,7 @@
         const data = await res.json();
         showToast(data.message || `Switched to ${mode} mode.`);
         fetchData();
+        broadcastSyncEvent("mining_mode");
       } catch (err) {
         showToast("Error updating mining mode: " + err.message);
       }
@@ -887,6 +940,7 @@
         const data = await res.json();
         showToast(data.message || `${gameName} updated.`);
         fetchData();
+        broadcastSyncEvent("toggle_activation");
       } catch (err) {
         showToast("Error updating activation: " + err.message);
       }
@@ -909,6 +963,7 @@
         const data = await res.json();
         showToast(data.message || `Activated all ${allGames.length} games.`);
         fetchData();
+        broadcastSyncEvent("activate_all");
       } catch (err) {
         showToast("Error activating games: " + err.message);
       }
@@ -925,6 +980,7 @@
         const data = await res.json();
         showToast(data.message || "Deactivated all games.");
         fetchData();
+        broadcastSyncEvent("deactivate_all");
       } catch (err) {
         showToast("Error deactivating games: " + err.message);
       }
@@ -941,6 +997,7 @@
         const data = await res.json();
         showToast(data.message || "Reset to Default mode.");
         fetchData();
+        broadcastSyncEvent("reset_mode");
       } catch (err) {
         showToast("Error resetting mode: " + err.message);
       }
@@ -1088,6 +1145,7 @@
         const data = await res.json();
         showToast(data.message || `Updated ${title}`);
         fetchData();
+        broadcastSyncEvent("toggle_claim_item");
       } catch (err) {
         showToast("Error updating claim status: " + err.message);
       }
@@ -1315,6 +1373,7 @@
         const data = await res.json();
         showToast(data.message || "All credentials saved successfully!");
         fetchData();
+        broadcastSyncEvent("save_accounts");
       } catch (err) {
         showToast("Error saving credentials: " + err.message);
       }
@@ -1351,6 +1410,7 @@
         const data = await res.json();
         showToast(data.message || "Drop claimed!");
         fetchData();
+        broadcastSyncEvent("claim_drop");
       } catch (err) {
         showToast("Claim request failed: " + err.message);
       }
@@ -1363,6 +1423,7 @@
         const data = await res.json();
         showToast(data.message || `Claimed ${data.claimed || 0} completed drops!`);
         fetchData();
+        broadcastSyncEvent("claim_all_drops");
       } catch (err) {
         showToast("Claim request failed: " + err.message);
       }
@@ -1379,6 +1440,7 @@
         });
         const data = await res.json();
         showToast(data.message || "Game claim check initiated!");
+        broadcastSyncEvent("trigger_games");
       } catch (err) {
         showToast("Error triggering game check: " + err.message);
       }
@@ -1445,6 +1507,7 @@
         if (data.success) {
           showToast("Successfully updated from GitHub!");
           checkGitUpdates();
+          broadcastSyncEvent("git_update");
         } else {
           showToast("Update encountered an error.");
         }
@@ -1495,6 +1558,7 @@
         const data = await res.json();
         showToast(data.message || "Bots terminated.");
         fetchBotsStatus();
+        broadcastSyncEvent("kill_bots");
       } catch (err) {
         showToast("Error killing bots: " + err.message);
       }
@@ -1510,6 +1574,7 @@
         outBox.innerText = data.output || "Completed.";
         if (data.success) {
           showToast("Claimed loot synced and pushed to GitHub!");
+          broadcastSyncEvent("sync_github");
         } else {
           showToast("Sync finished with notes (see output box).");
         }
@@ -1570,6 +1635,7 @@
         if (data.success) {
           showToast("Autostart successfully enabled on system reboot!");
           fetchAutostartStatus();
+          broadcastSyncEvent("enable_autostart");
         } else {
           showToast("Autostart configuration finished with notes.");
         }
@@ -1593,9 +1659,122 @@
       return JSON.stringify(obj);
     }
 
-    // Initial load & 45s periodic refresh
+    // ==========================================
+    // Real-Time Synchronization Bus (App <-> Website)
+    // ==========================================
+    let syncChannel = null;
+    try {
+      syncChannel = new BroadcastChannel("autoloot_sync_channel");
+      syncChannel.onmessage = (event) => {
+        if (event.data && event.data.action === "SYNC") {
+          pulseSyncIndicator();
+          fetchData(true);
+        }
+      };
+    } catch (e) {}
+
+    window.addEventListener("storage", (e) => {
+      if (e.key === "autoloot_sync_timestamp") {
+        pulseSyncIndicator();
+        fetchData(true);
+      }
+    });
+
+    function broadcastSyncEvent(source = "action") {
+      try {
+        localStorage.setItem("autoloot_sync_timestamp", Date.now().toString());
+        if (syncChannel) syncChannel.postMessage({ action: "SYNC", source });
+        if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+          navigator.serviceWorker.controller.postMessage({ type: "SYNC_NOW" });
+        }
+      } catch (e) {}
+    }
+
+    // Auto re-sync when window gains focus or switches to foreground
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) {
+        pulseSyncIndicator();
+        fetchData(true);
+      }
+    });
+    window.addEventListener("focus", () => {
+      pulseSyncIndicator();
+      fetchData(true);
+    });
+
+    function pulseSyncIndicator() {
+      const dot = document.querySelector(".sync-dot");
+      const text = document.getElementById("sync-text");
+      if (dot) dot.classList.add("pulsing");
+      if (text) text.innerText = "SYNCING...";
+      setTimeout(() => {
+        if (dot) dot.classList.remove("pulsing");
+        if (text) text.innerText = "LIVE SYNCED";
+      }, 700);
+    }
+
+    // ==========================================
+    // PWA & Standalone App Installation
+    // ==========================================
+    let deferredInstallPrompt = null;
+    window.addEventListener("beforeinstallprompt", (e) => {
+      e.preventDefault();
+      deferredInstallPrompt = e;
+      const btn = document.getElementById("btn-install-app");
+      if (btn && !isStandaloneApp()) {
+        btn.style.display = "inline-flex";
+      }
+    });
+
+    window.addEventListener("appinstalled", () => {
+      showToast("App installed successfully! Running in synchronized app mode.");
+      deferredInstallPrompt = null;
+      const btn = document.getElementById("btn-install-app");
+      if (btn) btn.style.display = "none";
+      const badge = document.getElementById("app-mode-badge");
+      if (badge) badge.style.display = "inline-flex";
+    });
+
+    function isStandaloneApp() {
+      return window.matchMedia("(display-mode: standalone)").matches ||
+             window.navigator.standalone === true ||
+             document.referrer.includes("android-app://");
+    }
+
+    async function installAppPrompt() {
+      if (deferredInstallPrompt) {
+        deferredInstallPrompt.prompt();
+        const choice = await deferredInstallPrompt.userChoice;
+        if (choice && choice.outcome === "accepted") {
+          showToast("Auto Loot Claimer app installed successfully!");
+        }
+        deferredInstallPrompt = null;
+        const btn = document.getElementById("btn-install-app");
+        if (btn) btn.style.display = "none";
+      } else {
+        showToast("To install: On Chrome/Edge click the Install button in the address bar; on iOS tap Share -> 'Add to Home Screen'.");
+      }
+    }
+
+    // Service Worker Registration
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => {
+        navigator.serviceWorker.register("/sw.js").then(() => {
+          navigator.serviceWorker.addEventListener("message", (event) => {
+            if (event.data && event.data.type === "SYNC_TRIGGERED") {
+              pulseSyncIndicator();
+              fetchData(true);
+            }
+          });
+        }).catch((err) => {
+          console.debug("ServiceWorker registration note:", err);
+        });
+      });
+    }
+
+    // Initial load & continuous 10s synchronization heartbeat
     fetchData();
-    setInterval(fetchData, 45000);
+    setInterval(() => fetchData(true), 10000);
   </script>
 </body>
 </html>

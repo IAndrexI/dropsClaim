@@ -237,3 +237,34 @@ rc-update show default
 ### 3. In-Browser One-Click
 Navigate to **System & GitHub** in the Web Dashboard and click **Enable Autostart on Reboot**.
 
+---
+
+## Standalone App & Real-Time Website Sync
+
+The dashboard can be accessed directly in any browser or optionally installed and launched as a standalone application on Desktop and Mobile.
+
+### Real-Time Synchronization Bus
+Actions taken in the web browser (activating games, claiming drops, saving credentials, running updates) immediately synchronize with installed app instances in milliseconds via:
+- **BroadcastChannel & Storage Bus**: Cross-window and cross-instance reactive event bus.
+- **Service Worker Network-Only API Policy**: Ensures `/api/*` endpoints always query live state and never serve stale cached data.
+- **Auto-Sync on Foreground / Focus**: Automatically triggers live sync whenever the app or tab gains focus.
+
+### Installing as PWA (Desktop & Mobile)
+1. **Desktop (Chrome / Edge / Brave)**:
+   - Visit the dashboard (`http://<server-ip>:8080`).
+   - Click the **[Install App]** button in the header or the Install icon in the browser address bar.
+   - The application installs as a standalone borderless desktop app with its own taskbar shortcut.
+2. **Mobile (iOS Safari)**:
+   - Tap the **Share** button, then select **Add to Home Screen**.
+3. **Mobile (Android Chrome)**:
+   - Tap **Install App** in the header or select **Add to Home screen** in Chrome's menu.
+
+### Native Desktop App Launcher Scripts
+Launch a standalone windowed desktop app directly without manual browser setup:
+- **Windows**: Double-click `run_app.bat` (or execute `python scripts\desktop_app.py`).
+- **Linux / macOS**: Run `bash run_app.sh` (or execute `python3 scripts/desktop_app.py`).
+- **Options**:
+  - `python3 scripts/desktop_app.py --url https://your-domain.com`: Target remote or tunnel URL.
+  - `python3 scripts/desktop_app.py --port 8080`: Specify local port.
+  - `python3 scripts/desktop_app.py --no-app`: Open in regular browser tab instead of standalone window.
+
