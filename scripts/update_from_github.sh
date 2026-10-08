@@ -74,16 +74,28 @@ if [ "$LOCAL_HEAD" = "$REMOTE_HEAD" ] && [ "$ACTION" != "--force" ]; then
 fi
 
 echo "[1/4] Pulling latest updates from origin/$REMOTE_BRANCH..."
-git pull origin "$REMOTE_BRANCH" --rebase || git reset --hard "origin/$REMOTE_BRANCH"
+git fetch origin "$REMOTE_BRANCH" --quiet
+git reset --hard "origin/$REMOTE_BRANCH"
 
 
-echo "[2/4] Ensuring script execute permissions..."
-chmod +x "$DIR/scripts/"*.sh || true
+echo "[2/4] Ensuring script execute permissions & shortcuts..."
+chmod +x "$DIR/scripts/"*.sh "$DIR/scripts/"*.py "$DIR"/*.sh 2>/dev/null || true
 chmod +x "$DIR/deploy/alpine-native/openrc/"* 2>/dev/null || true
 
-echo "[3/4] Updating dependencies if needed..."
+# Install global shortcut command 'update-loot'
+for bin_dir in /usr/local/bin /usr/bin; do
+    if [ -d "$bin_dir" ] && [ -w "$bin_dir" ]; then
+        ln -sf "$DIR/update.sh" "$bin_dir/update-loot" 2>/dev/null || true
+        ln -sf "$DIR/update.sh" "$bin_dir/update" 2>/dev/null || true
+    fi
+done
+
+echo "[3/4] Updating dependencies and campaigns cache..."
 if [ -d "$DIR/vendor/free-games-claimer" ]; then
     (cd "$DIR/vendor/free-games-claimer" && git pull origin master --quiet 2>/dev/null || true)
+fi
+if [ -f "$DIR/scripts/refresh_campaigns.py" ]; then
+    python3 "$DIR/scripts/refresh_campaigns.py" >/dev/null 2>&1 || true
 fi
 
 echo "[4/4] Restarting active background services..."

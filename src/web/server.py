@@ -293,13 +293,21 @@ def get_git_status():
 
 
 def perform_git_update():
-    update_script = os.path.join(APP_DIR, "scripts", "update_from_github.sh")
+    update_script = os.path.join(APP_DIR, "update.sh")
+    if not os.path.exists(update_script):
+        update_script = os.path.join(APP_DIR, "scripts", "update_from_github.sh")
+
     if os.path.exists(update_script) and os.name != "nt":
-        res = subprocess.run(["bash", update_script], cwd=APP_DIR, capture_output=True, text=True, timeout=90)
+        res = subprocess.run(["bash", update_script], cwd=APP_DIR, capture_output=True, text=True, timeout=120)
         return {"success": res.returncode == 0, "output": (res.stdout or "") + "\n" + (res.stderr or "")}
     else:
-        res = subprocess.run(["git", "pull", "--rebase", "origin", "main"], cwd=APP_DIR, capture_output=True, text=True, timeout=90)
-        return {"success": res.returncode == 0, "output": (res.stdout or "") + "\n" + (res.stderr or "")}
+        # Fallback for Windows or systems without bash
+        try:
+            subprocess.run(["git", "fetch", "origin", "main"], cwd=APP_DIR, capture_output=True, text=True, timeout=60)
+            res = subprocess.run(["git", "reset", "--hard", "origin/main"], cwd=APP_DIR, capture_output=True, text=True, timeout=60)
+            return {"success": res.returncode == 0, "output": (res.stdout or "") + "\n" + (res.stderr or "")}
+        except Exception as e:
+            return {"success": False, "output": f"Update failed: {e}"}
 
 
 def get_autostart_status():
