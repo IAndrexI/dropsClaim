@@ -217,6 +217,27 @@ def get_mining_config():
     }
 
 
+def _send_async_initial_heartbeat(token: str, channel: dict, game_name: str):
+    """Send immediate first minute-watched heartbeat in background upon stream swap."""
+    try:
+        client = TwitchClient(token)
+        if not client.validate_session():
+            return
+        playback_info = client.get_playback_stream_info(channel["channel_login"])
+        broadcast_id = playback_info.get("broadcast_id") or channel.get("stream_id", "")
+        sub_playlist_url = playback_info.get("sub_playlist_url")
+        client.send_minute_watched_heartbeat(
+            channel_id=channel["channel_id"],
+            stream_id=broadcast_id,
+            channel_login=channel["channel_login"],
+            game_name=game_name,
+            game_id=channel.get("game_id"),
+            sub_playlist_url=sub_playlist_url,
+        )
+    except Exception:
+        pass
+
+
 def save_mining_config(mode: str, activated_games: list):
     data_dir = os.path.join(APP_DIR, "data")
     os.makedirs(data_dir, exist_ok=True)
@@ -238,7 +259,7 @@ def save_mining_config(mode: str, activated_games: list):
         json.dump(cfg, f, indent=2)
     save_env_file({"TWITCH_PRIORITY_GAMES": ", ".join(clean_games)})
 
-    # Immediately cancel current stream in miner_status.json if it doesn't match the new selection
+    # Immediately cancel current stream and instantly resolve the new live stream
     status_file = os.path.join(data_dir, "miner_status.json")
     prev_status = {}
     if os.path.exists(status_file):
@@ -252,33 +273,109 @@ def save_mining_config(mode: str, activated_games: list):
     prev_channel = str(prev_status.get("channel_name") or prev_status.get("channel_login") or "").strip()
     was_active = bool(prev_status.get("active"))
 
-    if selected_game:
-        cancel_prefix = f"Cancelled {prev_channel} ({prev_game}). " if (was_active and prev_game.lower() != selected_game.lower()) else ""
-        msg = f"{cancel_prefix}Selected '{selected_game}' to mine (1 stream active at a time). Connecting to live stream..."
-    elif clean_mode == "selective":
-        cancel_prefix = f"Cancelled {prev_channel} ({prev_game}). " if was_active else ""
-        msg = f"{cancel_prefix}Selective mode: Current stream cancelled. Select 1 game below to start mining."
-    else:
-        cancel_prefix = f"Cancelled {prev_channel} ({prev_game}). " if was_active else ""
-        msg = f"{cancel_prefix}Default mode: Auto-selecting 1 eligible drop stream to mine..."
+    env = load_env_file()
+    token = env.get("TWITCH_AUTH_TOKEN", "").strip()
+    target_game = selected_game
 
-    new_status = {
-        "active": False,
-        "switching": True,
-        "paused": False,
-        "user_active": False,
-        "game": selected_game,
-        "selected_game": selected_game,
-        "mode": clean_mode,
-        "message": msg,
-        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-    }
+    # If in default mode with no manual selection, pick the first eligible campaign from cache
+    if not target_game and clean_mode == "default":
+        cache_file = os.path.join(data_dir, "twitch_campaigns_cache.json")
+        if os.path.exists(cache_file):
+            try:
+                with open(cache_file, "r", encoding="utf-8") as f:
+                    cached = json.load(f) or {}
+                for c in cached.get("campaigns", []):
+                    gObj = c.get("game") or {}
+                    gName = (gObj.get("displayName") or gObj.get("name") or "") if isinstance(gObj, dict) else str(gObj or "")
+                    gName = gName.strip()
+                    if gName and gName.lower() != prev_game.lower():
+                        target_game = gName
+                        break
+            except Exception:
+                pass
+
+    new_status = None
+    if target_game and token:
+        try:
+            client = TwitchClient(token)
+            channel = client.find_eligible_channel(target_game, fast_first=True)
+            if channel and channel.get("channel_login"):
+                stream_url = f"https://www.twitch.tv/{channel['channel_login']}"
+                new_status = {
+                    "active": True,
+                    "switching": False,
+                    "paused": False,
+                    "user_active": False,
+                    "game": target_game,
+                    "selected_game": selected_game or target_game,
+                    "mode": clean_mode,
+                    "campaign": target_game,
+                    "channel_id": channel.get("channel_id", ""),
+                    "channel_name": channel["channel_name"],
+                    "channel_login": channel["channel_login"],
+                    "stream_id": channel.get("stream_id", ""),
+                    "game_id": channel.get("game_id", ""),
+                    "stream_url": stream_url,
+                    "viewers": channel.get("viewers", 0),
+                    "minutes_watched": 1,
+                    "user_login": prev_status.get("user_login") or "",
+                    "user_id": prev_status.get("user_id") or "",
+                    "switched_at": now_ts,
+                    "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                }
+                threading.Thread(
+                    target=_send_async_initial_heartbeat,
+                    args=(token, channel, target_game),
+                    daemon=True,
+                ).start()
+            else:
+                new_status = {
+                    "active": False,
+                    "switching": False,
+                    "paused": False,
+                    "user_active": False,
+                    "game": target_game,
+                    "selected_game": selected_game or target_game,
+                    "mode": clean_mode,
+                    "message": f"No live streams currently online with drops enabled for {target_game}.",
+                    "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                }
+        except Exception:
+            pass
+
+    if not new_status:
+        if selected_game:
+            cancel_prefix = f"Cancelled {prev_channel} ({prev_game}). " if (was_active and prev_game.lower() != selected_game.lower()) else ""
+            msg = f"{cancel_prefix}Selected '{selected_game}' to mine (1 stream active at a time). Connecting to live stream..."
+            is_switching = True
+        elif clean_mode == "selective":
+            cancel_prefix = f"Cancelled {prev_channel} ({prev_game}). " if was_active else ""
+            msg = f"{cancel_prefix}Selective mode: Current stream stopped. Select 1 game below to start mining."
+            is_switching = False
+        else:
+            cancel_prefix = f"Cancelled {prev_channel} ({prev_game}). " if was_active else ""
+            msg = f"{cancel_prefix}Default mode: Auto-selecting 1 eligible drop stream to mine..."
+            is_switching = True
+
+        new_status = {
+            "active": False,
+            "switching": is_switching,
+            "paused": False,
+            "user_active": False,
+            "game": selected_game,
+            "selected_game": selected_game,
+            "mode": clean_mode,
+            "message": msg,
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+
     try:
         with open(status_file, "w", encoding="utf-8") as f:
             json.dump(new_status, f, indent=2)
     except Exception:
         pass
 
+    cfg["miner_status"] = new_status
     return cfg
 
 
@@ -1066,18 +1163,21 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 games = [g.strip() for g in str(games).split(",") if g.strip()]
 
             cfg = save_mining_config(mode=mode, activated_games=games[:1])
-            sel = cfg.get("selected_game")
-            msg = (
-                f"Cancelled previous stream. Now mining selected game: '{sel}' ({cfg['mode']} mode)."
-                if sel
-                else f"Cancelled current stream. Switched to '{cfg['mode']}' mode."
-            )
+            mstat = cfg.get("miner_status") or {}
+            sel = cfg.get("selected_game") or mstat.get("game")
+            if mstat.get("active") and mstat.get("channel_name"):
+                msg = f"Instantly switched stream! Now watching {mstat['channel_name']} for '{mstat.get('game')}'."
+            elif sel:
+                msg = f"Cancelled previous stream. Now targeting '{sel}' ({cfg['mode']} mode)."
+            else:
+                msg = f"Cancelled current stream. Switched to '{cfg['mode']}' mode."
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({
                 "success": True,
                 "mining_config": cfg,
+                "miner_status": mstat,
                 "message": msg
             }).encode("utf-8"))
             return
@@ -1101,6 +1201,17 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 new_games = []
 
             cfg = save_mining_config(mode=current_cfg.get("mode", "default"), activated_games=new_games)
+            mstat = cfg.get("miner_status") or {}
+            if activated and game:
+                if mstat.get("active") and mstat.get("channel_name"):
+                    msg = f"Instantly switched stream! Now watching {mstat['channel_name']} for '{game}'."
+                else:
+                    msg = mstat.get("message") or f"Cancelled previous stream & selected '{game}' as the 1 active stream to mine."
+            else:
+                if mstat.get("active") and mstat.get("channel_name"):
+                    msg = f"Cancelled '{game}' & auto-switched to {mstat['channel_name']} ({mstat.get('game')})."
+                else:
+                    msg = f"Cancelled '{game}' stream selection."
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -1109,11 +1220,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 "game": game,
                 "activated": activated,
                 "mining_config": cfg,
-                "message": (
-                    f"Cancelled previous stream & selected '{game}' as the 1 active stream to mine."
-                    if activated and game
-                    else f"Cancelled '{game}' stream selection."
-                )
+                "miner_status": mstat,
+                "message": msg
             }).encode("utf-8"))
             return
 

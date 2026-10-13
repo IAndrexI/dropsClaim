@@ -1020,16 +1020,46 @@
       return pg === lower;
     }
 
+    function applyImmediateMinerStatus(minerStatus, mode, activatedGames) {
+      if (mode) currentMiningMode = mode;
+      if (Array.isArray(activatedGames)) {
+        selectedPriorityGames = activatedGames.slice(0, 1);
+      }
+      renderTargetChips();
+      if (minerStatus) {
+        if (lastTwitchData) {
+          lastTwitchData.miner_status = minerStatus;
+          if (mode) lastTwitchData.mining_mode = mode;
+          if (Array.isArray(activatedGames)) lastTwitchData.activated_games = selectedPriorityGames;
+        }
+        renderMinerTelemetry({ ...(lastTwitchData || {}), miner_status: minerStatus });
+      }
+    }
+
     async function setMiningMode(mode) {
-      currentMiningMode = mode;
-      showToast(`Cancelling current stream & switching to ${mode.toUpperCase()} mode...`);
+      const targetGames = selectedPriorityGames.slice(0, 1);
+      applyImmediateMinerStatus(
+        {
+          active: false,
+          switching: true,
+          game: targetGames[0] || "Auto-Select",
+          selected_game: targetGames[0] || "",
+          message: `Switching stream immediately to ${mode.toUpperCase()} mode...`
+        },
+        mode,
+        targetGames
+      );
+      showToast(`Switching stream immediately to ${mode.toUpperCase()} mode...`);
       try {
         const res = await fetch("/api/twitch/mining-config", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: jsonStringify({ mode: mode, activated_games: selectedPriorityGames.slice(0, 1) })
+          body: jsonStringify({ mode: mode, activated_games: targetGames })
         });
         const data = await res.json();
+        if (data.miner_status) {
+          applyImmediateMinerStatus(data.miner_status, data.mode || mode, data.activated_games || targetGames);
+        }
         showToast(data.message || `Switched to ${mode} mode.`);
         fetchData();
         broadcastSyncEvent("mining_mode");
@@ -1040,9 +1070,23 @@
 
     async function toggleGameActivation(gameName, activated) {
       if (!gameName) return;
+      const nextGames = activated ? [gameName] : [];
+      applyImmediateMinerStatus(
+        {
+          active: false,
+          switching: true,
+          game: activated ? gameName : "Auto-Select",
+          selected_game: activated ? gameName : "",
+          message: activated
+            ? `Switching stream immediately to ${gameName}...`
+            : `Cancelled ${gameName} selection, switching stream...`
+        },
+        currentMiningMode,
+        nextGames
+      );
       showToast(
         activated
-          ? `Cancelling current stream & switching to mine ${gameName}...`
+          ? `Switching watched stream immediately to ${gameName}...`
           : `Cancelling ${gameName} mining selection...`
       );
       try {
@@ -1052,6 +1096,9 @@
           body: jsonStringify({ game: gameName, activated: activated })
         });
         const data = await res.json();
+        if (data.miner_status) {
+          applyImmediateMinerStatus(data.miner_status, data.mode || currentMiningMode, data.activated_games || nextGames);
+        }
         showToast(data.message || `${gameName} updated.`);
         fetchData();
         broadcastSyncEvent("toggle_activation");
@@ -1061,6 +1108,17 @@
     }
 
     async function deactivateAllGames() {
+      applyImmediateMinerStatus(
+        {
+          active: false,
+          switching: currentMiningMode !== "selective",
+          game: "Auto-Select",
+          selected_game: "",
+          message: "Cancelled current stream selection..."
+        },
+        currentMiningMode,
+        []
+      );
       showToast("Cancelling current selected stream...");
       try {
         const res = await fetch("/api/twitch/mining-config", {
@@ -1069,6 +1127,9 @@
           body: jsonStringify({ mode: currentMiningMode, activated_games: [] })
         });
         const data = await res.json();
+        if (data.miner_status) {
+          applyImmediateMinerStatus(data.miner_status, data.mode || currentMiningMode, data.activated_games || []);
+        }
         showToast(data.message || "Cancelled current selection.");
         fetchData();
         broadcastSyncEvent("deactivate_all");
@@ -1078,7 +1139,18 @@
     }
 
     async function resetToDefaultMode() {
-      showToast("Cancelling current selection & resetting to Default auto-mine (1 stream at a time)...");
+      applyImmediateMinerStatus(
+        {
+          active: false,
+          switching: true,
+          game: "Auto-Select",
+          selected_game: "",
+          message: "Resetting to Default auto-mine & switching stream immediately..."
+        },
+        "default",
+        []
+      );
+      showToast("Resetting to Default auto-mine & switching stream immediately...");
       try {
         const res = await fetch("/api/twitch/mining-config", {
           method: "POST",
@@ -1086,6 +1158,9 @@
           body: jsonStringify({ mode: "default", activated_games: [] })
         });
         const data = await res.json();
+        if (data.miner_status) {
+          applyImmediateMinerStatus(data.miner_status, "default", []);
+        }
         showToast(data.message || "Reset to Default mode.");
         fetchData();
         broadcastSyncEvent("reset_mode");
