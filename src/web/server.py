@@ -298,7 +298,22 @@ def perform_git_update():
         update_script = os.path.join(APP_DIR, "scripts", "update_from_github.sh")
 
     if os.path.exists(update_script) and os.name != "nt":
-        res = subprocess.run(["bash", update_script], cwd=APP_DIR, capture_output=True, text=True, timeout=120)
+        run_env = os.environ.copy()
+        run_env["SKIP_WEB_RESTART"] = "1"
+        res = subprocess.run(["bash", update_script], cwd=APP_DIR, env=run_env, capture_output=True, text=True, timeout=120)
+        if res.returncode == 0:
+            try:
+                subprocess.Popen(
+                    [
+                        "sh",
+                        "-c",
+                        "sleep 1.5; if command -v rc-service >/dev/null 2>&1; then rc-service auto-loot-web restart >/dev/null 2>&1; elif command -v systemctl >/dev/null 2>&1; then systemctl restart auto-loot-web.service >/dev/null 2>&1; fi",
+                    ],
+                    cwd=APP_DIR,
+                    start_new_session=True,
+                )
+            except Exception:
+                pass
         return {"success": res.returncode == 0, "output": (res.stdout or "") + "\n" + (res.stderr or "")}
     else:
         # Fallback for Windows or systems without bash
@@ -361,16 +376,24 @@ def build_status_payload():
         "user_id": None,
         "connected": False,
         "campaigns": [],
+        "collected_items": [],
+        "needs_collection_drops": [],
+        "unavailable_drops": [],
         "drops_in_progress": [],
         "priority_games": priority_list,
         "mining_config": mining_cfg,
         "miner_status": miner_stat,
         "inventory_url": "https://www.twitch.tv/drops/inventory",
         "campaigns_url": "https://www.twitch.tv/drops/campaigns",
+        "total_campaigns": 0,
         "active_campaigns_count": 0,
         "claimed_history_count": 0,
+        "collected_in_campaigns_count": 0,
         "ready_to_claim_count": 0,
         "in_progress_count": 0,
+        "available_count": 0,
+        "needs_collection_count": 0,
+        "unavailable_count": 0,
     }
 
     if twitch_token:
@@ -388,12 +411,39 @@ def build_status_payload():
                     c["is_activated"] = (c.get("game", "").lower() in act_games_low)
 
                 twitch_info["campaigns"] = camps
-                twitch_info["active_campaigns_count"] = overview.get("total_campaigns", 0)
+                twitch_info["collected_items"] = overview.get("collected_items", [])
+                twitch_info["needs_collection_drops"] = overview.get("needs_collection_drops", [])
+                twitch_info["unavailable_drops"] = overview.get("unavailable_drops", [])
+                twitch_info["total_campaigns"] = overview.get("total_campaigns", len(camps))
+                twitch_info["active_campaigns_count"] = overview.get("active_campaigns_count", overview.get("total_campaigns", 0))
                 twitch_info["claimed_history_count"] = overview.get("claimed_history_count", 0)
+                twitch_info["collected_in_campaigns_count"] = overview.get("collected_in_campaigns_count", 0)
                 twitch_info["ready_to_claim_count"] = overview.get("ready_to_claim_count", 0)
                 twitch_info["in_progress_count"] = overview.get("in_progress_count", 0)
+                twitch_info["available_count"] = overview.get("available_count", 0)
+                twitch_info["needs_collection_count"] = overview.get("needs_collection_count", 0)
+                twitch_info["unavailable_count"] = overview.get("unavailable_count", 0)
                 twitch_info["last_refreshed_at"] = overview.get("last_refreshed_at")
-                
+
+                # Enrich miner_status with live drop progress if currently watching a game
+                if miner_stat.get("active") and miner_stat.get("game"):
+                    watched_game_low = str(miner_stat.get("game") or "").lower()
+                    for c in camps:
+                        if c.get("is_expired"):
+                            continue
+                        if str(c.get("game") or "").lower() == watched_game_low:
+                            for d in c.get("drops", []):
+                                if d.get("status") in ("IN_PROGRESS", "AVAILABLE") and d.get("required_minutes", 0) > 0:
+                                    miner_stat["current_drop_name"] = d.get("name")
+                                    miner_stat["current_drop_watched"] = d.get("watched_minutes", 0)
+                                    miner_stat["current_drop_required"] = d.get("required_minutes", 0)
+                                    miner_stat["current_drop_percent"] = d.get("progress_percent", 0)
+                                    miner_stat["current_drop_remaining"] = d.get("remaining_minutes", 0)
+                                    if d.get("status") == "IN_PROGRESS":
+                                        break
+                            if miner_stat.get("current_drop_name"):
+                                break
+
                 # Maintain legacy drops_in_progress flat list for backwards compatibility
                 for camp in camps:
                     for d in camp.get("drops", []):
@@ -405,6 +455,7 @@ def build_status_payload():
                                 "game": camp.get("game"),
                                 "required_minutes": d.get("required_minutes", 0),
                                 "watched_minutes": d.get("watched_minutes", 0),
+                                "progress_percent": d.get("progress_percent", 0),
                                 "is_claimed": d.get("status") == "CLAIMED",
                                 "drop_instance_id": d.get("drop_instance_id"),
                                 "status": d.get("status"),
@@ -421,10 +472,16 @@ def build_status_payload():
             for c in camps:
                 c["is_activated"] = (c.get("game", "").lower() in act_games_low)
             twitch_info["campaigns"] = camps
-            twitch_info["active_campaigns_count"] = overview.get("total_campaigns", 0)
+            twitch_info["collected_items"] = overview.get("collected_items", [])
+            twitch_info["needs_collection_drops"] = overview.get("needs_collection_drops", [])
+            twitch_info["unavailable_drops"] = overview.get("unavailable_drops", [])
+            twitch_info["total_campaigns"] = overview.get("total_campaigns", len(camps))
+            twitch_info["active_campaigns_count"] = overview.get("active_campaigns_count", overview.get("total_campaigns", 0))
+            twitch_info["needs_collection_count"] = overview.get("needs_collection_count", 0)
+            twitch_info["unavailable_count"] = overview.get("unavailable_count", 0)
             twitch_info["last_refreshed_at"] = overview.get("last_refreshed_at")
         except Exception as fb_err:
-            logger.debug("Could not load fallback campaign overview: %s", fb_err)
+            pass
 
     # 2. Epic Games Status & Free Promotions
     active_free, upcoming_free = fetch_epic_freebies()

@@ -97,11 +97,13 @@
     .store-gog { background: rgba(158, 68, 196, 0.15); color: #e879f9; border: 1px solid rgba(158, 68, 196, 0.3); }
     
     /* Badges */
-    .badge { font-size: 0.75rem; font-weight: 700; padding: 4px 10px; border-radius: 9999px; display: inline-flex; align-items: center; gap: 4px; }
-    .badge-claimed { background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); }
-    .badge-ready { background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.3); animation: pulse 2s infinite; }
-    .badge-progress { background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3); }
+    .badge { font-size: 0.73rem; font-weight: 700; padding: 4px 10px; border-radius: 9999px; display: inline-flex; align-items: center; gap: 4px; }
+    .badge-claimed { background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.35); }
+    .badge-ready { background: rgba(245, 158, 11, 0.18); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4); animation: pulse 2s infinite; }
+    .badge-progress { background: rgba(59, 130, 246, 0.18); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.4); }
+    .badge-needs { background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.35); }
     .badge-available { background: rgba(148, 163, 184, 0.15); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.3); }
+    .badge-unavailable { background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.35); }
     .badge-upcoming { background: rgba(100, 116, 139, 0.15); color: #94a3b8; border: 1px solid rgba(100, 116, 139, 0.3); }
     .badge-target { background: rgba(145, 70, 255, 0.2); color: #c084fc; border: 1px solid rgba(145, 70, 255, 0.4); }
 
@@ -109,19 +111,37 @@
 
     .item-title { font-size: 1.15rem; font-weight: 600; margin-bottom: 4px; color: #f1f5f9; line-height: 1.3; }
     .item-sub { font-size: 0.82rem; color: var(--text-muted); margin-bottom: 12px; }
+    .stat-sub { font-size: 0.74rem; color: var(--text-muted); margin-top: 3px; }
     
     /* Drops sub-list inside campaign card */
     .drops-list { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; border-top: 1px solid #1e293b; padding-top: 12px; }
-    .drop-entry { background: #0c1322; border: 1px solid #1e293b; border-radius: 6px; padding: 10px 12px; }
+    .drop-entry { background: #0c1322; border: 1px solid #1e293b; border-radius: 6px; padding: 10px 12px; transition: border-color 0.15s; }
+    .drop-entry.drop-claimed { border-color: rgba(16, 185, 129, 0.3); background: rgba(16, 185, 129, 0.04); }
+    .drop-entry.drop-in-progress { border-color: rgba(59, 130, 246, 0.45); background: rgba(59, 130, 246, 0.05); }
+    .drop-entry.drop-ready { border-color: rgba(245, 158, 11, 0.5); background: rgba(245, 158, 11, 0.06); }
+    .drop-entry.drop-unavailable { border-color: rgba(239, 68, 68, 0.3); background: rgba(239, 68, 68, 0.04); opacity: 0.92; }
     .drop-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; gap: 8px; flex-wrap: wrap; }
-    .drop-name { font-size: 0.88rem; font-weight: 600; color: #e2e8f0; }
+    .drop-title-wrap { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1; }
+    .drop-thumb { width: 36px; height: 36px; border-radius: 6px; object-fit: contain; background: #131b2e; border: 1px solid #1e293b; flex-shrink: 0; }
+    .drop-name { font-size: 0.88rem; font-weight: 600; color: #e2e8f0; word-break: break-word; }
+    .drop-unavail-reason { font-size: 0.76rem; color: #fca5a5; background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.25); border-radius: 4px; padding: 5px 8px; margin-top: 6px; }
     
     /* Progress bar */
     .progress-box { margin-top: 6px; }
     .progress-label { display: flex; justify-content: space-between; font-size: 0.72rem; color: var(--text-muted); margin-bottom: 4px; }
-    .progress-track { background: #1e293b; height: 6px; border-radius: 3px; overflow: hidden; }
-    .progress-fill { height: 100%; background: linear-gradient(90deg, #3b82f6, #9146ff); border-radius: 3px; transition: width 0.4s ease; }
+    .progress-track { background: #1e293b; height: 7px; border-radius: 4px; overflow: hidden; }
+    .progress-fill { height: 100%; background: linear-gradient(90deg, #3b82f6, #9146ff); border-radius: 4px; transition: width 0.4s ease; }
     .progress-fill.complete { background: #10b981; }
+    .progress-fill.unavailable { background: #ef4444; }
+
+    /* Collected Inventory Grid */
+    .collected-section { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 10px; padding: 18px; margin-bottom: 20px; grid-column: 1 / -1; }
+    .collected-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 10px; margin-top: 12px; max-height: 540px; overflow-y: auto; padding-right: 4px; }
+    .collected-item-card { display: flex; align-items: center; gap: 10px; background: #0c1322; border: 1px solid rgba(16, 185, 129, 0.25); border-radius: 8px; padding: 10px 12px; }
+    .collected-item-thumb { width: 44px; height: 44px; border-radius: 6px; object-fit: contain; background: #131b2e; border: 1px solid #1e293b; flex-shrink: 0; }
+    .collected-item-info { min-width: 0; flex: 1; }
+    .collected-item-name { font-size: 0.86rem; font-weight: 600; color: #f1f5f9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .collected-item-meta { font-size: 0.74rem; color: var(--text-muted); margin-top: 2px; display: flex; justify-content: space-between; gap: 6px; flex-wrap: wrap; }
 
     /* Control banner for Twitch target selection */
     .target-bar { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 10px; padding: 16px 20px; margin-bottom: 20px; display: flex; flex-direction: column; gap: 12px; }
@@ -134,7 +154,8 @@
 
     /* Filter pills */
     .filter-group { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
-    .filter-btn { background: #131b2e; border: 1px solid #1e293b; color: var(--text-muted); padding: 6px 12px; border-radius: 20px; font-size: 0.8rem; cursor: pointer; font-weight: 500; }
+    .filter-btn { background: #131b2e; border: 1px solid #1e293b; color: var(--text-muted); padding: 6px 12px; border-radius: 20px; font-size: 0.8rem; cursor: pointer; font-weight: 500; transition: all 0.15s; }
+    .filter-btn:hover { border-color: #475569; color: #e2e8f0; }
     .filter-btn.active { background: #1e293b; border-color: #3b82f6; color: white; }
 
     /* Account Manager forms */
@@ -221,18 +242,22 @@
       <div class="stat-card">
         <span class="stat-label">Twitch Account</span>
         <span class="stat-value" id="stat-twitch-user">Connecting...</span>
+        <span class="stat-sub" id="stat-twitch-sub">Active Campaigns: 0</span>
       </div>
-      <div class="stat-card">
-        <span class="stat-label">Inventory Claimed History</span>
-        <span class="stat-value" id="stat-inventory-count">0 Claimed</span>
+      <div class="stat-card" style="cursor: pointer;" onclick="setDropsFilterByName('collected')" title="Click to view all collected Twitch drops">
+        <span class="stat-label">Collected Items</span>
+        <span class="stat-value" id="stat-inventory-count" style="color: #34d399;">0 Collected</span>
+        <span class="stat-sub" id="stat-inventory-sub">0 Twitch Drops | 0 Store Items</span>
       </div>
-      <div class="stat-card">
-        <span class="stat-label">Active Drop Campaigns</span>
-        <span class="stat-value" id="stat-active-campaigns">0 Active</span>
+      <div class="stat-card" style="cursor: pointer;" onclick="setDropsFilterByName('needs_collection')" title="Click to view drops that need to be collected">
+        <span class="stat-label">Drops Needing Collection</span>
+        <span class="stat-value" id="stat-active-campaigns" style="color: #60a5fa;">0 Drops</span>
+        <span class="stat-sub" id="stat-needs-sub">0 In Progress | 0 Ready to Collect</span>
       </div>
-      <div class="stat-card">
-        <span class="stat-label">Ready to Claim</span>
-        <span class="stat-value" id="stat-ready-count">0 Items</span>
+      <div class="stat-card" style="cursor: pointer;" onclick="setDropsFilterByName('unavailable')" title="Click to view drops unavailable for collection">
+        <span class="stat-label">Unavailable for Collection</span>
+        <span class="stat-value" id="stat-ready-count" style="color: #f87171;">0 Unavailable</span>
+        <span class="stat-sub" id="stat-unavail-sub">Expired or Sub-Only Drops</span>
       </div>
     </div>
 
@@ -279,6 +304,7 @@
         </div>
         <div class="miner-telemetry-stats" id="miner-telemetry-stats">
           <span class="miner-stat-pill" id="miner-stream-channel">Channel: Searching...</span>
+          <span class="miner-stat-pill" id="miner-drop-live-progress" style="display: none; border-color: #3b82f6; color: #93c5fd;">Drop: --</span>
           <span class="miner-stat-pill" id="miner-stream-progress">Session: 0/15 mins</span>
           <span class="miner-stat-pill" id="miner-stream-viewers">0 Viewers</span>
           <a href="#" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-primary" id="miner-stream-link" style="display: none;">Open Watched Stream</a>
@@ -313,15 +339,19 @@
         </div>
       </div>
 
-      <!-- Campaign Controls: Category Filters & Daily Refresh -->
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 8px;">
+      <!-- Campaign Controls: Category Filters, Search & Daily Refresh -->
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; flex-wrap: wrap; gap: 10px;">
         <div class="filter-group" style="margin-bottom: 0;">
-          <button class="filter-btn active" onclick="setDropsFilter('all', event)">All Live Campaigns (<span id="flt-all-count">0</span>)</button>
-          <button class="filter-btn" onclick="setDropsFilter('activated', event)">Activated for Mining (<span id="flt-act-count">0</span>)</button>
-          <button class="filter-btn" onclick="setDropsFilter('in_progress', event)">In Progress (<span id="flt-prog-count">0</span>)</button>
-          <button class="filter-btn" onclick="setDropsFilter('ready', event)">Ready to Claim (<span id="flt-ready-count">0</span>)</button>
+          <button class="filter-btn active" data-filter="all" onclick="setDropsFilter('all', event)">All Campaigns (<span id="flt-all-count">0</span>)</button>
+          <button class="filter-btn" data-filter="needs_collection" onclick="setDropsFilter('needs_collection', event)">Needs Collection (<span id="flt-needs-count">0</span>)</button>
+          <button class="filter-btn" data-filter="in_progress" onclick="setDropsFilter('in_progress', event)">In Progress (<span id="flt-prog-count">0</span>)</button>
+          <button class="filter-btn" data-filter="ready" onclick="setDropsFilter('ready', event)">Ready to Collect (<span id="flt-ready-count">0</span>)</button>
+          <button class="filter-btn" data-filter="collected" onclick="setDropsFilter('collected', event)">Collected Items (<span id="flt-collected-count">0</span>)</button>
+          <button class="filter-btn" data-filter="unavailable" onclick="setDropsFilter('unavailable', event)">Unavailable (<span id="flt-unavail-count">0</span>)</button>
+          <button class="filter-btn" data-filter="activated" onclick="setDropsFilter('activated', event)">Activated (<span id="flt-act-count">0</span>)</button>
         </div>
-        <div style="display: flex; align-items: center; gap: 10px;">
+        <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+          <input type="text" id="drops-search-input" class="form-input" style="width: 210px; padding: 5px 10px; font-size: 0.8rem;" placeholder="Search game or drop item..." oninput="onDropsSearchInput()">
           <span style="font-size: 0.78rem; color: var(--text-muted);" id="campaigns-last-refreshed">Daily Refresh: Active</span>
           <button class="btn btn-sm btn-primary" id="btn-refresh-campaigns" onclick="refreshLiveCampaigns()">Refresh Campaigns</button>
         </div>
@@ -674,8 +704,26 @@
 
     function setDropsFilter(filterName, evt) {
       currentDropsFilter = filterName;
-      document.querySelectorAll(".filter-btn").forEach(b => b.classList.remove("active"));
-      if (evt && evt.target) evt.target.classList.add("active");
+      document.querySelectorAll(".filter-btn").forEach(b => {
+        b.classList.toggle("active", b.getAttribute("data-filter") === filterName);
+      });
+      if (evt && evt.currentTarget) evt.currentTarget.classList.add("active");
+      if (currentData) renderDropsGrid(currentData.twitch || {});
+    }
+
+    function setDropsFilterByName(filterName) {
+      switchTab("drops");
+      document.querySelectorAll(".tab-btn").forEach(el => {
+        if (el.innerText.includes("Twitch Drops")) el.classList.add("active");
+      });
+      currentDropsFilter = filterName;
+      document.querySelectorAll(".filter-btn").forEach(b => {
+        b.classList.toggle("active", b.getAttribute("data-filter") === filterName);
+      });
+      if (currentData) renderDropsGrid(currentData.twitch || {});
+    }
+
+    function onDropsSearchInput() {
       if (currentData) renderDropsGrid(currentData.twitch || {});
     }
 
@@ -708,16 +756,45 @@
 
       // 1. Stats bar
       document.getElementById("stat-twitch-user").innerHTML = twitch.username 
-        ? `<span style="color: #a855f7;">@${twitch.username}</span>`
+        ? `<span style="color: #a855f7;">@${escapeHtml(twitch.username)}</span>`
         : `<span style="color: #ef4444;">Not Connected</span>`;
+      const statTwitchSub = document.getElementById("stat-twitch-sub");
+      if (statTwitchSub) {
+        statTwitchSub.innerText = `${twitch.active_campaigns_count || 0} Active Campaigns (${twitch.total_campaigns || (twitch.campaigns || []).length} Total)`;
+      }
 
-      const totalClaimedCount = (twitch.claimed_history_count || 0) + 
+      const twitchCollectedCount = (twitch.collected_items && twitch.collected_items.length)
+        ? twitch.collected_items.length
+        : (twitch.claimed_history_count || 0);
+      const storeClaimedCount =
         ((data.epic && data.epic.claimed_titles) ? data.epic.claimed_titles.length : 0) + 
         ((data.amazon && data.amazon.claimed_items) ? data.amazon.claimed_items.length : 0) + 
         ((data.gog && data.gog.claimed_items) ? data.gog.claimed_items.length : 0);
-      document.getElementById("stat-inventory-count").innerText = `${totalClaimedCount} Claimed`;
-      document.getElementById("stat-active-campaigns").innerText = `${twitch.active_campaigns_count || 0} Active`;
-      document.getElementById("stat-ready-count").innerText = `${twitch.ready_to_claim_count || 0} Items`;
+      const totalClaimedCount = twitchCollectedCount + storeClaimedCount;
+
+      document.getElementById("stat-inventory-count").innerText = `${totalClaimedCount} Collected`;
+      const statInvSub = document.getElementById("stat-inventory-sub");
+      if (statInvSub) {
+        statInvSub.innerText = `${twitchCollectedCount} Twitch Drops | ${storeClaimedCount} Store Items`;
+      }
+
+      const needsCollectionCount = twitch.needs_collection_count !== undefined
+        ? twitch.needs_collection_count
+        : ((twitch.in_progress_count || 0) + (twitch.ready_to_claim_count || 0) + (twitch.available_count || 0));
+      document.getElementById("stat-active-campaigns").innerText = `${needsCollectionCount} Drops`;
+      const statNeedsSub = document.getElementById("stat-needs-sub");
+      if (statNeedsSub) {
+        statNeedsSub.innerText = `${twitch.in_progress_count || 0} In Progress | ${twitch.ready_to_claim_count || 0} Ready to Collect`;
+      }
+
+      const unavailCount = twitch.unavailable_count || 0;
+      document.getElementById("stat-ready-count").innerText = `${unavailCount} Unavailable`;
+      const statUnavailSub = document.getElementById("stat-unavail-sub");
+      if (statUnavailSub) {
+        statUnavailSub.innerText = unavailCount > 0
+          ? `${unavailCount} Expired or Sub-Only Drops`
+          : `All Active Drops Available`;
+      }
 
       if (twitch.last_refreshed_at) {
         const refElem = document.getElementById("campaigns-last-refreshed");
@@ -799,7 +876,7 @@
       if (modeDesc) {
         modeDesc.innerText = currentMiningMode === "selective"
           ? "Selective Mode: strictly mines ONLY campaigns for your activated games below. Pauses if none are currently online."
-          : "Default Mode: automatically farms all available drops across Twitch (prioritizes activated games if selected below).";
+          : "Default Mode: automatically farms all available watch-time drops across Twitch (prioritizes activated games if selected below).";
       }
 
       const actCountElem = document.getElementById("activated-count");
@@ -830,6 +907,7 @@
       const minerBadge = document.getElementById("miner-stream-badge");
       const minerSub = document.getElementById("miner-status-sub");
       const channelPill = document.getElementById("miner-stream-channel");
+      const dropLivePill = document.getElementById("miner-drop-live-progress");
       const progressPill = document.getElementById("miner-stream-progress");
       const viewersPill = document.getElementById("miner-stream-viewers");
       const streamLink = document.getElementById("miner-stream-link");
@@ -848,7 +926,15 @@
         minerSub.innerText = `Pretending to watch under @${ulogin} (User ID: ${minerStat.user_id || "130742243"}) - strictly 1 stream at a time (zero bandwidth browser simulation).`;
 
         channelPill.innerText = `Channel: ${cname}`;
-        progressPill.innerText = `Watch Time: ${minerStat.minutes_watched || 1}/15 mins`;
+        if (dropLivePill) {
+          if (minerStat.current_drop_name && minerStat.current_drop_required > 0) {
+            dropLivePill.innerText = `Active Drop: ${minerStat.current_drop_name} (${minerStat.current_drop_watched || 0}/${minerStat.current_drop_required}m - ${minerStat.current_drop_percent || 0}%)`;
+            dropLivePill.style.display = "inline-flex";
+          } else {
+            dropLivePill.style.display = "none";
+          }
+        }
+        progressPill.innerText = `Session Cycle: ${minerStat.minutes_watched || 1}/15 mins`;
         viewersPill.innerText = `${(minerStat.viewers || 0).toLocaleString()} Viewers`;
         
         const targetUrl = minerStat.stream_url || `https://www.twitch.tv/${minerStat.channel_login || ''}`;
@@ -865,6 +951,7 @@
         minerSub.innerText = `${msg} Strictly 1 stream at a time.`;
 
         channelPill.innerText = "Channel: None";
+        if (dropLivePill) dropLivePill.style.display = "none";
         progressPill.innerText = "Session: Idle";
         viewersPill.innerText = "0 Viewers";
         streamLink.style.display = "none";
@@ -873,20 +960,30 @@
 
     function updateFilterCounts(twitch) {
       const campaigns = twitch.campaigns || [];
+      const collectedItems = twitch.collected_items || [];
       const totalCount = campaigns.length;
+      const needsCount = campaigns.filter(c => (c.needs_collection_count || 0) > 0 || (c.in_progress_count || 0) > 0 || (c.ready_count || 0) > 0 || (c.available_count || 0) > 0).length;
+      const progCount = campaigns.filter(c => (c.in_progress_count || 0) > 0).length;
+      const readyCount = campaigns.filter(c => (c.ready_count || 0) > 0).length;
+      const collectedCount = collectedItems.length || twitch.claimed_history_count || 0;
+      const unavailCount = campaigns.filter(c => (c.unavailable_count || 0) > 0 || c.status === "EXPIRED" || c.status === "UNAVAILABLE").length;
       const actCount = campaigns.filter(c => isGameTargeted(c.game) || c.is_activated).length;
-      const progCount = campaigns.filter(c => c.in_progress_count > 0).length;
-      const readyCount = campaigns.filter(c => c.ready_count > 0).length;
 
       const elAll = document.getElementById("flt-all-count");
-      const elAct = document.getElementById("flt-act-count");
+      const elNeeds = document.getElementById("flt-needs-count");
       const elProg = document.getElementById("flt-prog-count");
       const elReady = document.getElementById("flt-ready-count");
+      const elColl = document.getElementById("flt-collected-count");
+      const elUnavail = document.getElementById("flt-unavail-count");
+      const elAct = document.getElementById("flt-act-count");
 
       if (elAll) elAll.innerText = totalCount;
-      if (elAct) elAct.innerText = actCount;
+      if (elNeeds) elNeeds.innerText = needsCount;
       if (elProg) elProg.innerText = progCount;
       if (elReady) elReady.innerText = readyCount;
+      if (elColl) elColl.innerText = collectedCount;
+      if (elUnavail) elUnavail.innerText = unavailCount;
+      if (elAct) elAct.innerText = actCount;
     }
 
     function renderTargetChips() {
@@ -898,7 +995,7 @@
         container.innerHTML = selectedPriorityGames.map(game => `
           <div class="chip active">
             <span>${escapeHtml(game)}</span>
-            <span class="chip-remove" title="Deactivate" onclick="toggleGameActivation('${escapeHtml(game)}', false)">&times;</span>
+            <span class="chip-remove" title="Deactivate" onclick="toggleGameActivation('${escapeJsAttr(game)}', false)">&times;</span>
           </div>
         `).join("");
       }
@@ -948,7 +1045,12 @@
 
     async function activateAllLiveGames() {
       if (!currentData || !currentData.twitch || !currentData.twitch.campaigns) return;
-      const allGames = Array.from(new Set(currentData.twitch.campaigns.map(c => (c.game || '').trim()).filter(Boolean)));
+      const allGames = Array.from(new Set(
+        currentData.twitch.campaigns
+          .filter(c => !c.is_expired && c.status !== "UNAVAILABLE")
+          .map(c => (c.game || '').trim())
+          .filter(Boolean)
+      ));
       if (allGames.length === 0) {
         showToast("No live campaigns found to activate.");
         return;
@@ -1003,47 +1105,152 @@
       }
     }
 
+    function renderCollectedItemsSection(twitch, searchQuery) {
+      const items = twitch.collected_items || [];
+      const filteredItems = searchQuery
+        ? items.filter(it =>
+            (it.name || "").toLowerCase().includes(searchQuery) ||
+            (it.game || "").toLowerCase().includes(searchQuery) ||
+            (it.campaign_name || "").toLowerCase().includes(searchQuery)
+          )
+        : items;
+
+      if (filteredItems.length === 0) {
+        return `<div class="collected-section"><div style="font-size: 0.9rem; color: #94a3b8;">No collected Twitch drops match your search filter.</div></div>`;
+      }
+
+      const cardsHtml = filteredItems.map(item => {
+        const thumb = item.image_url
+          ? `<img src="${item.image_url}" alt="${escapeHtml(item.name)}" class="collected-item-thumb" referrerpolicy="no-referrer" onerror="this.style.display='none'">`
+          : `<div class="collected-item-thumb" style="display:flex;align-items:center;justify-content:center;font-size:0.7rem;color:#34d399;font-weight:700;">DROP</div>`;
+        let dateStr = "Collected";
+        if (item.last_awarded_at) {
+          try {
+            dateStr = new Date(item.last_awarded_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+          } catch (e) {}
+        }
+        const countBadge = (item.total_count && item.total_count > 1) ? ` (x${item.total_count})` : "";
+        const connLabel = item.is_connected
+          ? `<span style="color: #34d399;">[Account Linked]</span>`
+          : (item.required_account_link
+              ? `<a href="${item.required_account_link}" target="_blank" rel="noopener noreferrer" style="color: #fbbf24; text-decoration: underline;">[Link Game Account]</a>`
+              : `<span style="color: #94a3b8;">[In Twitch Inventory]</span>`);
+
+        return `
+          <div class="collected-item-card">
+            ${thumb}
+            <div class="collected-item-info">
+              <div style="display: flex; justify-content: space-between; align-items: center; gap: 4px;">
+                <span style="font-size: 0.7rem; font-weight: 700; color: #c084fc; text-transform: uppercase;">${escapeHtml(item.game || "Twitch Drop")}</span>
+                <span class="badge badge-claimed" style="padding: 2px 7px; font-size: 0.66rem;">[COLLECTED]</span>
+              </div>
+              <div class="collected-item-name" title="${escapeHtml(item.name)}${countBadge}">${escapeHtml(item.name)}${countBadge}</div>
+              <div class="collected-item-meta">
+                <span>${escapeHtml(dateStr)}</span>
+                ${connLabel}
+              </div>
+            </div>
+          </div>
+        `;
+      }).join("");
+
+      return `
+        <div class="collected-section">
+          <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+            <div>
+              <h3 style="font-size: 1.05rem; font-weight: 700; color: #34d399;">Collected Twitch Drops Inventory (${filteredItems.length} Items)</h3>
+              <p style="font-size: 0.8rem; color: var(--text-muted); margin-top: 2px;">
+                Verified rewards collected in your Twitch Drops Inventory and active campaigns.
+              </p>
+            </div>
+            <a href="https://www.twitch.tv/drops/inventory" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-primary">[Open Twitch Inventory]</a>
+          </div>
+          <div class="collected-grid">
+            ${cardsHtml}
+          </div>
+        </div>
+      `;
+    }
+
     function renderDropsGrid(twitch) {
       const dropsGrid = document.getElementById("drops-grid");
       const campaigns = twitch.campaigns || [];
+      const searchInput = document.getElementById("drops-search-input");
+      const searchQuery = searchInput ? searchInput.value.trim().toLowerCase() : "";
 
-      if (campaigns.length === 0) {
+      if (campaigns.length === 0 && (!twitch.collected_items || twitch.collected_items.length === 0)) {
         dropsGrid.innerHTML = `<div class="empty-state">No drop campaigns found right now. Verify your Twitch auth-token in Accounts tab or check DropHunter.</div>`;
         return;
       }
 
-      // Filter campaigns based on current active filter
+      let collectedBannerHtml = "";
+      if (currentDropsFilter === "collected") {
+        collectedBannerHtml = renderCollectedItemsSection(twitch, searchQuery);
+      }
+
+      // Filter campaigns based on current active filter and search query
       const filtered = campaigns.filter(camp => {
+        if (searchQuery) {
+          const matchGame = (camp.game || "").toLowerCase().includes(searchQuery);
+          const matchCamp = (camp.name || "").toLowerCase().includes(searchQuery);
+          const matchDrop = (camp.drops || []).some(d => (d.name || "").toLowerCase().includes(searchQuery));
+          if (!matchGame && !matchCamp && !matchDrop) return false;
+        }
+
         const isTargeted = isGameTargeted(camp.game) || Boolean(camp.is_activated);
+        const needsCount = (camp.needs_collection_count !== undefined)
+          ? camp.needs_collection_count
+          : ((camp.in_progress_count || 0) + (camp.ready_count || 0) + (camp.available_count || 0));
+        const unavailCount = camp.unavailable_count || 0;
+
         if (currentDropsFilter === "activated") return isTargeted;
-        if (currentDropsFilter === "in_progress") return camp.in_progress_count > 0;
-        if (currentDropsFilter === "ready") return camp.ready_count > 0;
+        if (currentDropsFilter === "needs_collection") return needsCount > 0;
+        if (currentDropsFilter === "in_progress") return (camp.in_progress_count || 0) > 0;
+        if (currentDropsFilter === "ready") return (camp.ready_count || 0) > 0;
+        if (currentDropsFilter === "collected") return (camp.claimed_count || 0) > 0;
+        if (currentDropsFilter === "unavailable") return unavailCount > 0 || camp.status === "EXPIRED" || camp.status === "UNAVAILABLE";
         return true;
       });
 
       if (filtered.length === 0) {
-        dropsGrid.innerHTML = `<div class="empty-state">No campaigns match the selected filter "${currentDropsFilter}".</div>`;
+        if (collectedBannerHtml) {
+          dropsGrid.innerHTML = collectedBannerHtml;
+        } else {
+          dropsGrid.innerHTML = `<div class="empty-state">No campaigns match the selected filter "${escapeHtml(currentDropsFilter)}".</div>`;
+        }
         return;
       }
 
-      dropsGrid.innerHTML = filtered.map(camp => {
+      const cardsHtml = filtered.map(camp => {
         const isTarget = isGameTargeted(camp.game) || Boolean(camp.is_activated);
-        const campStatusBadge = camp.status === "COMPLETED" 
-          ? `<span class="badge badge-claimed">ALL CLAIMED</span>`
-          : camp.ready_count > 0
-          ? `<span class="badge badge-ready">READY TO CLAIM</span>`
-          : camp.in_progress_count > 0
-          ? `<span class="badge badge-progress">IN PROGRESS</span>`
-          : `<span class="badge badge-available">ACTIVE</span>`;
+        const needsCount = (camp.needs_collection_count !== undefined)
+          ? camp.needs_collection_count
+          : ((camp.in_progress_count || 0) + (camp.ready_count || 0) + (camp.available_count || 0));
+        const unavailCount = camp.unavailable_count || 0;
 
-        const actBadge = isTarget
-          ? `<span class="badge badge-target">[ACTIVATED FOR MINING]</span>`
-          : (currentMiningMode === 'selective'
-              ? `<span class="badge badge-available">[INACTIVE]</span>`
-              : `<span class="badge badge-available">[DEFAULT AUTO-MINE]</span>`);
+        let campStatusBadge = `<span class="badge badge-needs">[NEEDS COLLECTION]</span>`;
+        if (camp.status === "COMPLETED") {
+          campStatusBadge = `<span class="badge badge-claimed">[ALL COLLECTED]</span>`;
+        } else if (camp.ready_count > 0) {
+          campStatusBadge = `<span class="badge badge-ready">[READY TO COLLECT]</span>`;
+        } else if (camp.in_progress_count > 0) {
+          campStatusBadge = `<span class="badge badge-progress">[IN PROGRESS]</span>`;
+        } else if (camp.status === "EXPIRED") {
+          campStatusBadge = `<span class="badge badge-unavailable">[EXPIRED - UNAVAILABLE]</span>`;
+        } else if (camp.status === "UNAVAILABLE") {
+          campStatusBadge = `<span class="badge badge-unavailable">[UNAVAILABLE]</span>`;
+        }
+
+        const actBadge = camp.is_expired || camp.status === "UNAVAILABLE"
+          ? ""
+          : (isTarget
+              ? `<span class="badge badge-target">[ACTIVATED FOR MINING]</span>`
+              : (currentMiningMode === 'selective'
+                  ? `<span class="badge badge-available">[INACTIVE]</span>`
+                  : `<span class="badge badge-available">[DEFAULT AUTO-MINE]</span>`));
 
         const timeBadge = camp.time_left 
-          ? `<span class="badge badge-upcoming">${escapeHtml(camp.time_left)}</span>`
+          ? `<span class="badge ${camp.is_expired ? 'badge-unavailable' : 'badge-upcoming'}">${escapeHtml(camp.time_left)}</span>`
           : '';
 
         const coverHtml = camp.cover_url
@@ -1051,38 +1258,67 @@
           : '';
 
         const dropsHtml = (camp.drops || []).map(drop => {
-          let badge = `<span class="badge badge-available">[AVAILABLE]</span>`;
+          let badge = `<span class="badge badge-needs">[NEEDS COLLECTION]</span>`;
+          let entryClass = "drop-entry";
           let actionBtn = "";
 
           if (drop.status === "CLAIMED") {
-            badge = `<span class="badge badge-claimed">[CLAIMED]</span>`;
+            badge = `<span class="badge badge-claimed">[COLLECTED]</span>`;
+            entryClass = "drop-entry drop-claimed";
           } else if (drop.status === "READY_TO_CLAIM") {
-            badge = `<span class="badge badge-ready">[READY TO CLAIM]</span>`;
+            badge = `<span class="badge badge-ready">[READY TO COLLECT]</span>`;
+            entryClass = "drop-entry drop-ready";
             if (drop.drop_instance_id) {
-              actionBtn = `<button class="btn btn-sm btn-primary" onclick="claimSingleDrop('${drop.drop_instance_id}')">Claim Now</button>`;
+              actionBtn = `<button class="btn btn-sm btn-primary" onclick="claimSingleDrop('${escapeJsAttr(drop.drop_instance_id)}')">Collect Now</button>`;
             }
           } else if (drop.status === "IN_PROGRESS") {
-            badge = `<span class="badge badge-progress">[IN PROGRESS] ${drop.progress_percent}%</span>`;
+            badge = `<span class="badge badge-progress">[IN PROGRESS - ${drop.progress_percent}%]</span>`;
+            entryClass = "drop-entry drop-in-progress";
+          } else if (drop.status === "UNAVAILABLE") {
+            badge = `<span class="badge badge-unavailable">[UNAVAILABLE]</span>`;
+            entryClass = "drop-entry drop-unavailable";
+            if (drop.can_try_claim && drop.drop_instance_id) {
+              actionBtn = `<button class="btn btn-sm" onclick="claimSingleDrop('${escapeJsAttr(drop.drop_instance_id)}')">Try Claim</button>`;
+            }
           }
 
+          const thumbHtml = drop.image_url
+            ? `<img src="${drop.image_url}" alt="${escapeHtml(drop.name)}" class="drop-thumb" referrerpolicy="no-referrer" onerror="this.style.display='none'">`
+            : '';
+
+          const unavailReasonHtml = (drop.status === "UNAVAILABLE" && drop.unavailable_reason)
+            ? `<div class="drop-unavail-reason">Unavailable for Collection: ${escapeHtml(drop.unavailable_reason)}</div>`
+            : '';
+
           const hasProgress = drop.required_minutes > 0;
+          const remainingText = (drop.status === "IN_PROGRESS" || drop.status === "AVAILABLE") && drop.remaining_minutes > 0
+            ? ` (${drop.remaining_minutes}m needed)`
+            : '';
+          const fillClass = drop.status === "CLAIMED"
+            ? "complete"
+            : (drop.status === "UNAVAILABLE" ? "unavailable" : "");
+
           return `
-            <div class="drop-entry">
+            <div class="${entryClass}">
               <div class="drop-header">
-                <span class="drop-name">${escapeHtml(drop.name)}</span>
-                <div style="display: flex; gap: 6px; align-items: center;">
+                <div class="drop-title-wrap">
+                  ${thumbHtml}
+                  <span class="drop-name">${escapeHtml(drop.name)}</span>
+                </div>
+                <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
                   ${badge}
                   ${actionBtn}
                 </div>
               </div>
+              ${unavailReasonHtml}
               ${hasProgress ? `
                 <div class="progress-box">
                   <div class="progress-label">
-                    <span>${drop.watched_minutes} / ${drop.required_minutes} minutes watched</span>
+                    <span>${drop.watched_minutes} / ${drop.required_minutes} minutes watched${remainingText}</span>
                     <span>${drop.progress_percent}%</span>
                   </div>
                   <div class="progress-track">
-                    <div class="progress-fill ${drop.status === 'CLAIMED' ? 'complete' : ''}" style="width: ${drop.progress_percent}%;"></div>
+                    <div class="progress-fill ${fillClass}" style="width: ${drop.progress_percent}%;"></div>
                   </div>
                 </div>
               ` : ''}
@@ -1092,6 +1328,7 @@
 
         const streamUrl = camp.stream_url || `https://www.twitch.tv/directory/category/${encodeURIComponent(camp.game)}?filter=drops`;
         const campaignUrl = camp.campaigns_url || "https://www.twitch.tv/drops/campaigns";
+        const totalDrops = camp.total_drops || (camp.drops ? camp.drops.length : 0);
 
         return `
           <div class="card">
@@ -1108,13 +1345,17 @@
                 ${coverHtml}
                 <div class="camp-info">
                   <div class="item-title">${escapeHtml(camp.name)}</div>
-                  <div class="item-sub" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; flex-wrap: wrap; gap: 4px;">
-                    <span>Drops: ${camp.claimed_count || 0}/${camp.total_drops || (camp.drops ? camp.drops.length : 0)} Claimed</span>
+                  <div class="item-sub" style="display: flex; gap: 10px; align-items: center; margin-bottom: 6px; flex-wrap: wrap;">
+                    <span style="color: #34d399;">Collected: ${camp.claimed_count || 0}/${totalDrops}</span>
+                    <span style="color: #60a5fa;">Needs Collection: ${needsCount}</span>
+                    ${unavailCount > 0 ? `<span style="color: #f87171;">Unavailable: ${unavailCount}</span>` : ''}
                   </div>
                   <div class="camp-actions">
-                    <button class="btn btn-sm ${isTarget ? 'btn-danger' : 'btn-primary'}" onclick="toggleGameActivation('${escapeHtml(camp.game)}', ${!isTarget})">
-                      ${isTarget ? 'Deactivate' : 'Activate for Mining'}
-                    </button>
+                    ${(!camp.is_expired && camp.status !== "UNAVAILABLE") ? `
+                      <button class="btn btn-sm ${isTarget ? 'btn-danger' : 'btn-primary'}" onclick="toggleGameActivation('${escapeJsAttr(camp.game)}', ${!isTarget})">
+                        ${isTarget ? 'Deactivate' : 'Activate for Mining'}
+                      </button>
+                    ` : ''}
                     <a href="${streamUrl}" target="_blank" rel="noopener noreferrer" class="btn-link">[Watch Streams with Drops]</a>
                     <a href="${campaignUrl}" target="_blank" rel="noopener noreferrer" class="btn-link" style="color: var(--text-muted);">[Campaign Info]</a>
                   </div>
@@ -1127,11 +1368,26 @@
           </div>
         `;
       }).join("");
+
+      dropsGrid.innerHTML = collectedBannerHtml + cardsHtml;
     }
 
     function escapeHtml(str) {
       if (!str) return "";
-      return String(str).replace(/'/g, "\\'").replace(/"/g, "&quot;");
+      return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function escapeJsAttr(str) {
+      if (!str) return "";
+      return String(str)
+        .replace(/\\/g, "\\\\")
+        .replace(/'/g, "\\'")
+        .replace(/"/g, "&quot;");
     }
 
     async function toggleClaimItem(store, title, isClaimed) {
@@ -1174,8 +1430,8 @@
           ? `<span class="badge badge-claimed">[CLAIMED TO LIBRARY]</span>`
           : `<span class="badge badge-available">[FREE NOW]</span>`;
         const actionBtn = isClaimed
-          ? `<button class="btn btn-sm" onclick="toggleClaimItem('epic', '${escapeHtml(game.title)}', false)">Unmark Claimed</button>`
-          : `<button class="btn btn-sm btn-success" onclick="toggleClaimItem('epic', '${escapeHtml(game.title)}', true)">Mark as Claimed</button>`;
+          ? `<button class="btn btn-sm" onclick="toggleClaimItem('epic', '${escapeJsAttr(game.title)}', false)">Unmark Claimed</button>`
+          : `<button class="btn btn-sm btn-success" onclick="toggleClaimItem('epic', '${escapeJsAttr(game.title)}', true)">Mark as Claimed</button>`;
 
         const storeLink = game.store_url 
           ? `<a href="${game.store_url}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-primary">[View on Epic Store]</a>`
@@ -1224,7 +1480,7 @@
               ${claimedTitles.map(t => `
                 <div class="chip active">
                   <span>${escapeHtml(t)}</span>
-                  <span class="chip-remove" title="Unmark" onclick="toggleClaimItem('epic', '${escapeHtml(t)}', false)">&times;</span>
+                  <span class="chip-remove" title="Unmark" onclick="toggleClaimItem('epic', '${escapeJsAttr(t)}', false)">&times;</span>
                 </div>
               `).join("")}
             </div>
@@ -1249,7 +1505,7 @@
                 <span style="font-size: 0.85rem; font-weight: 500;">${escapeHtml(item)}</span>
                 <div style="display: flex; gap: 6px; align-items: center;">
                   <span class="badge badge-claimed">[CLAIMED]</span>
-                  <span class="chip-remove" title="Unmark" onclick="toggleClaimItem('amazon', '${escapeHtml(item)}', false)">&times;</span>
+                  <span class="chip-remove" title="Unmark" onclick="toggleClaimItem('amazon', '${escapeJsAttr(item)}', false)">&times;</span>
                 </div>
               </div>
             `).join("")}
@@ -1272,7 +1528,7 @@
                 <span style="font-size: 0.85rem; font-weight: 500;">${escapeHtml(item)}</span>
                 <div style="display: flex; gap: 6px; align-items: center;">
                   <span class="badge badge-claimed">[CLAIMED]</span>
-                  <span class="chip-remove" title="Unmark" onclick="toggleClaimItem('gog', '${escapeHtml(item)}', false)">&times;</span>
+                  <span class="chip-remove" title="Unmark" onclick="toggleClaimItem('gog', '${escapeJsAttr(item)}', false)">&times;</span>
                 </div>
               </div>
             `).join("")}
