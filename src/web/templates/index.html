@@ -311,31 +311,30 @@
         </div>
       </div>
 
-      <!-- Mining Mode & Target Drop Activation Control -->
+      <!-- Mining Mode & Single Active Stream Selection Control -->
       <div class="target-bar">
         <div class="target-bar-top">
           <div>
-            <span style="font-weight: 700; font-size: 0.95rem;">Mining Mode & Drop Campaign Selection</span>
+            <span style="font-weight: 700; font-size: 0.95rem;">Single-Stream Mining Control (Strictly 1 Active at a Time)</span>
             <p style="font-size: 0.8rem; color: var(--text-muted); margin-top: 2px;" id="mining-mode-desc">
-              Default Mode automatically mines all live campaigns (prioritizing activated games). Selective Mode strictly mines only games you activate.
+              Only 1 stream can be watched at a time. Selecting any game or mode immediately cancels the current stream and switches to your selected option.
             </p>
           </div>
           <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
             <div class="mode-switch-box">
-              <button class="mode-btn active" id="btn-mode-default" onclick="setMiningMode('default')">Default Mode (All Drops)</button>
-              <button class="mode-btn" id="btn-mode-selective" onclick="setMiningMode('selective')">Selective Mode (Activated Only)</button>
+              <button class="mode-btn active" id="btn-mode-default" onclick="setMiningMode('default')">Default Mode (Auto-Mine 1 at a Time)</button>
+              <button class="mode-btn" id="btn-mode-selective" onclick="setMiningMode('selective')">Selective Mode (Selected Only)</button>
             </div>
-            <button class="btn btn-sm btn-primary" onclick="activateAllLiveGames()">Activate All</button>
-            <button class="btn btn-sm" onclick="deactivateAllGames()">Deactivate All</button>
-            <button class="btn btn-sm" onclick="resetToDefaultMode()">Reset to Default</button>
+            <button class="btn btn-sm btn-danger" onclick="deactivateAllGames()">Cancel Current Selection</button>
+            <button class="btn btn-sm" onclick="resetToDefaultMode()">Reset to Auto-Mine</button>
           </div>
         </div>
         <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px; font-size: 0.78rem; color: var(--text-muted); flex-wrap: wrap; gap: 6px;">
-          <span>Activated Games for Mining (<span id="activated-count">0</span>):</span>
-          <span id="mode-badge-label" style="font-weight: 600; color: #a855f7;">[MODE: DEFAULT - AUTO-MINE ALL]</span>
+          <span>Active Selected Game to Mine (<span id="activated-count">0</span>/1 Max):</span>
+          <span id="mode-badge-label" style="font-weight: 600; color: #a855f7;">[MODE: DEFAULT - 1 STREAM AT A TIME]</span>
         </div>
         <div class="target-chips" id="selected-targets-chips">
-          <span style="font-size: 0.8rem; color: #94a3b8;">No specific games activated (mining all available campaigns)</span>
+          <span style="font-size: 0.8rem; color: #94a3b8;">No specific game locked (auto-selecting 1 active drop stream at a time)</span>
         </div>
       </div>
 
@@ -808,10 +807,10 @@
         }
       }
 
-      // 2. Mining Mode & Configuration
+      // 2. Mining Mode & Single Active Game Selection
       const miningCfg = twitch.mining_config || { mode: "default", activated_games: [] };
       currentMiningMode = miningCfg.mode || "default";
-      selectedPriorityGames = (miningCfg.activated_games || []).map(g => g.trim());
+      selectedPriorityGames = (miningCfg.activated_games || []).slice(0, 1).map(g => g.trim());
 
       const btnDefault = document.getElementById("btn-mode-default");
       const btnSelective = document.getElementById("btn-mode-selective");
@@ -823,8 +822,8 @@
       const modeBadge = document.getElementById("mode-badge-label");
       if (modeBadge) {
         modeBadge.innerText = currentMiningMode === "selective" 
-          ? "[MODE: SELECTIVE - ONLY ACTIVATED GAMES]" 
-          : "[MODE: DEFAULT - AUTO-MINE ALL LIVE DROPS]";
+          ? "[MODE: SELECTIVE - 1 SELECTED GAME ONLY]" 
+          : "[MODE: DEFAULT - AUTO-MINE 1 STREAM AT A TIME]";
         modeBadge.style.color = currentMiningMode === "selective" ? "#38bdf8" : "#a855f7";
       }
 
@@ -875,8 +874,8 @@
       const modeDesc = document.getElementById("mining-mode-desc");
       if (modeDesc) {
         modeDesc.innerText = currentMiningMode === "selective"
-          ? "Selective Mode: strictly mines ONLY campaigns for your activated games below. Pauses if none are currently online."
-          : "Default Mode: automatically farms all available watch-time drops across Twitch (prioritizes activated games if selected below).";
+          ? "Selective Mode: strictly watches ONLY 1 stream for the single game you select below. Selecting another game immediately cancels the current stream."
+          : "Default Mode: watches 1 stream at a time (prioritizing your selected game if chosen, or auto-picking the next active drop).";
       }
 
       const actCountElem = document.getElementById("activated-count");
@@ -918,12 +917,12 @@
         minerDot.className = "live-indicator-dot";
         const cname = minerStat.channel_name || minerStat.channel_login || "Live Streamer";
         const gname = minerStat.game || "Live Drop";
-        minerHeading.innerText = `Pretending to Watch: ${cname} (${gname})`;
+        minerHeading.innerText = `Watching 1 Active Stream: ${cname} (${gname})`;
         minerBadge.innerText = "1 STREAM ACTIVE";
         minerBadge.style.display = "inline-flex";
 
         const ulogin = minerStat.user_login || twitch.username || "iandrexi";
-        minerSub.innerText = `Pretending to watch under @${ulogin} (User ID: ${minerStat.user_id || "130742243"}) - strictly 1 stream at a time (zero bandwidth browser simulation).`;
+        minerSub.innerText = `Watching under @${ulogin} (User ID: ${minerStat.user_id || "130742243"}) — strictly 1 stream at a time. Selecting another option cancels this stream immediately.`;
 
         channelPill.innerText = `Channel: ${cname}`;
         if (dropLivePill) {
@@ -941,6 +940,18 @@
         streamLink.href = targetUrl;
         streamLink.innerText = `Open Stream (${minerStat.channel_login || 'Twitch'})`;
         streamLink.style.display = "inline-flex";
+      } else if (minerStat.switching) {
+        minerDot.className = "live-indicator-dot";
+        const selGame = minerStat.selected_game || minerStat.game || "Auto-Mine";
+        minerHeading.innerText = `Switching Stream -> ${selGame}`;
+        minerBadge.innerText = "SWITCHING TARGET";
+        minerBadge.style.display = "inline-flex";
+        minerSub.innerText = minerStat.message || `Cancelled previous stream and switching immediately to ${selGame} (strictly 1 stream at a time).`;
+        channelPill.innerText = `Target: ${selGame}`;
+        if (dropLivePill) dropLivePill.style.display = "none";
+        progressPill.innerText = "Session: Switching...";
+        viewersPill.innerText = "--";
+        streamLink.style.display = "none";
       } else {
         minerDot.className = "live-indicator-dot idle";
         minerHeading.innerText = "Twitch Drops Miner (Idle / Between Cycles)";
@@ -967,7 +978,7 @@
       const readyCount = campaigns.filter(c => (c.ready_count || 0) > 0).length;
       const collectedCount = collectedItems.length || twitch.claimed_history_count || 0;
       const unavailCount = campaigns.filter(c => (c.unavailable_count || 0) > 0 || c.status === "EXPIRED" || c.status === "UNAVAILABLE").length;
-      const actCount = campaigns.filter(c => isGameTargeted(c.game) || c.is_activated).length;
+      const actCount = campaigns.filter(c => Boolean(c.is_activated)).length;
 
       const elAll = document.getElementById("flt-all-count");
       const elNeeds = document.getElementById("flt-needs-count");
@@ -990,31 +1001,33 @@
       const container = document.getElementById("selected-targets-chips");
       if (!container) return;
       if (selectedPriorityGames.length === 0) {
-        container.innerHTML = `<span style="font-size: 0.8rem; color: #94a3b8;">${currentMiningMode === 'selective' ? 'No games activated. Miner will wait for your selection.' : 'No filter active (mining all active campaigns).'}</span>`;
+        container.innerHTML = `<span style="font-size: 0.8rem; color: #94a3b8;">${currentMiningMode === 'selective' ? 'No game selected. Click "Select to Mine" on any campaign below to start mining it.' : 'Auto-selecting 1 active drop campaign at a time. Click "Select to Mine" on any campaign below to switch immediately.'}</span>`;
       } else {
-        container.innerHTML = selectedPriorityGames.map(game => `
+        const activeGame = selectedPriorityGames[0];
+        container.innerHTML = `
           <div class="chip active">
-            <span>${escapeHtml(game)}</span>
-            <span class="chip-remove" title="Deactivate" onclick="toggleGameActivation('${escapeJsAttr(game)}', false)">&times;</span>
+            <span>[1 ACTIVE STREAM TARGET]: ${escapeHtml(activeGame)}</span>
+            <span class="chip-remove" title="Cancel & Deselect" onclick="toggleGameActivation('${escapeJsAttr(activeGame)}', false)">&times;</span>
           </div>
-        `).join("");
+        `;
       }
     }
 
     function isGameTargeted(gameName) {
-      if (!gameName) return false;
+      if (!gameName || selectedPriorityGames.length === 0) return false;
       const lower = gameName.toLowerCase().trim();
-      return selectedPriorityGames.some(pg => pg.toLowerCase().trim() === lower || lower.includes(pg.toLowerCase().trim()) || pg.toLowerCase().trim().includes(lower));
+      const pg = selectedPriorityGames[0].toLowerCase().trim();
+      return pg === lower;
     }
 
     async function setMiningMode(mode) {
       currentMiningMode = mode;
-      showToast(`Setting mining mode to ${mode.toUpperCase()}...`);
+      showToast(`Cancelling current stream & switching to ${mode.toUpperCase()} mode...`);
       try {
         const res = await fetch("/api/twitch/mining-config", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: jsonStringify({ mode: mode, activated_games: selectedPriorityGames })
+          body: jsonStringify({ mode: mode, activated_games: selectedPriorityGames.slice(0, 1) })
         });
         const data = await res.json();
         showToast(data.message || `Switched to ${mode} mode.`);
@@ -1027,7 +1040,11 @@
 
     async function toggleGameActivation(gameName, activated) {
       if (!gameName) return;
-      showToast(`${activated ? "Activating" : "Deactivating"} ${gameName}...`);
+      showToast(
+        activated
+          ? `Cancelling current stream & switching to mine ${gameName}...`
+          : `Cancelling ${gameName} mining selection...`
+      );
       try {
         const res = await fetch("/api/twitch/toggle-activation", {
           method: "POST",
@@ -1039,40 +1056,12 @@
         fetchData();
         broadcastSyncEvent("toggle_activation");
       } catch (err) {
-        showToast("Error updating activation: " + err.message);
-      }
-    }
-
-    async function activateAllLiveGames() {
-      if (!currentData || !currentData.twitch || !currentData.twitch.campaigns) return;
-      const allGames = Array.from(new Set(
-        currentData.twitch.campaigns
-          .filter(c => !c.is_expired && c.status !== "UNAVAILABLE")
-          .map(c => (c.game || '').trim())
-          .filter(Boolean)
-      ));
-      if (allGames.length === 0) {
-        showToast("No live campaigns found to activate.");
-        return;
-      }
-      showToast(`Activating all ${allGames.length} live games for mining...`);
-      try {
-        const res = await fetch("/api/twitch/mining-config", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: jsonStringify({ mode: currentMiningMode, activated_games: allGames })
-        });
-        const data = await res.json();
-        showToast(data.message || `Activated all ${allGames.length} games.`);
-        fetchData();
-        broadcastSyncEvent("activate_all");
-      } catch (err) {
-        showToast("Error activating games: " + err.message);
+        showToast("Error updating selection: " + err.message);
       }
     }
 
     async function deactivateAllGames() {
-      showToast("Deactivating all games...");
+      showToast("Cancelling current selected stream...");
       try {
         const res = await fetch("/api/twitch/mining-config", {
           method: "POST",
@@ -1080,16 +1069,16 @@
           body: jsonStringify({ mode: currentMiningMode, activated_games: [] })
         });
         const data = await res.json();
-        showToast(data.message || "Deactivated all games.");
+        showToast(data.message || "Cancelled current selection.");
         fetchData();
         broadcastSyncEvent("deactivate_all");
       } catch (err) {
-        showToast("Error deactivating games: " + err.message);
+        showToast("Error cancelling selection: " + err.message);
       }
     }
 
     async function resetToDefaultMode() {
-      showToast("Resetting to Default mode (auto-mine all live drops)...");
+      showToast("Cancelling current selection & resetting to Default auto-mine (1 stream at a time)...");
       try {
         const res = await fetch("/api/twitch/mining-config", {
           method: "POST",
@@ -1197,7 +1186,7 @@
           if (!matchGame && !matchCamp && !matchDrop) return false;
         }
 
-        const isTargeted = isGameTargeted(camp.game) || Boolean(camp.is_activated);
+        const isTargeted = Boolean(camp.is_activated);
         const needsCount = (camp.needs_collection_count !== undefined)
           ? camp.needs_collection_count
           : ((camp.in_progress_count || 0) + (camp.ready_count || 0) + (camp.available_count || 0));
@@ -1222,7 +1211,7 @@
       }
 
       const cardsHtml = filtered.map(camp => {
-        const isTarget = isGameTargeted(camp.game) || Boolean(camp.is_activated);
+        const isTarget = Boolean(camp.is_activated);
         const needsCount = (camp.needs_collection_count !== undefined)
           ? camp.needs_collection_count
           : ((camp.in_progress_count || 0) + (camp.ready_count || 0) + (camp.available_count || 0));
@@ -1244,10 +1233,10 @@
         const actBadge = camp.is_expired || camp.status === "UNAVAILABLE"
           ? ""
           : (isTarget
-              ? `<span class="badge badge-target">[ACTIVATED FOR MINING]</span>`
+              ? `<span class="badge badge-target">[ACTIVE - SELECTED TO MINE]</span>`
               : (currentMiningMode === 'selective'
-                  ? `<span class="badge badge-available">[INACTIVE]</span>`
-                  : `<span class="badge badge-available">[DEFAULT AUTO-MINE]</span>`));
+                  ? `<span class="badge badge-available">[STANDBY]</span>`
+                  : `<span class="badge badge-available">[STANDBY - AUTO QUEUE]</span>`));
 
         const timeBadge = camp.time_left 
           ? `<span class="badge ${camp.is_expired ? 'badge-unavailable' : 'badge-upcoming'}">${escapeHtml(camp.time_left)}</span>`
@@ -1331,7 +1320,7 @@
         const totalDrops = camp.total_drops || (camp.drops ? camp.drops.length : 0);
 
         return `
-          <div class="card">
+          <div class="card" style="${isTarget ? 'border-color: #9146ff; box-shadow: 0 0 12px rgba(145, 70, 255, 0.25);' : ''}">
             <div>
               <div class="card-top">
                 <span class="store-tag store-twitch">${escapeHtml(camp.game || "Twitch Game")}</span>
@@ -1353,7 +1342,7 @@
                   <div class="camp-actions">
                     ${(!camp.is_expired && camp.status !== "UNAVAILABLE") ? `
                       <button class="btn btn-sm ${isTarget ? 'btn-danger' : 'btn-primary'}" onclick="toggleGameActivation('${escapeJsAttr(camp.game)}', ${!isTarget})">
-                        ${isTarget ? 'Deactivate' : 'Activate for Mining'}
+                        ${isTarget ? 'Cancel / Stop Mining' : (selectedPriorityGames.length > 0 ? 'Select to Mine (Cancel Current)' : 'Select to Mine (1 Active)')}
                       </button>
                     ` : ''}
                     <a href="${streamUrl}" target="_blank" rel="noopener noreferrer" class="btn-link">[Watch Streams with Drops]</a>

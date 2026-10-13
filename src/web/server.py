@@ -197,17 +197,23 @@ def get_mining_config():
             with open(config_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 if isinstance(data, dict):
+                    raw_games = [g.strip() for g in data.get("activated_games", []) if g.strip()]
+                    single_game = raw_games[:1]
                     return {
                         "mode": data.get("mode", "default"),
-                        "activated_games": [g.strip() for g in data.get("activated_games", []) if g.strip()],
+                        "activated_games": single_game,
+                        "selected_game": single_game[0] if single_game else "",
+                        "updated_at": data.get("updated_at", 0),
                     }
         except Exception:
             pass
     env = load_env_file()
-    default_priority = [g.strip() for g in env.get("TWITCH_PRIORITY_GAMES", "").split(",") if g.strip()]
+    default_priority = [g.strip() for g in env.get("TWITCH_PRIORITY_GAMES", "").split(",") if g.strip()][:1]
     return {
         "mode": "default",
-        "activated_games": default_priority or ["World of Warcraft", "Rust", "Rainbow Six Siege"],
+        "activated_games": default_priority,
+        "selected_game": default_priority[0] if default_priority else "",
+        "updated_at": 0,
     }
 
 
@@ -216,11 +222,63 @@ def save_mining_config(mode: str, activated_games: list):
     os.makedirs(data_dir, exist_ok=True)
     config_file = os.path.join(data_dir, "mining_config.json")
     clean_mode = "selective" if mode == "selective" else "default"
-    clean_games = list(dict.fromkeys([g.strip() for g in activated_games if g.strip()]))
-    cfg = {"mode": clean_mode, "activated_games": clean_games}
+    # Strictly allow ONLY 1 active selected game at a time (take the newly selected one)
+    deduped = list(dict.fromkeys([g.strip() for g in activated_games if g.strip()]))
+    clean_games = deduped[-1:] if deduped else []
+    selected_game = clean_games[0] if clean_games else ""
+    now_ts = time.time()
+
+    cfg = {
+        "mode": clean_mode,
+        "activated_games": clean_games,
+        "selected_game": selected_game,
+        "updated_at": now_ts,
+    }
     with open(config_file, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2)
     save_env_file({"TWITCH_PRIORITY_GAMES": ", ".join(clean_games)})
+
+    # Immediately cancel current stream in miner_status.json if it doesn't match the new selection
+    status_file = os.path.join(data_dir, "miner_status.json")
+    prev_status = {}
+    if os.path.exists(status_file):
+        try:
+            with open(status_file, "r", encoding="utf-8") as f:
+                prev_status = json.load(f) or {}
+        except Exception:
+            prev_status = {}
+
+    prev_game = str(prev_status.get("game") or "").strip()
+    prev_channel = str(prev_status.get("channel_name") or prev_status.get("channel_login") or "").strip()
+    was_active = bool(prev_status.get("active"))
+
+    if selected_game:
+        cancel_prefix = f"Cancelled {prev_channel} ({prev_game}). " if (was_active and prev_game.lower() != selected_game.lower()) else ""
+        msg = f"{cancel_prefix}Selected '{selected_game}' to mine (1 stream active at a time). Connecting to live stream..."
+    elif clean_mode == "selective":
+        cancel_prefix = f"Cancelled {prev_channel} ({prev_game}). " if was_active else ""
+        msg = f"{cancel_prefix}Selective mode: Current stream cancelled. Select 1 game below to start mining."
+    else:
+        cancel_prefix = f"Cancelled {prev_channel} ({prev_game}). " if was_active else ""
+        msg = f"{cancel_prefix}Default mode: Auto-selecting 1 eligible drop stream to mine..."
+
+    new_status = {
+        "active": False,
+        "switching": True,
+        "paused": False,
+        "user_active": False,
+        "game": selected_game,
+        "selected_game": selected_game,
+        "mode": clean_mode,
+        "message": msg,
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    try:
+        with open(status_file, "w", encoding="utf-8") as f:
+            json.dump(new_status, f, indent=2)
+    except Exception:
+        pass
+
     return cfg
 
 
@@ -368,7 +426,33 @@ def build_status_payload():
 
     mining_cfg = get_mining_config()
     miner_stat = get_miner_status()
-    priority_list = mining_cfg.get("activated_games", [])
+    priority_list = mining_cfg.get("activated_games", [])[:1]
+    watched_game_str = str(miner_stat.get("game") or "").strip() if miner_stat.get("active") else ""
+    active_target_game = priority_list[0] if priority_list else watched_game_str
+    if active_target_game and not priority_list:
+        mining_cfg["activated_games"] = [active_target_game]
+        mining_cfg["selected_game"] = active_target_game
+        priority_list = [active_target_game]
+
+    def _mark_single_active_campaign(camps_list, target_game_name):
+        target_low = (target_game_name or "").strip().lower()
+        already_marked = False
+        for c in camps_list:
+            c_game_low = str(c.get("game") or "").strip().lower()
+            c_name_low = str(c.get("name") or "").strip().lower()
+            if (
+                not already_marked
+                and target_low
+                and not c.get("is_expired")
+                and c.get("status") != "UNAVAILABLE"
+                and (c_game_low == target_low or target_low in c_game_low or target_low in c_name_low)
+            ):
+                c["is_activated"] = True
+                c["is_watching"] = bool(miner_stat.get("active") and watched_game_str.lower() == c_game_low)
+                already_marked = True
+            else:
+                c["is_activated"] = False
+                c["is_watching"] = False
 
     # 1. Twitch Status & Personal Inventory
     twitch_info = {
@@ -406,9 +490,7 @@ def build_status_payload():
 
                 overview = client.get_drops_overview(priority_games=priority_list)
                 camps = overview.get("campaigns", [])
-                act_games_low = [ag.lower() for ag in priority_list]
-                for c in camps:
-                    c["is_activated"] = (c.get("game", "").lower() in act_games_low)
+                _mark_single_active_campaign(camps, active_target_game)
 
                 twitch_info["campaigns"] = camps
                 twitch_info["collected_items"] = overview.get("collected_items", [])
@@ -468,9 +550,7 @@ def build_status_payload():
             fallback_client = TwitchClient(twitch_token or "")
             overview = fallback_client.get_drops_overview(priority_games=priority_list)
             camps = overview.get("campaigns", [])
-            act_games_low = [ag.lower() for ag in priority_list]
-            for c in camps:
-                c["is_activated"] = (c.get("game", "").lower() in act_games_low)
+            _mark_single_active_campaign(camps, active_target_game)
             twitch_info["campaigns"] = camps
             twitch_info["collected_items"] = overview.get("collected_items", [])
             twitch_info["needs_collection_drops"] = overview.get("needs_collection_drops", [])
@@ -985,14 +1065,20 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             if not isinstance(games, list):
                 games = [g.strip() for g in str(games).split(",") if g.strip()]
 
-            cfg = save_mining_config(mode=mode, activated_games=games)
+            cfg = save_mining_config(mode=mode, activated_games=games[:1])
+            sel = cfg.get("selected_game")
+            msg = (
+                f"Cancelled previous stream. Now mining selected game: '{sel}' ({cfg['mode']} mode)."
+                if sel
+                else f"Cancelled current stream. Switched to '{cfg['mode']}' mode."
+            )
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({
                 "success": True,
                 "mining_config": cfg,
-                "message": f"Mining configuration set to '{cfg['mode']}' mode with {len(cfg['activated_games'])} active games."
+                "message": msg
             }).encode("utf-8"))
             return
 
@@ -1007,21 +1093,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             game = payload.get("game", "").strip()
             activated = bool(payload.get("activated", True))
             current_cfg = get_mining_config()
-            curr_games = current_cfg.get("activated_games", [])
 
-            # Case-insensitive update while preserving display casing
-            new_games = []
-            matched = False
-            for g in curr_games:
-                if g.lower() == game.lower():
-                    matched = True
-                    if activated:
-                        new_games.append(g)
-                else:
-                    new_games.append(g)
-
-            if activated and not matched and game:
-                new_games.append(game)
+            # Strictly 1 active stream/game at a time: selecting a game cancels the previous one
+            if activated and game:
+                new_games = [game]
+            else:
+                new_games = []
 
             cfg = save_mining_config(mode=current_cfg.get("mode", "default"), activated_games=new_games)
             self.send_response(200)
@@ -1032,7 +1109,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 "game": game,
                 "activated": activated,
                 "mining_config": cfg,
-                "message": f"{'Activated' if activated else 'Deactivated'} '{game}' for mining."
+                "message": (
+                    f"Cancelled previous stream & selected '{game}' as the 1 active stream to mine."
+                    if activated and game
+                    else f"Cancelled '{game}' stream selection."
+                )
             }).encode("utf-8"))
             return
 
