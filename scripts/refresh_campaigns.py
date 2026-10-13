@@ -79,19 +79,24 @@ def refresh_campaigns(force: bool = True) -> dict:
         logger.info("No Twitch session token configured or session inactive. Using raw active campaigns roster.")
         overview = client.get_drops_overview(priority_games=priority_games, force_refresh=force)
 
-    # 3. Save cache file with explicit metadata
+    # 3. Save raw DropHunter campaigns to cache file (get_drops_overview already saves enriched overview to twitch_inventory.json)
     os.makedirs(DATA_DIR, exist_ok=True)
     cache_payload = {
         "timestamp": datetime.now(timezone.utc).timestamp(),
         "updated_at": datetime.now(timezone.utc).isoformat(),
-        "total_campaigns": overview.get("total_campaigns", len(active_campaigns)),
-        "campaigns": overview.get("campaigns", active_campaigns),
+        "total_campaigns": len(active_campaigns),
+        "campaigns": active_campaigns,
     }
     with open(CAMPAIGNS_CACHE_FILE, "w", encoding="utf-8") as f:
         json.dump(cache_payload, f, indent=2)
 
     logger.info("Successfully updated campaigns cache file: %s", CAMPAIGNS_CACHE_FILE)
-    return cache_payload
+    return {
+        "timestamp": cache_payload["timestamp"],
+        "updated_at": cache_payload["updated_at"],
+        "total_campaigns": overview.get("total_campaigns", len(active_campaigns)),
+        "campaigns": overview.get("campaigns", active_campaigns),
+    }
 
 
 def main():

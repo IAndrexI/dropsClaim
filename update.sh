@@ -78,11 +78,15 @@ echo "[5/5] Restarting background services..."
 if command -v rc-service >/dev/null 2>&1; then
     # OpenRC (Alpine Linux)
     rc-service twitch-drops restart 2>/dev/null || rc-service twitch-drops start 2>/dev/null || true
-    rc-service auto-loot-web restart 2>/dev/null || rc-service auto-loot-web start 2>/dev/null || true
+    if [ "${SKIP_WEB_RESTART:-0}" != "1" ]; then
+        rc-service auto-loot-web restart 2>/dev/null || rc-service auto-loot-web start 2>/dev/null || true
+    fi
 elif command -v systemctl >/dev/null 2>&1; then
     # systemd (Debian / Ubuntu)
     systemctl restart twitch-drops.service 2>/dev/null || systemctl start twitch-drops.service 2>/dev/null || true
-    systemctl restart auto-loot-web.service 2>/dev/null || systemctl start auto-loot-web.service 2>/dev/null || true
+    if [ "${SKIP_WEB_RESTART:-0}" != "1" ]; then
+        systemctl restart auto-loot-web.service 2>/dev/null || systemctl start auto-loot-web.service 2>/dev/null || true
+    fi
 fi
 
 echo "=========================================================="

@@ -17,7 +17,7 @@ import urllib.request
 import urllib.error
 from typing import Any, Dict, List, Optional
 
-from .twitch_api import TwitchClient, is_campaign_expired
+from .twitch_api import TwitchClient, extract_game_name, is_campaign_expired, is_timestamp_expired
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -77,6 +77,8 @@ class DropsMiner:
         self.running = False
         self.current_stream: Optional[Dict[str, Any]] = None
         self.last_campaign_refresh: float = 0.0
+        self.failed_claim_ids: set = set()
+        self.last_inventory: Dict[str, Any] = {}
 
     def notify(self, message: str):
         """Send notification to user-configured webhook (Discord/Telegram compatible)."""
@@ -105,32 +107,95 @@ class DropsMiner:
         claimed_count = 0
         try:
             inv = self.client.get_inventory()
+            self.last_inventory = inv or {}
             campaigns = inv.get("dropCampaignsInProgress") or inv.get("dropCampaignInProgress") or []
             if isinstance(campaigns, dict):
                 campaigns = [campaigns]
 
             for camp in campaigns:
-                game_name = camp.get("game", {}).get("displayName") or camp.get("game", {}).get("name") or "Unknown"
-                for drop in camp.get("timeBasedDrops", []):
-                    self_data = drop.get("self", {})
-                    is_claimed = self_data.get("isClaimed", False)
-                    drop_id = self_data.get("dropInstanceID") or self_data.get("dropInstanceId")
-                    watched = self_data.get("currentMinutesWatched", 0)
-                    required = drop.get("requiredMinutesWatched", 0)
+                game_name = extract_game_name(camp, "Unknown")
+                camp_status = str(camp.get("status") or "").upper()
+                camp_end = str(camp.get("endAt") or "")
+                # Skip campaigns whose claim window (>24h past endAt) has already expired
+                if camp_status == "EXPIRED" and camp_end and is_timestamp_expired(camp_end, grace_seconds=86400):
+                    continue
 
-                    if drop_id and not is_claimed and watched >= required and required > 0:
+                for drop in camp.get("timeBasedDrops", []):
+                    self_data = drop.get("self") or {}
+                    is_claimed = bool(self_data.get("isClaimed", False))
+                    drop_id = self_data.get("dropInstanceID") or self_data.get("dropInstanceId")
+                    watched = int(self_data.get("currentMinutesWatched") or 0)
+                    required = int(drop.get("requiredMinutesWatched") or 0)
+                    drop_end = str(drop.get("endAt") or camp_end)
+
+                    if not drop_id or is_claimed or drop_id in self.failed_claim_ids:
+                        continue
+                    if drop_end and is_timestamp_expired(drop_end, grace_seconds=86400):
+                        self.failed_claim_ids.add(drop_id)
+                        continue
+
+                    if watched >= required and required > 0:
                         drop_name = drop.get("name", "Drop Reward")
                         logger.info("Found claimable drop: %s (%s) [%d/%d min]", drop_name, game_name, watched, required)
                         if self.client.claim_drop(drop_id):
                             claimed_count += 1
                             self.notify(f"Successfully claimed **{drop_name}** for **{game_name}**!")
+                        else:
+                            logger.warning(
+                                "Drop %s (%s) could not be claimed (claim window expired or unavailable). Skipping future retries.",
+                                drop_name, game_name
+                            )
+                            self.failed_claim_ids.add(drop_id)
         except Exception as err:
             logger.error("Error checking pending drops: %s", err)
         return claimed_count
 
+    def _get_live_drop_progress(self, game_name: str, camp_name: str, fallback_camp: Optional[dict] = None) -> Dict[str, Any]:
+        """Extract the active unclaimed drop's current watch progress for telemetry."""
+        inv_camps = (self.last_inventory or {}).get("dropCampaignsInProgress") or []
+        if isinstance(inv_camps, dict):
+            inv_camps = [inv_camps]
+
+        target_camps = []
+        for ic in inv_camps:
+            if str(ic.get("status") or "").upper() == "EXPIRED" or is_campaign_expired(ic):
+                continue
+            igame = extract_game_name(ic, "").lower()
+            icname = str(ic.get("name") or "").lower()
+            if igame == game_name.lower() or (camp_name and icname == camp_name.lower()):
+                target_camps.append(ic)
+
+        if not target_camps and fallback_camp:
+            target_camps = [fallback_camp]
+
+        best_drop = None
+        for tc in target_camps:
+            for d in tc.get("timeBasedDrops") or []:
+                s = d.get("self") or {}
+                if s.get("isClaimed"):
+                    continue
+                req = int(d.get("requiredMinutesWatched") or 0)
+                subs = int(d.get("requiredSubs") or 0)
+                if req <= 0 or subs > 0:
+                    continue
+                watched = int(s.get("currentMinutesWatched") or 0)
+                pct = min(100, int((watched / req) * 100)) if req > 0 else 0
+                candidate = {
+                    "current_drop_name": d.get("name") or "Drop Reward",
+                    "current_drop_watched": watched,
+                    "current_drop_required": req,
+                    "current_drop_percent": pct,
+                    "current_drop_remaining": max(0, req - watched),
+                }
+                if best_drop is None or (watched > 0 and best_drop["current_drop_watched"] == 0):
+                    best_drop = candidate
+                    if watched > 0 and watched < req:
+                        return best_drop
+        return best_drop or {}
+
     def select_active_campaign(self) -> Optional[dict]:
         """
-        Select the highest priority campaign that still has unclaimed drops.
+        Select the highest priority campaign that still has unclaimed watch-time drops.
         Respects 'mode' (default vs selective) and 'activated_games'.
         Periodically refreshes campaign roster (at least hourly / daily) to discover new drops.
         """
@@ -142,7 +207,11 @@ class DropsMiner:
 
         now = time.time()
         force_refresh = (now - self.last_campaign_refresh >= 3600)  # Hourly / daily refresh
-        campaigns = self.client.get_all_active_campaigns(priority_games=activated_games, force_refresh=force_refresh)
+        campaigns = self.client.get_all_active_campaigns(
+            priority_games=activated_games,
+            force_refresh=force_refresh,
+            include_expired_inventory=False,
+        )
         if force_refresh:
             self.last_campaign_refresh = now
             logger.info("[MINER] Refreshed active drop campaigns roster (Found %d campaigns)", len(campaigns))
@@ -151,23 +220,23 @@ class DropsMiner:
             logger.info("No active drop campaigns found on Twitch right now.")
             return None
 
-        # Filter out campaigns where all drops are already claimed or campaign is expired
+        # Filter out campaigns where all drops are already claimed, expired, or sub-only (0 watch minutes)
         eligible = []
         for camp in campaigns:
             if is_campaign_expired(camp):
                 continue
             drops = camp.get("timeBasedDrops", [])
-            has_unclaimed = any(
+            has_unclaimed_watchable = any(
                 not d.get("self", {}).get("isClaimed", False)
+                and int(d.get("requiredMinutesWatched") or 0) > 0
+                and int(d.get("requiredSubs") or 0) == 0
                 for d in drops
             )
-            # If no drops array but has time_left or valid campaign
-            if has_unclaimed or (not drops and camp.get("name")):
+            if has_unclaimed_watchable:
                 eligible.append(camp)
 
-
         if not eligible:
-            logger.info("All drops in currently active campaigns have already been claimed! You are all caught up.")
+            logger.info("All watch-time drops in currently active campaigns have already been claimed! You are all caught up.")
             return None
 
         # If in 'selective' mode, strictly restrict to user-activated games
@@ -178,14 +247,13 @@ class DropsMiner:
 
             filtered = []
             for camp in eligible:
-                game_obj = camp.get("game") or {}
-                gname = (game_obj.get("displayName") or game_obj.get("name") or "").lower()
+                gname = extract_game_name(camp, "").lower()
                 cname = (camp.get("name") or "").lower()
                 if any(ag in gname or ag in cname for ag in activated_games):
                     filtered.append(camp)
 
             if not filtered:
-                logger.info("[SELECTIVE MODE] No active drops match your activated games %s right now.", activated_games)
+                logger.info("[SELECTIVE MODE] No active watch-time drops match your activated games %s right now.", activated_games)
                 return None
             return filtered[0]
 
@@ -193,13 +261,12 @@ class DropsMiner:
         if activated_games:
             for p_game in activated_games:
                 for camp in eligible:
-                    game_obj = camp.get("game") or {}
-                    gname = (game_obj.get("displayName") or game_obj.get("name") or "").lower()
+                    gname = extract_game_name(camp, "").lower()
                     cname = (camp.get("name") or "").lower()
                     if p_game in gname or p_game in cname:
                         return camp
 
-        # Fallback to the first available campaign with unclaimed items
+        # Fallback to the first available campaign with unclaimed watch-time items
         return eligible[0]
 
     def run_cycle(self):
@@ -228,7 +295,7 @@ class DropsMiner:
             time.sleep(600)
             return
 
-        game_name = campaign.get("game", {}).get("displayName") or campaign.get("game", {}).get("name", "Unknown")
+        game_name = extract_game_name(campaign, "Unknown")
         camp_name = campaign.get("name", game_name)
         logger.info("[MINER] Target campaign: '%s' for game '%s'", camp_name, game_name)
 
@@ -281,6 +348,10 @@ class DropsMiner:
                 sub_playlist_url=sub_playlist_url,
             )
 
+            # Claim any drops completed during this minute & refresh live inventory progress
+            self.claim_pending_drops()
+            live_drop_info = self._get_live_drop_progress(game_name, camp_name, fallback_camp=campaign)
+
             current_status = {
                 "active": True,
                 "paused": False,
@@ -296,18 +367,23 @@ class DropsMiner:
                 "user_id": self.client.user_id,
                 "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             }
+            current_status.update(live_drop_info)
             save_miner_status(current_status)
 
             if success:
+                drop_prog_str = ""
+                if live_drop_info.get("current_drop_required"):
+                    drop_prog_str = (
+                        f" | Drop: {live_drop_info.get('current_drop_name')} "
+                        f"[{live_drop_info.get('current_drop_watched', 0)}/{live_drop_info.get('current_drop_required', 0)}m "
+                        f"({live_drop_info.get('current_drop_percent', 0)}%)]"
+                    )
                 logger.info(
-                    "[MINER] Heartbeat minute %d/15 sent successfully for %s on channel %s",
-                    minute + 1, game_name, channel["channel_name"]
+                    "[MINER] Heartbeat minute %d/15 sent successfully for %s on channel %s%s",
+                    minute + 1, game_name, channel["channel_name"], drop_prog_str
                 )
             else:
                 logger.warning("[MINER] Heartbeat returned non-204, verifying stream status...")
-
-            # Claim any drops completed during this minute
-            self.claim_pending_drops()
 
             # Randomize delay between 58 and 62 seconds to mimic authentic browser behavior
             time.sleep(random.uniform(58.0, 62.0))

@@ -22,9 +22,20 @@ jobs:
           cd "$TARGET_DIR"
           git fetch origin main
           git reset --hard origin/main
+          chmod +x scripts/*.sh scripts/*.py *.sh 2>/dev/null || true
           if [ -d ".venv" ]; then
             .venv/bin/pip install -r requirements.txt -q || true
           fi
-          if systemctl is-active --quiet dropsclaim 2>/dev/null; then
-            systemctl restart dropsclaim
+          if [ -f "scripts/refresh_campaigns.py" ]; then
+            python3 scripts/refresh_campaigns.py >/dev/null 2>&1 || true
+          fi
+          if command -v rc-service >/dev/null 2>&1; then
+            rc-service twitch-drops restart 2>/dev/null || rc-service twitch-drops start 2>/dev/null || true
+            rc-service auto-loot-web restart 2>/dev/null || rc-service auto-loot-web start 2>/dev/null || true
+          elif command -v systemctl >/dev/null 2>&1; then
+            if systemctl is-active --quiet dropsclaim 2>/dev/null; then
+              systemctl restart dropsclaim
+            fi
+            systemctl restart twitch-drops.service 2>/dev/null || true
+            systemctl restart auto-loot-web.service 2>/dev/null || true
           fi
