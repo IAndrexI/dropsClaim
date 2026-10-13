@@ -1174,10 +1174,10 @@ class TwitchClient:
             "last_refreshed_at": DROPHUNTER_CACHE.get("updated_at") or datetime.now(timezone.utc).isoformat(),
         }
 
-    def find_eligible_channel(self, game_name: str) -> Optional[Dict[str, Any]]:
+    def find_eligible_channel(self, game_name: str, fast_first: bool = True) -> Optional[Dict[str, Any]]:
         """
         Find a live channel streaming the specified game with verified watch-time drops enabled.
-        Selects a random channel from verified drop channels.
+        When fast_first=True (default), returns immediately upon verifying a drop-enabled channel for instant switching.
         """
         query = """
         query DirectoryPage_Game($name: String!) {
@@ -1282,11 +1282,23 @@ class TwitchClient:
                 return None
 
             verified_channels: List[Dict[str, Any]] = []
-            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                results = executor.map(verify_channel, candidate_nodes[:20])
-                for r in results:
-                    if r:
-                        verified_channels.append(r)
+            pool_slice = candidate_nodes[:12]
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=6)
+            try:
+                futures = [executor.submit(verify_channel, node) for node in pool_slice]
+                for fut in concurrent.futures.as_completed(futures, timeout=6):
+                    try:
+                        r = fut.result()
+                        if r:
+                            verified_channels.append(r)
+                            if fast_first:
+                                break
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            finally:
+                executor.shutdown(wait=False, cancel_futures=True)
 
             if verified_channels:
                 chosen = random.choice(verified_channels)
@@ -1297,7 +1309,7 @@ class TwitchClient:
                 return chosen
 
             logger.warning("None of the checked channels for '%s' returned active watch-time drops. Selecting candidate stream.", game_name)
-            fallback_node = random.choice(candidate_nodes)
+            fallback_node = candidate_nodes[0]
             b = fallback_node.get("broadcaster") or {}
             return {
                 "channel_id": str(b.get("id") or ""),
