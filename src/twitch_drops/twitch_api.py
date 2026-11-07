@@ -518,7 +518,7 @@ def _merge_campaign_drops(dh_drops: List[Dict[str, Any]], tw_drops: List[Dict[st
 
 
 class TwitchClient:
-    def __init__(self, auth_token: str, user_agent: Optional[str] = None):
+    def __init__(self, auth_token: str, user_agent: Optional[str] = None, client_id: Optional[str] = None):
         """
         Initialize the Twitch API client using your browser's auth-token cookie.
         
@@ -526,6 +526,8 @@ class TwitchClient:
         :param user_agent: Optional custom browser user-agent
         """
         self.auth_token = auth_token.strip()
+        from src.auth.twitch_auth import client_id_for
+        self.client_id = client_id or client_id_for(self.auth_token)
         self.user_agent = user_agent or (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -550,7 +552,7 @@ class TwitchClient:
 
         body = json.dumps(payload).encode("utf-8")
         headers = {
-            "Client-Id": TWITCH_CLIENT_ID,
+            "Client-Id": self.client_id,
             "Authorization": f"OAuth {self.auth_token}",
             "User-Agent": self.user_agent,
             "Content-Type": "application/json",
@@ -579,7 +581,7 @@ class TwitchClient:
 
         body = json.dumps(payload).encode("utf-8")
         headers = {
-            "Client-Id": TWITCH_CLIENT_ID,
+            "Client-Id": self.client_id,
             "Authorization": f"OAuth {self.auth_token}",
             "User-Agent": self.user_agent,
             "Content-Type": "application/json",
@@ -1360,7 +1362,7 @@ class TwitchClient:
                 usher_url,
                 headers={
                     "User-Agent": self.user_agent,
-                    "Client-Id": TWITCH_CLIENT_ID,
+                    "Client-Id": self.client_id,
                 }
             )
             with urllib.request.urlopen(req, timeout=10) as resp:
@@ -1463,7 +1465,7 @@ class TwitchClient:
         body_form = f"data={urllib.parse.quote(b64_data)}".encode('utf-8')
 
         headers = {
-            "Client-Id": TWITCH_CLIENT_ID,
+            "Client-Id": self.client_id,
             "Authorization": f"OAuth {self.auth_token}",
             "User-Agent": self.user_agent,
             "Content-Type": "application/x-www-form-urlencoded",

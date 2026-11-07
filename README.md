@@ -129,6 +129,20 @@ If you prefer containerized deployment:
 
 ---
 
+## Twitch Login (device code, no cookie copying)
+
+1. Register an app at <https://dev.twitch.tv/console> with **Client Type: Public** and any OAuth redirect URL (e.g. `http://localhost`).
+2. Put its Client ID in `.env` as `TWITCH_CLIENT_ID=`.
+3. Run `python -m src.twitch_drops.main --login`, open the printed URL and enter the code. (The dashboard exposes the same flow at `POST /api/twitch/login/start` and `/api/twitch/login/poll`.)
+
+The token is saved to `data/twitch_token.json` (gitignored, mode 0600), re-validated on every start and refreshed automatically. `--logout` deletes it. If no stored login exists, the legacy `TWITCH_AUTH_TOKEN` cookie below is still used.
+
+> Twitch's drops endpoints are an undocumented GraphQL API; tokens from third-party app IDs may be treated differently from browser cookies. If drops queries fail with a device-login token, fall back to the cookie method.
+
+**Dashboard password:** if `DASHBOARD_PASSWORD` is empty, a random one is generated once and stored in `data/dashboard_password`.
+
+---
+
 ## How to Get Your Twitch `auth-token` (Password-Free)
 
 1. Open [https://www.twitch.tv](https://www.twitch.tv) in your browser and make sure you are logged in.

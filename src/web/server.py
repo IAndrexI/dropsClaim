@@ -23,6 +23,13 @@ sys.path.insert(0, APP_DIR)
 
 from src.free_games.preview_promotions import fetch_epic_freebies
 from src.twitch_drops.twitch_api import TwitchClient
+from src.auth.twitch_auth import (
+    clear_token as clear_stored_token,
+    load_token as load_stored_token,
+    poll_device_login,
+    resolve_token,
+    start_device_login,
+)
 from src.twitch_drops.miner import DropsMiner
 from src.twitch_drops.process_guard import get_running_bot_processes, kill_pid, PID_FILE, is_pid_alive
 
@@ -274,7 +281,7 @@ def save_mining_config(mode: str, activated_games: list):
     was_active = bool(prev_status.get("active"))
 
     env = load_env_file()
-    token = env.get("TWITCH_AUTH_TOKEN", "").strip()
+    token = resolve_token(env.get("TWITCH_AUTH_TOKEN", "").strip())
     target_game = selected_game
 
     # If in default mode with no manual selection, pick the first eligible campaign from cache
@@ -516,10 +523,32 @@ def get_autostart_status():
     return status
 
 
+def get_dashboard_password(env):
+    """Dashboard password from .env, else a random one generated once and stored in data/ (0600)."""
+    pw = (env.get("DASHBOARD_PASSWORD") or "").strip()
+    if pw:
+        return pw
+    path = os.path.join(APP_DIR, "data", "dashboard_password")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            pw = f.read().strip()
+            if pw:
+                return pw
+    except OSError:
+        pass
+    pw = secrets.token_urlsafe(16)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(pw)
+    print(f"[SECURITY] DASHBOARD_PASSWORD not set. Generated one-time password saved to {path}", flush=True)
+    return pw
+
+
 def build_status_payload():
     env = load_env_file()
     data_dir = os.path.join(APP_DIR, "data", "fgc")
-    twitch_token = env.get("TWITCH_AUTH_TOKEN", "").strip()
+    twitch_token = resolve_token(env.get("TWITCH_AUTH_TOKEN", "").strip())
 
     mining_cfg = get_mining_config()
     miner_stat = get_miner_status()
@@ -868,7 +897,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             env = load_env_file()
             data = {
                 "dashboard_username": env.get("DASHBOARD_USERNAME", "andrex"),
-                "twitch_auth_token": env.get("TWITCH_AUTH_TOKEN", ""),
+                "twitch_auth_token": "",
+                "has_twitch_auth_token": bool(env.get("TWITCH_AUTH_TOKEN")),
+                "twitch_login": (load_stored_token() or {}).get("login"),
                 "twitch_priority_games": env.get("TWITCH_PRIORITY_GAMES", ""),
                 "eg_email": env.get("EG_EMAIL", ""),
                 "has_eg_password": bool(env.get("EG_PASSWORD")),
@@ -945,7 +976,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
             env = load_env_file()
             expected_user = env.get("DASHBOARD_USERNAME", "andrex").strip()
-            expected_pass = env.get("DASHBOARD_PASSWORD", "REMOVED").strip()
+            expected_pass = get_dashboard_password(env)
 
             user_matches = secrets.compare_digest(username, expected_user)
             pass_matches = secrets.compare_digest(password, expected_pass)
@@ -989,6 +1020,31 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.wfile.write(json.dumps({"error": "Unauthorized"}).encode("utf-8"))
             return
 
+        # 4a. Twitch device-code login
+        if self.path in ("/api/twitch/login/start", "/api/twitch/login/poll", "/api/twitch/logout"):
+            content_length = int(self.headers.get("Content-Length", 0))
+            try:
+                payload = json.loads(self.rfile.read(content_length).decode("utf-8") or "{}")
+            except Exception:
+                payload = {}
+            try:
+                if self.path.endswith("/start"):
+                    result = start_device_login()
+                    result.pop("device_code_secret", None)
+                elif self.path.endswith("/poll"):
+                    result = poll_device_login(str(payload.get("device_code", "")))
+                else:
+                    clear_stored_token()
+                    result = {"status": "ok"}
+                code = 200
+            except Exception as e:
+                result, code = {"status": "error", "message": str(e)}, 502
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(result).encode("utf-8"))
+            return
+
         # 4. Save Account Credentials to .env from Web UI
         if self.path == "/api/accounts":
             content_length = int(self.headers.get("Content-Length", 0))
@@ -1003,7 +1059,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 updates["DASHBOARD_USERNAME"] = payload["dashboard_username"].strip()
             if "dashboard_password" in payload and payload["dashboard_password"].strip():
                 updates["DASHBOARD_PASSWORD"] = payload["dashboard_password"].strip()
-            if "twitch_auth_token" in payload:
+            if payload.get("twitch_auth_token", "").strip():
                 updates["TWITCH_AUTH_TOKEN"] = payload["twitch_auth_token"].strip()
             if "twitch_priority_games" in payload:
                 updates["TWITCH_PRIORITY_GAMES"] = payload["twitch_priority_games"].strip()
@@ -1047,7 +1103,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             env = load_env_file()
 
             if service == "twitch":
-                token = payload.get("token") or env.get("TWITCH_AUTH_TOKEN", "")
+                token = payload.get("token") or resolve_token(env.get("TWITCH_AUTH_TOKEN", "").strip())
                 if not token:
                     res = {"success": False, "message": "No Twitch auth-token configured."}
                 else:
@@ -1099,7 +1155,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             drop_instance_id = payload.get("drop_instance_id")
 
             env = load_env_file()
-            token = env.get("TWITCH_AUTH_TOKEN", "").strip()
+            token = resolve_token(env.get("TWITCH_AUTH_TOKEN", "").strip())
             claimed = 0
             message = "No drops were claimed."
             if token:
@@ -1347,7 +1403,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         # 13. Twitch: Daily / Manual Campaign Refresh
         if self.path == "/api/campaigns/refresh":
             env = load_env_file()
-            token = env.get("TWITCH_AUTH_TOKEN", "").strip()
+            token = resolve_token(env.get("TWITCH_AUTH_TOKEN", "").strip())
             priority_str = env.get("TWITCH_PRIORITY_GAMES", "")
             priority_games = [g.strip() for g in priority_str.split(",") if g.strip()]
 

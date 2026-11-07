@@ -38,6 +38,8 @@ def main():
     parser.add_argument("--claim-now", action="store_true", help="Immediately claim any drops at 100% and exit")
     parser.add_argument("--check-bots", action="store_true", help="Check for running Twitch bot processes and active viewing")
     parser.add_argument("--kill-bots", action="store_true", help="Terminate conflicting bot processes to ensure single viewing")
+    parser.add_argument("--login", action="store_true", help="Log in to Twitch via device code (no password/cookie needed)")
+    parser.add_argument("--logout", action="store_true", help="Delete the stored Twitch login token")
     parser.add_argument("--token", type=str, default=None, help="Twitch auth-token cookie (or set TWITCH_AUTH_TOKEN in env)")
     args = parser.parse_args()
 
@@ -66,9 +68,18 @@ def main():
                 pass
         return
 
-    auth_token = args.token or os.environ.get("TWITCH_AUTH_TOKEN", "").strip()
+    from src.auth.twitch_auth import clear_token, interactive_login, resolve_token
+
+    if args.login:
+        sys.exit(0 if interactive_login() else 1)
+    if args.logout:
+        clear_token()
+        print("[OK] Stored Twitch token removed.")
+        return
+
+    auth_token = args.token or resolve_token(os.environ.get("TWITCH_AUTH_TOKEN", "").strip())
     if not auth_token:
-        print("[ERROR] No Twitch auth-token provided! Set TWITCH_AUTH_TOKEN in .env or pass --token <token>")
+        print("[ERROR] Not logged in to Twitch! Run: python -m src.twitch_drops.main --login   (or set TWITCH_AUTH_TOKEN / pass --token)")
         print("\nHow to get your Twitch auth-token:")
         print("  1. Open https://www.twitch.tv in your desktop browser and make sure you are logged in.")
         print("  2. Open Developer Tools (F12 or Ctrl+Shift+I).")
