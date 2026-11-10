@@ -1,8 +1,8 @@
 """
 Continuous Twitch Drops background miner daemon.
 Lightweight, zero-telemetry, streamless execution using Python standard library.
-Ensures watching 1 stream at a time under the user's authentic account.
-Supports both Default mode (mine all active drops) and Selective mode (only mine activated games).
+Ensures watching strictly 1 stream at a time under the user's authentic account.
+Supports ordered Mining Queue (1 active stream at a time + automatic queue advance upon completion).
 """
 
 import atexit
@@ -36,25 +36,64 @@ logger = logging.getLogger("drops_miner")
 from .process_guard import acquire_pid_lock, release_pid_lock, is_pid_alive
 
 
-
 def load_mining_config() -> Dict[str, Any]:
-    """Load mining preferences (mode and single selected game — strictly 1 at a time)."""
+    """Load mining preferences and ordered queue (strictly 1 mined at a time, advancing through queue)."""
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 if isinstance(data, dict):
-                    raw_games = [g.strip() for g in data.get("activated_games", []) if g.strip()]
-                    single_game = raw_games[:1]
+                    raw_queue = data.get("queue")
+                    if not isinstance(raw_queue, list):
+                        raw_queue = data.get("activated_games", [])
+                    seen = set()
+                    clean_queue = []
+                    for g in raw_queue:
+                        if isinstance(g, str) and g.strip():
+                            gs = g.strip()
+                            if gs.lower() not in seen:
+                                seen.add(gs.lower())
+                                clean_queue.append(gs)
                     return {
                         "mode": data.get("mode", "default"),
-                        "activated_games": single_game,
-                        "selected_game": single_game[0] if single_game else "",
+                        "queue": clean_queue,
+                        "activated_games": clean_queue,
+                        "selected_game": clean_queue[0] if clean_queue else "",
                         "updated_at": data.get("updated_at", 0),
                     }
         except Exception:
             pass
-    return {"mode": "default", "activated_games": [], "selected_game": "", "updated_at": 0}
+    return {"mode": "default", "queue": [], "activated_games": [], "selected_game": "", "updated_at": 0}
+
+
+def remove_from_mining_queue(game_name: str) -> Dict[str, Any]:
+    """Remove a completed game from the mining queue on disk and return the updated config."""
+    cfg = load_mining_config()
+    if not game_name:
+        return cfg
+    target_low = game_name.strip().lower()
+    old_queue = cfg.get("queue", [])
+    new_queue = [
+        g for g in old_queue
+        if g.lower() != target_low and g.lower() not in target_low and target_low not in g.lower()
+    ]
+    if len(new_queue) == len(old_queue):
+        return cfg
+    now_ts = time.time()
+    new_cfg = {
+        "mode": cfg.get("mode", "default"),
+        "queue": new_queue,
+        "activated_games": new_queue,
+        "selected_game": new_queue[0] if new_queue else "",
+        "updated_at": now_ts,
+    }
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(new_cfg, f, indent=2)
+    except Exception as e:
+        logger.debug("Could not update mining queue file: %s", e)
+    return new_cfg
 
 
 def save_miner_status(status_dict: Dict[str, Any]):
@@ -75,8 +114,15 @@ class DropsMiner:
         webhook_url: Optional[str] = None,
     ):
         self.client = TwitchClient(auth_token=auth_token)
-        clean_prio = [g.strip().lower() for g in (priority_games or []) if g.strip()]
-        self.priority_games = clean_prio[:1]  # Strictly at most 1 selected game at a time
+        seen = set()
+        clean_prio = []
+        for g in (priority_games or []):
+            if isinstance(g, str) and g.strip():
+                gs = g.strip()
+                if gs.lower() not in seen:
+                    seen.add(gs.lower())
+                    clean_prio.append(gs)
+        self.priority_games = clean_prio
         self.webhook_url = webhook_url
         self.running = False
         self.current_stream: Optional[Dict[str, Any]] = None
@@ -89,18 +135,18 @@ class DropsMiner:
         """Return a comparable signature of the current mining config to detect user changes immediately."""
         cfg = load_mining_config()
         mode = cfg.get("mode", "default")
-        games = tuple(g.lower().strip() for g in cfg.get("activated_games", [])[:1] if g.strip())
+        queue = tuple(g.lower().strip() for g in cfg.get("queue", []) if g.strip())
         updated_at = cfg.get("updated_at", 0)
-        return (mode, games, updated_at)
+        return (mode, queue, updated_at)
 
     def _has_config_changed(self, initial_sig: tuple) -> bool:
-        """Check if the user changed the selected game or mining mode."""
+        """Check if the user changed the selected game/queue or mining mode."""
         return self._get_config_signature() != initial_sig
 
     def _interruptible_sleep(self, total_seconds: float, initial_sig: tuple) -> bool:
         """
         Sleep up to total_seconds in 0.2-second slices, waking up immediately if
-        mining selection/mode changed or daemon stopped.
+        mining selection/queue/mode changed or daemon stopped.
         Returns True if interrupted by a config change or stop signal.
         """
         end_time = time.time() + total_seconds
@@ -171,6 +217,7 @@ class DropsMiner:
                         logger.info("Found claimable drop: %s (%s) [%d/%d min]", drop_name, game_name, watched, required)
                         if self.client.claim_drop(drop_id):
                             claimed_count += 1
+                            self_data["isClaimed"] = True
                             self.notify(f"Successfully claimed **{drop_name}** for **{game_name}**!")
                         else:
                             logger.warning(
@@ -183,10 +230,24 @@ class DropsMiner:
         return claimed_count
 
     def _get_live_drop_progress(self, game_name: str, camp_name: str, fallback_camp: Optional[dict] = None) -> Dict[str, Any]:
-        """Extract the active unclaimed drop's current watch progress for telemetry."""
-        inv_camps = (self.last_inventory or {}).get("dropCampaignsInProgress") or []
+        """
+        Extract the active unclaimed drop's current watch progress for telemetry.
+        Cross-references gameEventDrops and drop进度 to accurately detect when all drops in a campaign are completed.
+        """
+        inv = self.last_inventory or {}
+        inv_camps = inv.get("dropCampaignsInProgress") or inv.get("dropCampaignInProgress") or []
         if isinstance(inv_camps, dict):
             inv_camps = [inv_camps]
+
+        # Build claimed set from gameEventDrops
+        claimed_ids = set()
+        for ce in (inv.get("gameEventDrops") or []):
+            if isinstance(ce, dict) and ce.get("id"):
+                cid = str(ce.get("id")).lower()
+                claimed_ids.add(cid)
+                if "_custom_id_" in cid:
+                    for part in cid.split("_custom_id_"):
+                        claimed_ids.add(part)
 
         target_camps = []
         for ic in inv_camps:
@@ -204,13 +265,20 @@ class DropsMiner:
         for tc in target_camps:
             for d in tc.get("timeBasedDrops") or []:
                 s = d.get("self") or {}
-                if s.get("isClaimed"):
-                    continue
+                d_id = str(d.get("id") or "").lower()
+                drop_inst_id = str(s.get("dropInstanceID") or s.get("dropInstanceId") or "")
                 req = int(d.get("requiredMinutesWatched") or 0)
                 subs = int(d.get("requiredSubs") or 0)
                 if req <= 0 or subs > 0:
                     continue
                 watched = int(s.get("currentMinutesWatched") or 0)
+                is_claimed = bool(s.get("isClaimed")) or (d_id and d_id in claimed_ids)
+                if is_claimed or (drop_inst_id and drop_inst_id in self.failed_claim_ids):
+                    continue
+                # If watched >= req and we already ran claim_pending_drops(), treat as completed so miner swaps immediately
+                if watched >= req:
+                    continue
+
                 pct = min(100, int((watched / req) * 100)) if req > 0 else 0
                 candidate = {
                     "current_drop_name": d.get("name") or "Drop Reward",
@@ -225,25 +293,55 @@ class DropsMiner:
                         return best_drop
         return best_drop or {}
 
+    def _campaign_has_unclaimed_watchable_drops(self, camp: dict) -> bool:
+        """Check if a campaign still has any watch-time drops that need watching."""
+        if is_campaign_expired(camp):
+            return False
+        inv = self.last_inventory or {}
+        claimed_ids = set()
+        for ce in (inv.get("gameEventDrops") or []):
+            if isinstance(ce, dict) and ce.get("id"):
+                cid = str(ce.get("id")).lower()
+                claimed_ids.add(cid)
+                if "_custom_id_" in cid:
+                    for part in cid.split("_custom_id_"):
+                        claimed_ids.add(part)
+
+        for d in camp.get("timeBasedDrops", []):
+            req = int(d.get("requiredMinutesWatched") or 0)
+            subs = int(d.get("requiredSubs") or 0)
+            if req <= 0 or subs > 0:
+                continue
+            s = d.get("self") or {}
+            d_id = str(d.get("id") or "").lower()
+            drop_inst_id = str(s.get("dropInstanceID") or s.get("dropInstanceId") or "")
+            if s.get("isClaimed", False) or (d_id and d_id in claimed_ids):
+                continue
+            if drop_inst_id and drop_inst_id in self.failed_claim_ids:
+                continue
+            watched = int(s.get("currentMinutesWatched") or 0)
+            if watched < req:
+                return True
+        return False
+
     def get_eligible_campaigns(self) -> List[dict]:
         """
-        Return ordered list of eligible campaigns based on current mining config.
-        Enforces strictly 1 selected game at a time when a game is selected.
+        Return ordered list of eligible campaigns based on the user's mining queue and mode.
+        Automatically pops completed games from the front of the queue so mining swaps immediately!
         """
         config = load_mining_config()
         mode = config.get("mode", "default")
-        activated_games = [g.lower().strip() for g in config.get("activated_games", [])[:1] if g.strip()]
-        if not activated_games and self.priority_games and mode != "selective":
-            activated_games = self.priority_games[:1]
-
-        selected_game = activated_games[0] if activated_games else ""
+        queue_games = [g.strip() for g in config.get("queue", []) if g.strip()]
+        if not queue_games and self.priority_games and mode != "selective":
+            queue_games = list(self.priority_games)
 
         now = time.time()
         force_refresh = (now - self.last_campaign_refresh >= 3600)
         campaigns = self.client.get_all_active_campaigns(
-            priority_games=activated_games,
+            priority_games=[g.lower() for g in queue_games],
             force_refresh=force_refresh,
             include_expired_inventory=False,
+            inv_override=self.last_inventory if self.last_inventory else None,
         )
         if force_refresh:
             self.last_campaign_refresh = now
@@ -253,53 +351,81 @@ class DropsMiner:
             logger.info("No active drop campaigns found on Twitch right now.")
             return []
 
-        eligible = []
-        for camp in campaigns:
-            if is_campaign_expired(camp):
-                continue
-            drops = camp.get("timeBasedDrops", [])
-            has_unclaimed_watchable = any(
-                not d.get("self", {}).get("isClaimed", False)
-                and int(d.get("requiredMinutesWatched") or 0) > 0
-                and int(d.get("requiredSubs") or 0) == 0
-                for d in drops
-            )
-            if has_unclaimed_watchable:
-                eligible.append(camp)
+        eligible = [c for c in campaigns if self._campaign_has_unclaimed_watchable_drops(c)]
+
+        # Auto-prune any queued games that have completed all watch-time drops (or have no active watchable campaigns)
+        if queue_games and campaigns:
+            for qg in list(queue_games):
+                qg_low = qg.lower()
+                matching_eligible = [
+                    c for c in eligible
+                    if qg_low == extract_game_name(c, "").lower()
+                    or qg_low in extract_game_name(c, "").lower()
+                    or qg_low in (c.get("name") or "").lower()
+                ]
+                if not matching_eligible:
+                    # Check if this game exists in campaigns at all (meaning it finished)
+                    was_in_all = any(
+                        qg_low == extract_game_name(c, "").lower()
+                        or qg_low in extract_game_name(c, "").lower()
+                        or qg_low in (c.get("name") or "").lower()
+                        for c in campaigns
+                    )
+                    if was_in_all:
+                        logger.info("[QUEUE] '%s' has completed all watchable drops! Removing from queue and advancing to next game.", qg)
+                        remove_from_mining_queue(qg)
+                        queue_games = [g for g in queue_games if g.lower() != qg_low]
 
         if not eligible:
             logger.info("All watch-time drops in currently active campaigns have already been claimed! You are all caught up.")
             return []
 
-        # If a specific game is selected (or in selective mode), match the single selected game
+        # Order eligible campaigns strictly by queue order first
         if mode == "selective":
-            if not selected_game:
-                logger.info("[SELECTIVE MODE] No game is currently selected for mining. Waiting for user selection.")
+            if not queue_games:
+                logger.info("[SELECTIVE MODE] Queue is empty. Add games to the queue to start mining.")
                 return []
 
-            filtered = []
-            for camp in eligible:
-                gname = extract_game_name(camp, "").lower()
-                cname = (camp.get("name") or "").lower()
-                if selected_game == gname or selected_game in gname or selected_game in cname:
-                    filtered.append(camp)
+            ordered_selective = []
+            seen_ids = set()
+            for qg in queue_games:
+                qg_low = qg.lower()
+                for camp in eligible:
+                    cid = camp.get("id") or id(camp)
+                    if cid in seen_ids:
+                        continue
+                    gname = extract_game_name(camp, "").lower()
+                    cname = (camp.get("name") or "").lower()
+                    if qg_low == gname or qg_low in gname or qg_low in cname:
+                        ordered_selective.append(camp)
+                        seen_ids.add(cid)
 
-            if not filtered:
-                logger.info("[SELECTIVE MODE] No active watch-time drops match your selected game '%s' right now.", selected_game)
+            if not ordered_selective:
+                logger.info("[SELECTIVE MODE] No active watch-time drops match your queued games (%s) right now.", ", ".join(queue_games))
                 return []
-            return filtered[:1]
+            return ordered_selective
 
-        # 'default' mode: If user selected a single active game, put it first (or strictly mine it first)
-        if selected_game:
+        # 'default' mode: Mine queued games in exact queue order first, then auto-mine remaining eligible campaigns
+        if queue_games:
             prioritized = []
             others = []
+            seen_ids = set()
+            for qg in queue_games:
+                qg_low = qg.lower()
+                for camp in eligible:
+                    cid = camp.get("id") or id(camp)
+                    if cid in seen_ids:
+                        continue
+                    gname = extract_game_name(camp, "").lower()
+                    cname = (camp.get("name") or "").lower()
+                    if qg_low == gname or qg_low in gname or qg_low in cname:
+                        prioritized.append(camp)
+                        seen_ids.add(cid)
             for camp in eligible:
-                gname = extract_game_name(camp, "").lower()
-                cname = (camp.get("name") or "").lower()
-                if selected_game == gname or selected_game in gname or selected_game in cname:
-                    prioritized.append(camp)
-                else:
+                cid = camp.get("id") or id(camp)
+                if cid not in seen_ids:
                     others.append(camp)
+                    seen_ids.add(cid)
             return prioritized + others
 
         return eligible
@@ -312,9 +438,10 @@ class DropsMiner:
     def _handle_mid_cycle_swap(self, old_channel_name: str, old_game_name: str):
         """Log swap and only set switching=True if server.py hasn't already resolved the new active stream."""
         new_cfg = load_mining_config()
+        next_target = new_cfg.get("selected_game") or "Auto-Queue"
         logger.info(
-            "[MINER] Active mine swapped (mode=%s, selected=%s)! Instantly leaving %s (%s) and switching to new stream.",
-            new_cfg.get("mode"), new_cfg.get("selected_game") or "Auto", old_channel_name, old_game_name
+            "[MINER] Active mine swapped (mode=%s, next=%s, queue=%d)! Instantly leaving %s (%s) and switching to new stream.",
+            new_cfg.get("mode"), next_target, len(new_cfg.get("queue", [])), old_channel_name, old_game_name
         )
         try:
             if os.path.exists(STATUS_FILE):
@@ -330,26 +457,28 @@ class DropsMiner:
             "switching": True,
             "game": new_cfg.get("selected_game") or "",
             "selected_game": new_cfg.get("selected_game") or "",
+            "queue": new_cfg.get("queue", []),
             "mode": new_cfg.get("mode", "default"),
-            "message": f"Cancelled {old_channel_name} ({old_game_name}). Switching to selected option: {new_cfg.get('selected_game') or 'Auto-Mine'}...",
+            "message": f"Left {old_channel_name} ({old_game_name}). Switching to next target: {next_target}...",
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         })
 
     def run_cycle(self):
-        """Single iteration of the mining loop - watches ONLY 1 stream at a time and instants-swaps on selection change."""
+        """Single iteration of the mining loop - watches ONLY 1 stream at a time and swaps on completion or queue change."""
         cycle_sig = self._get_config_signature()
         config_just_swapped = (self.last_config_sig is not None and self.last_config_sig != cycle_sig)
         self.last_config_sig = cycle_sig
 
         config = load_mining_config()
-        selected_game_cfg = config.get("selected_game", "")
+        queue_cfg = config.get("queue", [])
+        selected_game_cfg = queue_cfg[0] if queue_cfg else ""
         mode_cfg = config.get("mode", "default")
 
-        # 1. If we did NOT just swap the active mine, claim pending drops and check user activity
+        # 1. Always refresh inventory & claim pending drops (unless user just clicked switch in last second)
         if not config_just_swapped:
             self.claim_pending_drops()
             if self._has_config_changed(cycle_sig):
-                logger.info("[MINER] Selection changed during claim check. Switching immediately.")
+                logger.info("[MINER] Queue/selection changed during claim check. Switching immediately.")
                 return
 
             if self.client.is_user_actively_using_twitch():
@@ -359,6 +488,7 @@ class DropsMiner:
                     "paused": True,
                     "user_active": True,
                     "selected_game": selected_game_cfg,
+                    "queue": queue_cfg,
                     "mode": mode_cfg,
                     "message": "Miner paused: You are currently using Twitch. Mining will resume automatically when you finish.",
                     "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -366,14 +496,21 @@ class DropsMiner:
                 self._interruptible_sleep(60, cycle_sig)
                 return
 
-        # 2. Pick eligible campaign(s) and find 1 live stream
+        # 2. Pick eligible campaign(s) in queue order and find 1 live stream
         eligible_campaigns = self.get_eligible_campaigns()
+        # Re-read config in case get_eligible_campaigns auto-pruned a completed game from the queue
+        config = load_mining_config()
+        queue_cfg = config.get("queue", [])
+        selected_game_cfg = queue_cfg[0] if queue_cfg else ""
+        cycle_sig = self._get_config_signature()
+        self.last_config_sig = cycle_sig
+
         if not eligible_campaigns:
             msg = (
-                f"Selected game '{selected_game_cfg}' has no active watch-time drops right now."
-                if (mode_cfg == "selective" and selected_game_cfg)
+                f"Queued games ({', '.join(queue_cfg)}) have no active watch-time drops right now."
+                if (mode_cfg == "selective" and queue_cfg)
                 else (
-                    "Selective mode active: Select 1 game below to start mining."
+                    "Selective mode active: Add games to your mining queue below to start mining."
                     if mode_cfg == "selective"
                     else "No eligible campaigns to mine at this moment."
                 )
@@ -381,11 +518,12 @@ class DropsMiner:
             save_miner_status({
                 "active": False,
                 "selected_game": selected_game_cfg,
+                "queue": queue_cfg,
                 "mode": mode_cfg,
                 "message": msg,
                 "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             })
-            logger.info("[MINER] %s Waiting (will wake immediately if selection changes)...", msg)
+            logger.info("[MINER] %s Waiting (will wake immediately if queue changes)...", msg)
             self._interruptible_sleep(600, cycle_sig)
             return
 
@@ -403,15 +541,13 @@ class DropsMiner:
             except Exception:
                 pre_switched_stat = {}
 
-        # If a specific game is selected by the user, strictly try that selected game first
-        for idx, candidate_camp in enumerate(eligible_campaigns):
+        # Try eligible campaigns in exact priority/queue order (if #1 in queue has no live stream online, falls back to #2 in queue!)
+        for candidate_camp in eligible_campaigns:
             if self._has_config_changed(cycle_sig):
-                logger.info("[MINER] Selection changed while searching for stream. Switching immediately...")
+                logger.info("[MINER] Queue changed while searching for stream. Switching immediately...")
                 return
             cand_game = extract_game_name(candidate_camp, "Unknown")
             cand_name = candidate_camp.get("name", cand_game)
-            if selected_game_cfg and idx > 0 and selected_game_cfg.lower() not in cand_game.lower() and selected_game_cfg.lower() not in cand_name.lower():
-                break
 
             # Adopt pre-resolved stream from server.py if fresh (<60s) and matches cand_game
             if (
@@ -449,12 +585,13 @@ class DropsMiner:
             first_camp = eligible_campaigns[0]
             game_name = extract_game_name(first_camp, "Unknown")
             camp_name = first_camp.get("name", game_name)
-            logger.warning("[MINER] No live streams with drops enabled for '%s'. Retrying in 3 minutes (or immediately on selection change)...", game_name)
+            logger.warning("[MINER] No live streams with drops enabled for '%s'. Retrying in 3 minutes (or immediately on queue change)...", game_name)
             save_miner_status({
                 "active": False,
                 "game": game_name,
                 "campaign": camp_name,
                 "selected_game": selected_game_cfg or game_name,
+                "queue": queue_cfg,
                 "mode": mode_cfg,
                 "message": f"No live streams currently online with drops enabled for {game_name}.",
                 "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -464,9 +601,9 @@ class DropsMiner:
 
         stream_url = f"https://www.twitch.tv/{channel['channel_login']}"
         logger.info(
-            "[MINER] Watching 1 stream: %s (@%s) for '%s' with %d viewers | Drops Verified: %s | URL: %s",
+            "[MINER] Watching 1 stream: %s (@%s) for '%s' with %d viewers | Queue size: %d | URL: %s",
             channel["channel_name"], channel["channel_login"], game_name, channel["viewers"],
-            channel.get("verified_drops", False), stream_url
+            len(queue_cfg), stream_url
         )
 
         # Immediately write active stream status BEFORE fetching playback info or sending heartbeat so UI updates with 0 lag
@@ -478,6 +615,7 @@ class DropsMiner:
             "user_active": False,
             "game": game_name,
             "selected_game": selected_game_cfg or game_name,
+            "queue": queue_cfg,
             "mode": mode_cfg,
             "campaign": camp_name,
             "channel_id": channel.get("channel_id", ""),
@@ -502,7 +640,7 @@ class DropsMiner:
         sub_playlist_url = playback_info.get("sub_playlist_url")
 
         # 5. Streamless watch loop under user account (sending heartbeat every ~60s)
-        # Strictly watches ONLY this single stream, and immediately cancels if user selects another option!
+        # Strictly watches ONLY this single stream, and immediately swaps when completed or when user changes queue!
         for minute in range(15):
             if self._has_config_changed(cycle_sig):
                 self._handle_mid_cycle_swap(channel["channel_name"], game_name)
@@ -516,6 +654,7 @@ class DropsMiner:
                     "paused": True,
                     "user_active": True,
                     "selected_game": selected_game_cfg or game_name,
+                    "queue": queue_cfg,
                     "mode": mode_cfg,
                     "message": "Miner paused: You started using Twitch. Mining will resume automatically when you finish.",
                     "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -532,8 +671,30 @@ class DropsMiner:
             )
 
             # Claim any drops completed during this minute & refresh live inventory progress
-            self.claim_pending_drops()
+            claimed_now = self.claim_pending_drops()
             live_drop_info = self._get_live_drop_progress(game_name, camp_name, fallback_camp=chosen_campaign)
+
+            # Check if all drops for this campaign/game are now completed!
+            if not live_drop_info or not live_drop_info.get("current_drop_required"):
+                logger.info(
+                    "[MINER] All watch-time drops for '%s' (%s) are now completed! Advancing queue and swapping immediately...",
+                    game_name, camp_name
+                )
+                updated_cfg = remove_from_mining_queue(game_name)
+                next_q = updated_cfg.get("queue", [])
+                next_game = next_q[0] if next_q else "Auto-Mine"
+                self.last_config_sig = self._get_config_signature()
+                save_miner_status({
+                    "active": False,
+                    "switching": True,
+                    "game": next_q[0] if next_q else "",
+                    "selected_game": next_q[0] if next_q else "",
+                    "queue": next_q,
+                    "mode": updated_cfg.get("mode", mode_cfg),
+                    "message": f"Completed '{game_name}'! Swapping immediately to next in queue: {next_game}...",
+                    "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                })
+                return
 
             # Re-verify config hasn't changed while claiming/fetching inventory
             if self._has_config_changed(cycle_sig):
@@ -547,6 +708,7 @@ class DropsMiner:
                 "user_active": False,
                 "game": game_name,
                 "selected_game": selected_game_cfg or game_name,
+                "queue": queue_cfg,
                 "mode": mode_cfg,
                 "campaign": camp_name,
                 "channel_id": channel.get("channel_id", ""),
@@ -579,13 +741,13 @@ class DropsMiner:
             else:
                 logger.warning("[MINER] Heartbeat returned non-204, verifying stream status...")
 
-            # Interruptible ~60s sleep: wakes within 0.2s if user changes selected stream/game or mode!
+            # Interruptible ~60s sleep: wakes within 0.2s if user changes queue, selected game, or mode!
             if self._interruptible_sleep(random.uniform(58.0, 62.0), cycle_sig):
                 self._handle_mid_cycle_swap(channel["channel_name"], game_name)
                 return
 
-        # Reset active status when switching streams
-        save_miner_status({"active": False, "message": "Switching or checking for next campaign."})
+        # Reset active status when switching streams at end of 15-min cycle
+        save_miner_status({"active": False, "queue": queue_cfg, "message": "Refreshing stream & checking queue."})
 
     def start(self):
         """Start the miner daemon."""
@@ -616,7 +778,7 @@ class DropsMiner:
 
         self.running = True
         logger.info(
-            "Twitch session valid! Mining as: %s (ID: %s) [Single viewing enforced]",
+            "Twitch session valid! Mining as: %s (ID: %s) [Single viewing & Queue enforced]",
             self.client.user_login, self.client.user_id
         )
 
@@ -635,4 +797,3 @@ class DropsMiner:
                 time.sleep(60)
 
         release_pid_lock()
-

@@ -204,20 +204,37 @@ def get_mining_config():
             with open(config_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 if isinstance(data, dict):
-                    raw_games = [g.strip() for g in data.get("activated_games", []) if g.strip()]
-                    single_game = raw_games[:1]
+                    raw_q = data.get("queue")
+                    if not isinstance(raw_q, list):
+                        raw_q = data.get("activated_games", [])
+                    seen = set()
+                    clean_queue = []
+                    for g in raw_q:
+                        if isinstance(g, str) and g.strip():
+                            gs = g.strip()
+                            if gs.lower() not in seen:
+                                seen.add(gs.lower())
+                                clean_queue.append(gs)
                     return {
                         "mode": data.get("mode", "default"),
-                        "activated_games": single_game,
-                        "selected_game": single_game[0] if single_game else "",
+                        "queue": clean_queue,
+                        "activated_games": clean_queue,
+                        "selected_game": clean_queue[0] if clean_queue else "",
                         "updated_at": data.get("updated_at", 0),
                     }
         except Exception:
             pass
     env = load_env_file()
-    default_priority = [g.strip() for g in env.get("TWITCH_PRIORITY_GAMES", "").split(",") if g.strip()][:1]
+    seen = set()
+    default_priority = []
+    for g in env.get("TWITCH_PRIORITY_GAMES", "").split(","):
+        gs = g.strip()
+        if gs and gs.lower() not in seen:
+            seen.add(gs.lower())
+            default_priority.append(gs)
     return {
         "mode": "default",
+        "queue": default_priority,
         "activated_games": default_priority,
         "selected_game": default_priority[0] if default_priority else "",
         "updated_at": 0,
@@ -245,28 +262,35 @@ def _send_async_initial_heartbeat(token: str, channel: dict, game_name: str):
         pass
 
 
-def save_mining_config(mode: str, activated_games: list):
+def save_mining_config(mode: str, activated_games: list, resolve_stream: bool = True):
     data_dir = os.path.join(APP_DIR, "data")
     os.makedirs(data_dir, exist_ok=True)
     config_file = os.path.join(data_dir, "mining_config.json")
     clean_mode = "selective" if mode == "selective" else "default"
-    # Strictly allow ONLY 1 active selected game at a time (take the newly selected one)
-    deduped = list(dict.fromkeys([g.strip() for g in activated_games if g.strip()]))
-    clean_games = deduped[-1:] if deduped else []
-    selected_game = clean_games[0] if clean_games else ""
+    # Preserve ordered queue while deduplicating case-insensitively (strictly 1 mined at a time: queue[0])
+    seen = set()
+    clean_queue = []
+    for g in (activated_games or []):
+        if isinstance(g, str) and g.strip():
+            gs = g.strip()
+            if gs.lower() not in seen:
+                seen.add(gs.lower())
+                clean_queue.append(gs)
+
+    selected_game = clean_queue[0] if clean_queue else ""
     now_ts = time.time()
 
     cfg = {
         "mode": clean_mode,
-        "activated_games": clean_games,
+        "queue": clean_queue,
+        "activated_games": clean_queue,
         "selected_game": selected_game,
         "updated_at": now_ts,
     }
     with open(config_file, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2)
-    save_env_file({"TWITCH_PRIORITY_GAMES": ", ".join(clean_games)})
+    save_env_file({"TWITCH_PRIORITY_GAMES": ", ".join(clean_queue)})
 
-    # Immediately cancel current stream and instantly resolve the new live stream
     status_file = os.path.join(data_dir, "miner_status.json")
     prev_status = {}
     if os.path.exists(status_file):
@@ -280,11 +304,24 @@ def save_mining_config(mode: str, activated_games: list):
     prev_channel = str(prev_status.get("channel_name") or prev_status.get("channel_login") or "").strip()
     was_active = bool(prev_status.get("active"))
 
+    # If the currently watched game is still #1 in the queue and resolve_stream is False, just update queue metadata
+    if not resolve_stream and was_active and selected_game and prev_game.lower() == selected_game.lower():
+        prev_status["queue"] = clean_queue
+        prev_status["selected_game"] = selected_game
+        prev_status["mode"] = clean_mode
+        try:
+            with open(status_file, "w", encoding="utf-8") as f:
+                json.dump(prev_status, f, indent=2)
+        except Exception:
+            pass
+        cfg["miner_status"] = prev_status
+        return cfg
+
     env = load_env_file()
     token = resolve_token(env.get("TWITCH_AUTH_TOKEN", "").strip())
     target_game = selected_game
 
-    # If in default mode with no manual selection, pick the first eligible campaign from cache
+    # If in default mode with an empty queue, pick the first eligible campaign from cache
     if not target_game and clean_mode == "default":
         cache_file = os.path.join(data_dir, "twitch_campaigns_cache.json")
         if os.path.exists(cache_file):
@@ -302,40 +339,45 @@ def save_mining_config(mode: str, activated_games: list):
                 pass
 
     new_status = None
-    if target_game and token:
+    # Try resolving a live channel for queue items in order
+    candidates_to_try = list(clean_queue) if clean_queue else ([target_game] if target_game else [])
+    if candidates_to_try and token:
         try:
             client = TwitchClient(token)
-            channel = client.find_eligible_channel(target_game, fast_first=True)
-            if channel and channel.get("channel_login"):
-                stream_url = f"https://www.twitch.tv/{channel['channel_login']}"
-                new_status = {
-                    "active": True,
-                    "switching": False,
-                    "paused": False,
-                    "user_active": False,
-                    "game": target_game,
-                    "selected_game": selected_game or target_game,
-                    "mode": clean_mode,
-                    "campaign": target_game,
-                    "channel_id": channel.get("channel_id", ""),
-                    "channel_name": channel["channel_name"],
-                    "channel_login": channel["channel_login"],
-                    "stream_id": channel.get("stream_id", ""),
-                    "game_id": channel.get("game_id", ""),
-                    "stream_url": stream_url,
-                    "viewers": channel.get("viewers", 0),
-                    "minutes_watched": 1,
-                    "user_login": prev_status.get("user_login") or "",
-                    "user_id": prev_status.get("user_id") or "",
-                    "switched_at": now_ts,
-                    "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                }
-                threading.Thread(
-                    target=_send_async_initial_heartbeat,
-                    args=(token, channel, target_game),
-                    daemon=True,
-                ).start()
-            else:
+            for cand in candidates_to_try:
+                channel = client.find_eligible_channel(cand, fast_first=True)
+                if channel and channel.get("channel_login"):
+                    stream_url = f"https://www.twitch.tv/{channel['channel_login']}"
+                    new_status = {
+                        "active": True,
+                        "switching": False,
+                        "paused": False,
+                        "user_active": False,
+                        "game": cand,
+                        "selected_game": selected_game or cand,
+                        "queue": clean_queue,
+                        "mode": clean_mode,
+                        "campaign": cand,
+                        "channel_id": channel.get("channel_id", ""),
+                        "channel_name": channel["channel_name"],
+                        "channel_login": channel["channel_login"],
+                        "stream_id": channel.get("stream_id", ""),
+                        "game_id": channel.get("game_id", ""),
+                        "stream_url": stream_url,
+                        "viewers": channel.get("viewers", 0),
+                        "minutes_watched": 1,
+                        "user_login": prev_status.get("user_login") or "",
+                        "user_id": prev_status.get("user_id") or "",
+                        "switched_at": now_ts,
+                        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    }
+                    threading.Thread(
+                        target=_send_async_initial_heartbeat,
+                        args=(token, channel, cand),
+                        daemon=True,
+                    ).start()
+                    break
+            if not new_status and target_game:
                 new_status = {
                     "active": False,
                     "switching": False,
@@ -343,6 +385,7 @@ def save_mining_config(mode: str, activated_games: list):
                     "user_active": False,
                     "game": target_game,
                     "selected_game": selected_game or target_game,
+                    "queue": clean_queue,
                     "mode": clean_mode,
                     "message": f"No live streams currently online with drops enabled for {target_game}.",
                     "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -353,11 +396,11 @@ def save_mining_config(mode: str, activated_games: list):
     if not new_status:
         if selected_game:
             cancel_prefix = f"Cancelled {prev_channel} ({prev_game}). " if (was_active and prev_game.lower() != selected_game.lower()) else ""
-            msg = f"{cancel_prefix}Selected '{selected_game}' to mine (1 stream active at a time). Connecting to live stream..."
+            msg = f"{cancel_prefix}Mining '#1 {selected_game}' in queue ({len(clean_queue)} queued). Connecting to live stream..."
             is_switching = True
         elif clean_mode == "selective":
             cancel_prefix = f"Cancelled {prev_channel} ({prev_game}). " if was_active else ""
-            msg = f"{cancel_prefix}Selective mode: Current stream stopped. Select 1 game below to start mining."
+            msg = f"{cancel_prefix}Selective mode: Queue is empty. Add games to the queue below to start mining."
             is_switching = False
         else:
             cancel_prefix = f"Cancelled {prev_channel} ({prev_game}). " if was_active else ""
@@ -371,6 +414,7 @@ def save_mining_config(mode: str, activated_games: list):
             "user_active": False,
             "game": selected_game,
             "selected_game": selected_game,
+            "queue": clean_queue,
             "mode": clean_mode,
             "message": msg,
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -552,33 +596,93 @@ def build_status_payload():
 
     mining_cfg = get_mining_config()
     miner_stat = get_miner_status()
-    priority_list = mining_cfg.get("activated_games", [])[:1]
+    queue_list = list(mining_cfg.get("queue") or mining_cfg.get("activated_games") or [])
     watched_game_str = str(miner_stat.get("game") or "").strip() if miner_stat.get("active") else ""
-    active_target_game = priority_list[0] if priority_list else watched_game_str
-    if active_target_game and not priority_list:
-        mining_cfg["activated_games"] = [active_target_game]
-        mining_cfg["selected_game"] = active_target_game
-        priority_list = [active_target_game]
+    active_target_game = queue_list[0] if queue_list else watched_game_str
 
-    def _mark_single_active_campaign(camps_list, target_game_name):
+    def _mark_queued_and_active_campaigns(camps_list, target_game_name, current_queue):
         target_low = (target_game_name or "").strip().lower()
-        already_marked = False
+        queue_low = [q.strip().lower() for q in current_queue if q.strip()]
+        already_marked_active = False
+
+        # Auto-prune completed campaigns from the saved queue so mining swaps automatically even on status refresh!
+        completed_games_in_queue = set()
         for c in camps_list:
-            c_game_low = str(c.get("game") or "").strip().lower()
+            c_game = str(c.get("game") or "").strip()
+            c_game_low = c_game.lower()
             c_name_low = str(c.get("name") or "").strip().lower()
+            q_pos = None
+            for idx, ql in enumerate(queue_low):
+                if ql == c_game_low or ql in c_game_low or ql in c_name_low:
+                    q_pos = idx + 1
+                    break
+
+            c["queue_position"] = q_pos
+            c["is_queued"] = q_pos is not None
+
             if (
-                not already_marked
+                not already_marked_active
                 and target_low
                 and not c.get("is_expired")
-                and c.get("status") != "UNAVAILABLE"
+                and c.get("status") not in ("UNAVAILABLE", "COMPLETED")
                 and (c_game_low == target_low or target_low in c_game_low or target_low in c_name_low)
             ):
                 c["is_activated"] = True
                 c["is_watching"] = bool(miner_stat.get("active") and watched_game_str.lower() == c_game_low)
-                already_marked = True
+                already_marked_active = True
             else:
                 c["is_activated"] = False
                 c["is_watching"] = False
+
+        # Check if any queued game has ONLY completed/expired/unavailable campaigns (0 needs_collection_count across all its campaigns)
+        for qg in current_queue:
+            qg_low = qg.strip().lower()
+            matching_camps = [
+                c for c in camps_list
+                if qg_low == str(c.get("game") or "").strip().lower()
+                or qg_low in str(c.get("game") or "").strip().lower()
+                or qg_low in str(c.get("name") or "").strip().lower()
+            ]
+            if matching_camps and all(
+                c.get("status") in ("COMPLETED", "EXPIRED", "UNAVAILABLE") or int(c.get("needs_collection_count") or 0) == 0
+                for c in matching_camps
+            ):
+                completed_games_in_queue.add(qg_low)
+
+        if completed_games_in_queue:
+            new_q = [q for q in current_queue if q.strip().lower() not in completed_games_in_queue]
+            if len(new_q) != len(current_queue):
+                updated_cfg = save_mining_config(mode=mining_cfg.get("mode", "default"), activated_games=new_q, resolve_stream=True)
+                mining_cfg.update(updated_cfg)
+                miner_stat.update(updated_cfg.get("miner_status") or {})
+                queue_list[:] = new_q
+                new_target = new_q[0] if new_q else str(miner_stat.get("game") or "").strip()
+                # Re-mark with updated queue
+                new_q_low = [q.strip().lower() for q in new_q if q.strip()]
+                already_marked_active = False
+                for c in camps_list:
+                    c_game_low = str(c.get("game") or "").strip().lower()
+                    c_name_low = str(c.get("name") or "").strip().lower()
+                    q_pos = None
+                    for idx, ql in enumerate(new_q_low):
+                        if ql == c_game_low or ql in c_game_low or ql in c_name_low:
+                            q_pos = idx + 1
+                            break
+                    c["queue_position"] = q_pos
+                    c["is_queued"] = q_pos is not None
+                    if (
+                        not already_marked_active
+                        and new_target
+                        and not c.get("is_expired")
+                        and c.get("status") not in ("UNAVAILABLE", "COMPLETED")
+                        and (c_game_low == new_target.lower() or new_target.lower() in c_game_low or new_target.lower() in c_name_low)
+                    ):
+                        c["is_activated"] = True
+                        c["is_watching"] = bool(miner_stat.get("active") and str(miner_stat.get("game") or "").lower() == c_game_low)
+                        already_marked_active = True
+                    else:
+                        c["is_activated"] = False
+                        c["is_watching"] = False
 
     # 1. Twitch Status & Personal Inventory
     twitch_info = {
@@ -590,7 +694,8 @@ def build_status_payload():
         "needs_collection_drops": [],
         "unavailable_drops": [],
         "drops_in_progress": [],
-        "priority_games": priority_list,
+        "priority_games": queue_list,
+        "queue": queue_list,
         "mining_config": mining_cfg,
         "miner_status": miner_stat,
         "inventory_url": "https://www.twitch.tv/drops/inventory",
@@ -614,9 +719,13 @@ def build_status_payload():
                 twitch_info["user_id"] = client.user_id
                 twitch_info["connected"] = True
 
-                overview = client.get_drops_overview(priority_games=priority_list)
+                overview = client.get_drops_overview(priority_games=queue_list)
                 camps = overview.get("campaigns", [])
-                _mark_single_active_campaign(camps, active_target_game)
+                _mark_queued_and_active_campaigns(camps, active_target_game, queue_list)
+                twitch_info["priority_games"] = queue_list
+                twitch_info["queue"] = queue_list
+                twitch_info["mining_config"] = mining_cfg
+                twitch_info["miner_status"] = miner_stat
 
                 twitch_info["campaigns"] = camps
                 twitch_info["collected_items"] = overview.get("collected_items", [])
@@ -636,6 +745,7 @@ def build_status_payload():
                 # Enrich miner_status with live drop progress if currently watching a game
                 if miner_stat.get("active") and miner_stat.get("game"):
                     watched_game_low = str(miner_stat.get("game") or "").lower()
+                    found_active_drop = False
                     for c in camps:
                         if c.get("is_expired"):
                             continue
@@ -647,9 +757,10 @@ def build_status_payload():
                                     miner_stat["current_drop_required"] = d.get("required_minutes", 0)
                                     miner_stat["current_drop_percent"] = d.get("progress_percent", 0)
                                     miner_stat["current_drop_remaining"] = d.get("remaining_minutes", 0)
+                                    found_active_drop = True
                                     if d.get("status") == "IN_PROGRESS":
                                         break
-                            if miner_stat.get("current_drop_name"):
+                            if found_active_drop:
                                 break
 
                 # Maintain legacy drops_in_progress flat list for backwards compatibility
@@ -674,9 +785,9 @@ def build_status_payload():
     if not twitch_info["campaigns"]:
         try:
             fallback_client = TwitchClient(twitch_token or "")
-            overview = fallback_client.get_drops_overview(priority_games=priority_list)
+            overview = fallback_client.get_drops_overview(priority_games=queue_list)
             camps = overview.get("campaigns", [])
-            _mark_single_active_campaign(camps, active_target_game)
+            _mark_queued_and_active_campaigns(camps, active_target_game, queue_list)
             twitch_info["campaigns"] = camps
             twitch_info["collected_items"] = overview.get("collected_items", [])
             twitch_info["needs_collection_drops"] = overview.get("needs_collection_drops", [])
@@ -1214,31 +1325,35 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 payload = {}
 
             mode = payload.get("mode", "default")
-            games = payload.get("activated_games", [])
+            games = payload.get("queue") if "queue" in payload else payload.get("activated_games", [])
             if not isinstance(games, list):
                 games = [g.strip() for g in str(games).split(",") if g.strip()]
 
-            cfg = save_mining_config(mode=mode, activated_games=games[:1])
+            cfg = save_mining_config(mode=mode, activated_games=games, resolve_stream=True)
             mstat = cfg.get("miner_status") or {}
             sel = cfg.get("selected_game") or mstat.get("game")
+            q_len = len(cfg.get("queue") or [])
             if mstat.get("active") and mstat.get("channel_name"):
-                msg = f"Instantly switched stream! Now watching {mstat['channel_name']} for '{mstat.get('game')}'."
+                msg = f"Instantly switched stream! Now watching {mstat['channel_name']} for '{mstat.get('game')}' ({q_len} in queue)."
             elif sel:
-                msg = f"Cancelled previous stream. Now targeting '{sel}' ({cfg['mode']} mode)."
+                msg = f"Now targeting '#1 {sel}' ({q_len} in queue, {cfg['mode']} mode)."
             else:
-                msg = f"Cancelled current stream. Switched to '{cfg['mode']}' mode."
+                msg = f"Queue cleared. Switched to '{cfg['mode']}' mode."
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({
                 "success": True,
+                "mode": cfg.get("mode", "default"),
+                "queue": cfg.get("queue", []),
+                "activated_games": cfg.get("queue", []),
                 "mining_config": cfg,
                 "miner_status": mstat,
                 "message": msg
             }).encode("utf-8"))
             return
 
-        elif self.path == "/api/twitch/toggle-activation":
+        elif self.path in ("/api/twitch/toggle-activation", "/api/twitch/queue"):
             content_length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(content_length)
             try:
@@ -1247,34 +1362,96 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 payload = {}
 
             game = payload.get("game", "").strip()
+            action = str(payload.get("action") or "").strip().lower()
             activated = bool(payload.get("activated", True))
             current_cfg = get_mining_config()
+            current_queue = list(current_cfg.get("queue") or current_cfg.get("activated_games") or [])
+            prev_top = current_queue[0].lower() if current_queue else ""
 
-            # Strictly 1 active stream/game at a time: selecting a game cancels the previous one
-            if activated and game:
-                new_games = [game]
-            else:
-                new_games = []
+            if not action:
+                action = "mine_now" if activated else "remove"
 
-            cfg = save_mining_config(mode=current_cfg.get("mode", "default"), activated_games=new_games)
+            def _remove_game(q_list, g_target):
+                gt_low = g_target.lower()
+                return [g for g in q_list if g.lower() != gt_low]
+
+            if action == "clear":
+                new_queue = []
+            elif action == "reorder" and isinstance(payload.get("queue"), list):
+                new_queue = [str(g).strip() for g in payload.get("queue", []) if str(g).strip()]
+            elif not game:
+                new_queue = current_queue
+            elif action in ("mine_now", "front", "select"):
+                # Put selected game at #1 in the queue (active immediately) and keep existing queued games after it!
+                rest = _remove_game(current_queue, game)
+                new_queue = [game] + rest
+            elif action in ("enqueue", "add", "back"):
+                # Append to the end of the queue (if queue was empty, it becomes #1 and starts mining)
+                if any(g.lower() == game.lower() for g in current_queue):
+                    new_queue = current_queue
+                else:
+                    new_queue = current_queue + [game]
+            elif action == "move_up":
+                new_queue = list(current_queue)
+                for idx, g in enumerate(new_queue):
+                    if g.lower() == game.lower() and idx > 0:
+                        new_queue[idx - 1], new_queue[idx] = new_queue[idx], new_queue[idx - 1]
+                        break
+            elif action == "move_down":
+                new_queue = list(current_queue)
+                for idx, g in enumerate(new_queue):
+                    if g.lower() == game.lower() and idx < len(new_queue) - 1:
+                        new_queue[idx + 1], new_queue[idx] = new_queue[idx], new_queue[idx + 1]
+                        break
+            else:  # "remove" / deactivate
+                new_queue = _remove_game(current_queue, game)
+
+            new_top = new_queue[0].lower() if new_queue else ""
+            top_changed = (new_top != prev_top) or (not get_miner_status().get("active") and bool(new_top))
+
+            cfg = save_mining_config(
+                mode=current_cfg.get("mode", "default"),
+                activated_games=new_queue,
+                resolve_stream=top_changed,
+            )
             mstat = cfg.get("miner_status") or {}
-            if activated and game:
+            q_len = len(new_queue)
+
+            if action in ("mine_now", "front", "select") and game:
                 if mstat.get("active") and mstat.get("channel_name"):
-                    msg = f"Instantly switched stream! Now watching {mstat['channel_name']} for '{game}'."
+                    msg = f"Switched active stream! Now mining #1 '{game}' on {mstat['channel_name']} ({q_len} in queue)."
                 else:
-                    msg = mstat.get("message") or f"Cancelled previous stream & selected '{game}' as the 1 active stream to mine."
+                    msg = mstat.get("message") or f"Set '{game}' as #1 active target ({q_len} in queue)."
+            elif action in ("enqueue", "add", "back") and game:
+                pos = next((i + 1 for i, g in enumerate(new_queue) if g.lower() == game.lower()), q_len)
+                if pos == 1 and mstat.get("active") and mstat.get("channel_name"):
+                    msg = f"Added '{game}' as #1 in queue! Now watching {mstat['channel_name']}."
+                else:
+                    msg = f"Added '{game}' to mining queue at position #{pos} (1 mined at a time)."
+            elif action in ("move_up", "move_down") and game:
+                pos = next((i + 1 for i, g in enumerate(new_queue) if g.lower() == game.lower()), 1)
+                msg = f"Moved '{game}' to queue position #{pos}."
+            elif action == "clear":
+                msg = "Cleared mining queue."
             else:
-                if mstat.get("active") and mstat.get("channel_name"):
-                    msg = f"Cancelled '{game}' & auto-switched to {mstat['channel_name']} ({mstat.get('game')})."
+                if new_queue and mstat.get("active") and mstat.get("channel_name"):
+                    msg = f"Removed '{game}' from queue. Now mining #1 '{new_queue[0]}' on {mstat['channel_name']}."
+                elif new_queue:
+                    msg = f"Removed '{game}'. Next up in queue: '{new_queue[0]}'."
                 else:
-                    msg = f"Cancelled '{game}' stream selection."
+                    msg = f"Removed '{game}' from mining queue."
+
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({
                 "success": True,
                 "game": game,
-                "activated": activated,
+                "action": action,
+                "activated": bool(new_queue and any(g.lower() == game.lower() for g in new_queue)),
+                "mode": cfg.get("mode", "default"),
+                "queue": new_queue,
+                "activated_games": new_queue,
                 "mining_config": cfg,
                 "miner_status": mstat,
                 "message": msg
