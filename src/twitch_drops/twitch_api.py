@@ -1176,11 +1176,33 @@ class TwitchClient:
             "last_refreshed_at": DROPHUNTER_CACHE.get("updated_at") or datetime.now(timezone.utc).isoformat(),
         }
 
-    def find_eligible_channel(self, game_name: str, fast_first: bool = True) -> Optional[Dict[str, Any]]:
+    @staticmethod
+    def _node_has_drops_in_title_or_tags(node: Dict[str, Any]) -> bool:
+        """Check if a stream node explicitly mentions drops in its stream title or tags."""
+        title = str(node.get("title") or "").lower()
+        if "drop" in title:
+            return True
+        tags = node.get("freeformTags") or []
+        if isinstance(tags, list):
+            for t in tags:
+                tname = str((t.get("name") if isinstance(t, dict) else t) or "").lower()
+                if "drop" in tname:
+                    return True
+        return False
+
+    def find_eligible_channel(
+        self,
+        game_name: str,
+        fast_first: bool = True,
+        excluded_channels: Optional[Set[str]] = None,
+    ) -> Optional[Dict[str, Any]]:
         """
-        Find a live channel streaming the specified game with verified watch-time drops enabled.
-        When fast_first=True (default), returns immediately upon verifying a drop-enabled channel for instant switching.
+        Find a live channel streaming the specified game with verified watch-time drops enabled
+        and/or 'drops' in the channel title/tags. Skips any channel in excluded_channels.
         """
+        excluded_set: Set[str] = {
+            str(ch).lower().strip() for ch in (excluded_channels or set()) if ch and str(ch).strip()
+        }
         query = """
         query DirectoryPage_Game($name: String!) {
             game(name: $name) {
@@ -1192,6 +1214,9 @@ class TwitchClient:
                             id
                             title
                             viewersCount
+                            freeformTags {
+                                name
+                            }
                             broadcaster {
                                 id
                                 login
@@ -1209,7 +1234,7 @@ class TwitchClient:
             game_id = str(game_obj.get("id") or "")
             edges = game_obj.get("streams", {}).get("edges", [])
 
-            # Fallback if no streams found with Drops tags
+            # Fallback if no streams found with DropsEnabled tag query
             if not edges:
                 query_fallback = """
                 query DirectoryPage_GameFallback($name: String!) {
@@ -1222,6 +1247,9 @@ class TwitchClient:
                                     id
                                     title
                                     viewersCount
+                                    freeformTags {
+                                        name
+                                    }
                                     broadcaster {
                                         id
                                         login
@@ -1242,7 +1270,26 @@ class TwitchClient:
                 logger.info("No live streams found for game '%s'", game_name)
                 return None
 
-            candidate_nodes = [e["node"] for e in edges if e.get("node")]
+            raw_nodes = [e["node"] for e in edges if e.get("node")]
+            candidate_nodes: List[Dict[str, Any]] = []
+            for node in raw_nodes:
+                b = node.get("broadcaster") or {}
+                b_login = str(b.get("login") or "").lower().strip()
+                b_id = str(b.get("id") or "").lower().strip()
+                if (b_login and b_login in excluded_set) or (b_id and b_id in excluded_set):
+                    logger.debug("Skipping excluded/unproductive channel @%s for '%s'", b_login, game_name)
+                    continue
+                candidate_nodes.append(node)
+
+            if not candidate_nodes:
+                logger.info("No non-excluded live streams found for game '%s' (excluded=%d)", game_name, len(excluded_set))
+                return None
+
+            # Prioritize streams that explicitly include 'drops' / '!drops' in their title or tags
+            candidate_nodes.sort(
+                key=lambda n: (1 if self._node_has_drops_in_title_or_tags(n) else 0, int(n.get("viewersCount") or 0)),
+                reverse=True,
+            )
             target_game_low = game_name.lower().strip()
 
             # Verify which channels actually have active watch-time drops enabled via DropsHighlightService_AvailableDrops
@@ -1269,22 +1316,25 @@ class TwitchClient:
                             has_watchable = True
                             break
                     if has_watchable:
+                        has_title_drops = self._node_has_drops_in_title_or_tags(node)
                         return {
                             "channel_id": b_id,
                             "channel_login": broadcaster.get("login"),
                             "channel_name": broadcaster.get("displayName"),
                             "stream_id": str(node.get("id") or ""),
+                            "stream_title": str(node.get("title") or ""),
                             "viewers": node.get("viewersCount", 0),
                             "game_name": game_name,
                             "game_id": game_id,
                             "verified_drops": True,
+                            "has_drops_in_title": has_title_drops,
                         }
                 except Exception as err:
                     logger.debug("Failed verifying channel drops for node: %s", err)
                 return None
 
             verified_channels: List[Dict[str, Any]] = []
-            pool_slice = candidate_nodes[:12]
+            pool_slice = candidate_nodes[:15]
             executor = concurrent.futures.ThreadPoolExecutor(max_workers=6)
             try:
                 futures = [executor.submit(verify_channel, node) for node in pool_slice]
@@ -1293,7 +1343,7 @@ class TwitchClient:
                         r = fut.result()
                         if r:
                             verified_channels.append(r)
-                            if fast_first:
+                            if fast_first and r.get("has_drops_in_title"):
                                 break
                     except Exception:
                         pass
@@ -1303,26 +1353,44 @@ class TwitchClient:
                 executor.shutdown(wait=False, cancel_futures=True)
 
             if verified_channels:
-                chosen = random.choice(verified_channels)
+                # Prefer channels that have BOTH verified GQL drops AND 'drops' in title/tags
+                both_verified = [ch for ch in verified_channels if ch.get("has_drops_in_title")]
+                pool_to_pick = both_verified if both_verified else verified_channels
+                chosen = pool_to_pick[0] if fast_first else random.choice(pool_to_pick)
                 logger.info(
-                    "Found %d verified watch-drop channel(s) for '%s'. Selected: %s (@%s) with %d viewers",
-                    len(verified_channels), game_name, chosen["channel_name"], chosen["channel_login"], chosen["viewers"]
+                    "Found %d verified watch-drop channel(s) for '%s'. Selected: %s (@%s) [title_drops=%s] with %d viewers",
+                    len(verified_channels), game_name, chosen["channel_name"], chosen["channel_login"],
+                    chosen.get("has_drops_in_title"), chosen["viewers"]
                 )
                 return chosen
 
-            logger.warning("None of the checked channels for '%s' returned active watch-time drops. Selecting candidate stream.", game_name)
-            fallback_node = candidate_nodes[0]
-            b = fallback_node.get("broadcaster") or {}
-            return {
-                "channel_id": str(b.get("id") or ""),
-                "channel_login": b.get("login"),
-                "channel_name": b.get("displayName"),
-                "stream_id": str(fallback_node.get("id") or ""),
-                "viewers": fallback_node.get("viewersCount", 0),
-                "game_name": game_name,
-                "game_id": game_id,
-                "verified_drops": False,
-            }
+            # Fallback ONLY to channels that explicitly include 'drops' in their stream title or tags
+            title_drop_nodes = [n for n in candidate_nodes if self._node_has_drops_in_title_or_tags(n)]
+            if title_drop_nodes:
+                fallback_node = title_drop_nodes[0]
+                b = fallback_node.get("broadcaster") or {}
+                logger.info(
+                    "Selecting stream with Drops in title/tags for '%s': %s (@%s) — will verify progress increase within 2-5 mins.",
+                    game_name, b.get("displayName"), b.get("login")
+                )
+                return {
+                    "channel_id": str(b.get("id") or ""),
+                    "channel_login": b.get("login"),
+                    "channel_name": b.get("displayName"),
+                    "stream_id": str(fallback_node.get("id") or ""),
+                    "stream_title": str(fallback_node.get("title") or ""),
+                    "viewers": fallback_node.get("viewersCount", 0),
+                    "game_name": game_name,
+                    "game_id": game_id,
+                    "verified_drops": False,
+                    "has_drops_in_title": True,
+                }
+
+            logger.warning(
+                "No live streams for '%s' had verified watch-time drops or 'drops' in their channel title/tags. Skipping.",
+                game_name
+            )
+            return None
 
         except Exception as e:
             logger.warning("Error finding channel for %s: %s", game_name, e)

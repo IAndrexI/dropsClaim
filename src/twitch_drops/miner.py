@@ -15,7 +15,7 @@ import sys
 import time
 import urllib.request
 import urllib.error
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from .twitch_api import TwitchClient, extract_game_name, is_campaign_expired, is_timestamp_expired
 
@@ -130,6 +130,68 @@ class DropsMiner:
         self.failed_claim_ids: set = set()
         self.last_inventory: Dict[str, Any] = {}
         self.last_config_sig: Optional[tuple] = None
+        # Track channels that failed to increase drop progress within 2-5 mins (login.lower() -> timestamp)
+        self.unproductive_channels: Dict[str, float] = {}
+        self.unproductive_cooldown_secs: float = 1800.0  # 30 minutes cooldown before retrying a stalled channel
+        try:
+            env_check_mins = int(os.environ.get("TWITCH_PROGRESS_CHECK_MINS", "3"))
+        except Exception:
+            env_check_mins = 3
+        self.progress_check_minutes: int = max(2, min(5, env_check_mins))
+
+    def _get_excluded_channels(self) -> Set[str]:
+        """Return currently blacklisted/unproductive channel logins, pruning expired cooldowns."""
+        now = time.time()
+        expired = [
+            ch for ch, ts in self.unproductive_channels.items()
+            if (now - ts) >= self.unproductive_cooldown_secs
+        ]
+        for ch in expired:
+            self.unproductive_channels.pop(ch, None)
+        return set(self.unproductive_channels.keys())
+
+    def _mark_channel_unproductive(self, channel_login: str):
+        """Temporarily blacklist a channel that failed to award drop progress within 2-5 minutes."""
+        if channel_login and str(channel_login).strip():
+            self.unproductive_channels[str(channel_login).strip().lower()] = time.time()
+
+    def _get_campaign_total_watched(
+        self,
+        game_name: str,
+        camp_name: str,
+        fallback_camp: Optional[dict] = None,
+        live_drop_info: Optional[dict] = None,
+    ) -> int:
+        """
+        Compute total watched minutes across drops in the active campaign so any 1-minute progress increase
+        is accurately detected during the 2-5 minute watchdog check.
+        """
+        inv = self.last_inventory or {}
+        inv_camps = inv.get("dropCampaignsInProgress") or inv.get("dropCampaignInProgress") or []
+        if isinstance(inv_camps, dict):
+            inv_camps = [inv_camps]
+
+        total_watched = 0
+        matched = False
+        for ic in inv_camps:
+            if str(ic.get("status") or "").upper() == "EXPIRED" or is_campaign_expired(ic):
+                continue
+            igame = extract_game_name(ic, "").lower()
+            icname = str(ic.get("name") or "").lower()
+            if igame == game_name.lower() or (camp_name and icname == camp_name.lower()):
+                matched = True
+                for d in ic.get("timeBasedDrops") or []:
+                    s = d.get("self") or {}
+                    total_watched += int(s.get("currentMinutesWatched") or 0)
+
+        if not matched and fallback_camp:
+            for d in fallback_camp.get("timeBasedDrops") or []:
+                s = d.get("self") or {}
+                total_watched += int(s.get("currentMinutesWatched") or 0)
+
+        if live_drop_info:
+            total_watched = max(total_watched, int(live_drop_info.get("current_drop_watched") or 0))
+        return total_watched
 
     def _get_config_signature(self) -> tuple:
         """Return a comparable signature of the current mining config to detect user changes immediately."""
@@ -541,6 +603,8 @@ class DropsMiner:
             except Exception:
                 pre_switched_stat = {}
 
+        excluded_channels = self._get_excluded_channels()
+
         # Try eligible campaigns in exact priority/queue order (if #1 in queue has no live stream online, falls back to #2 in queue!)
         for candidate_camp in eligible_campaigns:
             if self._has_config_changed(cycle_sig):
@@ -549,10 +613,12 @@ class DropsMiner:
             cand_game = extract_game_name(candidate_camp, "Unknown")
             cand_name = candidate_camp.get("name", cand_game)
 
-            # Adopt pre-resolved stream from server.py if fresh (<60s) and matches cand_game
+            # Adopt pre-resolved stream from server.py if fresh (<60s), matches cand_game, and is not blacklisted
+            pre_login = str(pre_switched_stat.get("channel_login") or "").lower().strip()
             if (
                 pre_switched_stat.get("active")
-                and pre_switched_stat.get("channel_login")
+                and pre_login
+                and pre_login not in excluded_channels
                 and str(pre_switched_stat.get("game") or "").lower() == cand_game.lower()
                 and (time.time() - float(pre_switched_stat.get("switched_at") or 0)) < 60
             ):
@@ -562,10 +628,12 @@ class DropsMiner:
                     "channel_login": pre_switched_stat["channel_login"],
                     "channel_name": pre_switched_stat.get("channel_name") or pre_switched_stat["channel_login"],
                     "stream_id": str(pre_switched_stat.get("stream_id") or ""),
+                    "stream_title": str(pre_switched_stat.get("stream_title") or ""),
                     "viewers": int(pre_switched_stat.get("viewers") or 0),
                     "game_name": cand_game,
                     "game_id": str(pre_switched_stat.get("game_id") or ""),
-                    "verified_drops": True,
+                    "verified_drops": bool(pre_switched_stat.get("verified_drops", True)),
+                    "has_drops_in_title": bool(pre_switched_stat.get("has_drops_in_title", True)),
                 }
                 game_name = cand_game
                 camp_name = cand_name
@@ -573,7 +641,11 @@ class DropsMiner:
                 break
 
             logger.info("[MINER] Checking live streams with drops enabled for '%s' (%s)...", cand_game, cand_name)
-            found_ch = self.client.find_eligible_channel(cand_game, fast_first=True)
+            found_ch = self.client.find_eligible_channel(
+                cand_game,
+                fast_first=True,
+                excluded_channels=excluded_channels,
+            )
             if found_ch:
                 chosen_campaign = candidate_camp
                 channel = found_ch
@@ -608,6 +680,12 @@ class DropsMiner:
 
         # Immediately write active stream status BEFORE fetching playback info or sending heartbeat so UI updates with 0 lag
         initial_drop_info = self._get_live_drop_progress(game_name, camp_name, fallback_camp=chosen_campaign)
+        baseline_watched = self._get_campaign_total_watched(
+            game_name, camp_name, fallback_camp=chosen_campaign, live_drop_info=initial_drop_info
+        )
+        last_progress_minute = 0
+        progress_verified = False
+
         immediate_status = {
             "active": True,
             "switching": False,
@@ -622,6 +700,12 @@ class DropsMiner:
             "channel_name": channel["channel_name"],
             "channel_login": channel["channel_login"],
             "stream_id": channel.get("stream_id", ""),
+            "stream_title": channel.get("stream_title", ""),
+            "verified_drops": bool(channel.get("verified_drops", True)),
+            "has_drops_in_title": bool(channel.get("has_drops_in_title", False)),
+            "progress_verified": False,
+            "minutes_without_progress": 0,
+            "progress_check_minutes": self.progress_check_minutes,
             "game_id": channel.get("game_id", ""),
             "stream_url": stream_url,
             "viewers": channel["viewers"],
@@ -640,7 +724,7 @@ class DropsMiner:
         sub_playlist_url = playback_info.get("sub_playlist_url")
 
         # 5. Streamless watch loop under user account (sending heartbeat every ~60s)
-        # Strictly watches ONLY this single stream, and immediately swaps when completed or when user changes queue!
+        # Strictly watches ONLY this single stream, verifies progress every 2-5 mins, and immediately swaps when completed or stalled!
         for minute in range(15):
             if self._has_config_changed(cycle_sig):
                 self._handle_mid_cycle_swap(channel["channel_name"], game_name)
@@ -696,11 +780,49 @@ class DropsMiner:
                 })
                 return
 
+            # 2-5 Minute Progress Watchdog: verify drop progress is actually increasing on this channel
+            current_watched = self._get_campaign_total_watched(
+                game_name, camp_name, fallback_camp=chosen_campaign, live_drop_info=live_drop_info
+            )
+            if current_watched > baseline_watched or claimed_now > 0:
+                gained = max(1, current_watched - baseline_watched)
+                baseline_watched = current_watched
+                last_progress_minute = minute + 1
+                progress_verified = True
+                logger.info(
+                    "[MINER] Drop progress verified on %s (@%s) for '%s' (+%dm watched).",
+                    channel["channel_name"], channel["channel_login"], game_name, gained
+                )
+            else:
+                mins_stalled = (minute + 1) - last_progress_minute
+                if mins_stalled >= self.progress_check_minutes:
+                    logger.warning(
+                        "[MINER] No drop progress increase after %d minutes on %s (@%s) for '%s' (watched remained at %dm). "
+                        "Marking channel unproductive and switching to another Drops channel immediately!",
+                        mins_stalled, channel["channel_name"], channel["channel_login"], game_name, current_watched
+                    )
+                    self._mark_channel_unproductive(channel["channel_login"])
+                    save_miner_status({
+                        "active": False,
+                        "switching": True,
+                        "game": game_name,
+                        "selected_game": selected_game_cfg or game_name,
+                        "queue": queue_cfg,
+                        "mode": mode_cfg,
+                        "message": (
+                            f"No drop progress increase after {mins_stalled} mins on {channel['channel_name']} (@{channel['channel_login']}). "
+                            f"Switching immediately to a verified Drops channel..."
+                        ),
+                        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    })
+                    return
+
             # Re-verify config hasn't changed while claiming/fetching inventory
             if self._has_config_changed(cycle_sig):
                 self._handle_mid_cycle_swap(channel["channel_name"], game_name)
                 return
 
+            mins_without_prog = (minute + 1) - last_progress_minute
             current_status = {
                 "active": True,
                 "switching": False,
@@ -715,6 +837,12 @@ class DropsMiner:
                 "channel_name": channel["channel_name"],
                 "channel_login": channel["channel_login"],
                 "stream_id": broadcast_id,
+                "stream_title": channel.get("stream_title", ""),
+                "verified_drops": bool(channel.get("verified_drops", True)),
+                "has_drops_in_title": bool(channel.get("has_drops_in_title", False)),
+                "progress_verified": progress_verified,
+                "minutes_without_progress": mins_without_prog,
+                "progress_check_minutes": self.progress_check_minutes,
                 "game_id": channel.get("game_id", ""),
                 "stream_url": stream_url,
                 "viewers": channel["viewers"],

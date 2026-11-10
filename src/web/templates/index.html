@@ -925,9 +925,15 @@
         minerBadge.style.display = "inline-flex";
 
         const ulogin = minerStat.user_login || twitch.username || "iandrexi";
-        minerSub.innerText = `Watching under @${ulogin} (User ID: ${minerStat.user_id || "130742243"}) — strictly 1 stream at a time. Selecting another option cancels this stream immediately.`;
+        const dropTagInfo = minerStat.verified_drops
+          ? (minerStat.has_drops_in_title ? "Drops Verified (API + Title)" : "Drops Verified (API)")
+          : "Drops in Channel Title";
+        const progCheckInfo = minerStat.progress_verified
+          ? "Progress Confirmed (+1m)"
+          : `Progress Watchdog (${minerStat.minutes_without_progress || 0}/${minerStat.progress_check_minutes || 3}m check)`;
+        minerSub.innerText = `Watching under @${ulogin} — strictly 1 stream at a time [${dropTagInfo} | ${progCheckInfo}]. Automatically switches channel if progress doesn't increase in 2-5 mins.`;
 
-        channelPill.innerText = `Channel: ${cname}`;
+        channelPill.innerText = `Channel: ${cname} (Drops Enabled)`;
         if (dropLivePill) {
           if (minerStat.current_drop_name && minerStat.current_drop_required > 0) {
             dropLivePill.innerText = `Active Drop: ${minerStat.current_drop_name} (${minerStat.current_drop_watched || 0}/${minerStat.current_drop_required}m - ${minerStat.current_drop_percent || 0}%)`;
@@ -936,7 +942,9 @@
             dropLivePill.style.display = "none";
           }
         }
-        progressPill.innerText = `Session Cycle: ${minerStat.minutes_watched || 1}/15 mins`;
+        progressPill.innerText = minerStat.progress_verified
+          ? `Progress: Verified (${minerStat.minutes_watched || 1}/15m)`
+          : `Progress Check: ${minerStat.minutes_watched || 1}/${minerStat.progress_check_minutes || 3}m`;
         viewersPill.innerText = `${(minerStat.viewers || 0).toLocaleString()} Viewers`;
         
         const targetUrl = minerStat.stream_url || `https://www.twitch.tv/${minerStat.channel_login || ''}`;
