@@ -197,6 +197,106 @@ def is_campaign_expired(camp: Optional[Dict[str, Any]]) -> bool:
     return False
 
 
+def format_time_left(end_at: Optional[str]) -> str:
+    """Compute a clean human-readable remaining time string from an ISO-8601 endAt timestamp."""
+    if not end_at:
+        return ""
+    try:
+        clean_ts = str(end_at).replace("Z", "+00:00")
+        dt = datetime.fromisoformat(clean_ts)
+        rem_secs = dt.timestamp() - datetime.now(timezone.utc).timestamp()
+        if rem_secs <= 0:
+            return "Campaign Ended"
+        days = int(rem_secs // 86400)
+        hours = int((rem_secs % 86400) // 3600)
+        mins = int((rem_secs % 3600) // 60)
+        if days > 0:
+            return f"{days}d {hours}h left"
+        if hours > 0:
+            return f"{hours}h {mins}m left"
+        return f"{max(1, mins)}m left"
+    except Exception:
+        return ""
+
+
+def format_box_art_url(url: Optional[str]) -> str:
+    """Normalize Twitch boxArtURL templates ({width}x{height}) into a standard cover image URL."""
+    if not url or not isinstance(url, str):
+        return ""
+    return url.replace("{width}", "285").replace("{height}", "380").replace("52x72", "285x380")
+
+
+DEFAULT_DROPS_GAMES_ROSTER: List[str] = [
+    "WARDOGS",
+    "Rust",
+    "World of Warcraft",
+    "Overwatch 2",
+    "Overwatch",
+    "Marvel Rivals",
+    "Escape from Tarkov",
+    "Warframe",
+    "Rainbow Six Siege",
+    "Apex Legends",
+    "Grand Theft Auto V",
+    "Call of Duty: Warzone",
+    "Call of Duty: Modern Warfare 4",
+    "Dead by Daylight",
+    "Fortnite",
+    "VALORANT",
+    "Sea of Thieves",
+    "Once Human",
+    "Delta Force",
+    "THE FINALS",
+    "ARC Raiders",
+    "Path of Exile",
+    "Path of Exile 2",
+    "Diablo IV",
+    "DayZ",
+    "Counter-Strike",
+    "PUBG: BATTLEGROUNDS",
+    "Rocket League",
+    "Dota 2",
+    "League of Legends",
+    "Albion Online",
+    "Black Desert",
+    "THRONE AND LIBERTY",
+    "Arena Breakout: Infinite",
+    "Hunt: Showdown 1896",
+    "No Man's Sky",
+    "Minecraft",
+    "Wuthering Waves",
+    "Genshin Impact",
+    "Honkai: Star Rail",
+    "Zenless Zone Zero",
+    "Battlefield 6",
+    "Enshrouded",
+    "FragPunk",
+    "Tom Clancy's The Division 2",
+    "World of Tanks",
+    "World of Warships",
+    "War Thunder",
+    "ELDEN RING",
+    "Cyberpunk 2077",
+    "AION 2",
+    "Madden NFL 27",
+    "EA Sports FC 27",
+    "Subnautica 2",
+    "Big Walk",
+    "New World: Aeternum",
+    "Lost Ark",
+    "Hearthstone",
+    "Street Fighter 6",
+    "Tekken 8",
+    "Palworld",
+    "ARK: Survival Ascended",
+    "Dark and Darker",
+    "Gray Zone Warfare",
+    "Exoborne",
+    "Mecha BREAK",
+    "Splitgate 2",
+]
+
+
 def normalize_cached_campaign(camp: Dict[str, Any]) -> Dict[str, Any]:
     """Ensure a campaign dict from disk cache has standard 'game' dict and 'timeBasedDrops' list."""
     c = dict(camp)
@@ -243,19 +343,22 @@ def fetch_drophunter_live_campaigns(force_refresh: bool = False) -> List[Dict[st
         return [normalize_cached_campaign(c) for c in DROPHUNTER_CACHE["campaigns"]]
 
     # Try loading from disk if in-memory cache is empty and not force_refresh
-    if not force_refresh and not DROPHUNTER_CACHE["campaigns"] and os.path.exists(CAMPAIGNS_CACHE_FILE):
+    if not DROPHUNTER_CACHE["campaigns"] and os.path.exists(CAMPAIGNS_CACHE_FILE):
         try:
             with open(CAMPAIGNS_CACHE_FILE, "r", encoding="utf-8") as f:
                 disk_cache = json.load(f)
                 c_list = [normalize_cached_campaign(c) for c in (disk_cache.get("campaigns") or []) if isinstance(c, dict)]
                 c_time = disk_cache.get("timestamp", 0)
-                if c_list and (now - c_time < 3600):  # Valid for 1 hour from disk
+                if c_list and (not force_refresh and (now - c_time < 3600)):
                     DROPHUNTER_CACHE["timestamp"] = c_time
                     DROPHUNTER_CACHE["campaigns"] = c_list
                     DROPHUNTER_CACHE["updated_at"] = disk_cache.get("updated_at", "")
                     return c_list
         except Exception:
             pass
+
+    if now - float(DROPHUNTER_CACHE.get("last_fail_ts") or 0) < 1800:
+        return [normalize_cached_campaign(c) for c in DROPHUNTER_CACHE.get("campaigns", [])]
 
     req = urllib.request.Request(
         "https://drophunter.app/drops",
@@ -455,7 +558,8 @@ def fetch_drophunter_live_campaigns(force_refresh: bool = False) -> List[Dict[st
                 logger.debug("Could not save campaigns disk cache: %s", save_err)
 
     except Exception as e:
-        logger.warning("Could not fetch drophunter.app campaigns (%s), attempting disk cache fallback", e)
+        DROPHUNTER_CACHE["last_fail_ts"] = now
+        logger.debug("drophunter.app unavailable (%s), using Twitch GQL live discovery + disk cache", e)
         if not results and os.path.exists(CAMPAIGNS_CACHE_FILE):
             try:
                 with open(CAMPAIGNS_CACHE_FILE, "r", encoding="utf-8") as f:
@@ -667,6 +771,315 @@ class TwitchClient:
             logger.error("Error fetching inventory via persisted query: %s", e)
             return {}
 
+    def post_gql_batch(self, operations: List[Dict[str, Any]], timeout: int = 15) -> List[Dict[str, Any]]:
+        """Send a batched array of GraphQL operations (up to 35 per call) to Twitch GQL."""
+        if not operations:
+            return []
+        headers = {
+            "Client-Id": self.client_id,
+            "User-Agent": self.user_agent,
+            "Content-Type": "application/json",
+            "Accept": "*/*",
+        }
+        if self.auth_token:
+            headers["Authorization"] = f"OAuth {self.auth_token}"
+        body = json.dumps(operations).encode("utf-8")
+        raw = self._make_request(GQL_URL, data=body, headers=headers, timeout=timeout)
+        parsed = json.loads(raw.decode("utf-8"))
+        return parsed if isinstance(parsed, list) else [parsed]
+
+    def fetch_twitch_gql_live_campaigns(self, priority_games: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        """
+        Discover all live Twitch Drop campaigns directly from Twitch's official GraphQL API:
+        1. ViewerDropsDashboard (if authenticated) for all active/upcoming campaigns on Twitch.
+        2. TopLiveGames (top 100 live games on Twitch) + StreamsWithDrops.
+        3. Priority/queued games + DEFAULT_DROPS_GAMES_ROSTER (including WARDOGS, Rust, etc.).
+        4. Batched DropsHighlightService_AvailableDrops across live broadcasters for full drop tiers & reward icons.
+        """
+        dashboard_meta: Dict[str, Dict[str, Any]] = {}
+        dashboard_games: List[str] = []
+
+        # 1. Query official ViewerDropsDashboard when authenticated
+        if self.auth_token:
+            try:
+                dash_res = self.post_persisted_gql(
+                    operation_name="ViewerDropsDashboard",
+                    sha256_hash="5a4da2ab3d5b47c9f9ce864e727b2cb346af1e3ea8b897fe8f704a97ff017619",
+                    variables={"fetchRewardCampaigns": False},
+                )
+                dash_camps = ((dash_res.get("data") or {}).get("currentUser") or {}).get("dropCampaigns") or []
+                for dc in dash_camps:
+                    if not isinstance(dc, dict):
+                        continue
+                    status_str = str(dc.get("status") or "").upper()
+                    if status_str == "EXPIRED" or is_campaign_expired(dc):
+                        continue
+                    cid = str(dc.get("id") or "")
+                    gname = extract_game_name(dc, "")
+                    if cid:
+                        dashboard_meta[cid] = dc
+                    if gname and gname not in dashboard_games:
+                        dashboard_games.append(gname)
+            except Exception as err:
+                logger.debug("ViewerDropsDashboard query note: %s", err)
+
+        # 2. Query Top 100 live games on Twitch + StreamsWithDrops
+        game_broadcasters: Dict[str, Dict[str, Any]] = {}  # game_low -> {"name": str, "box_art": str, "bids": List[str]}
+        try:
+            q_top = """
+            query TopLiveGames {
+                games(first: 100) {
+                    edges {
+                        node {
+                            id
+                            name
+                            displayName
+                            boxArtURL
+                            streams(first: 2) {
+                                edges {
+                                    node {
+                                        broadcaster {
+                                            id
+                                            login
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                streams(first: 30, options: {tags: ["DropsEnabled", "Drops"]}) {
+                    edges {
+                        node {
+                            broadcaster {
+                                id
+                                login
+                            }
+                            game {
+                                id
+                                name
+                                displayName
+                                boxArtURL
+                            }
+                        }
+                    }
+                }
+            }
+            """
+            res_top = self.post_gql(q_top, operation_name="TopLiveGames")
+            top_data = res_top.get("data") or {}
+            for edge in ((top_data.get("games") or {}).get("edges") or []):
+                node = edge.get("node") or {}
+                gname = clean_text(node.get("displayName") or node.get("name") or "")
+                if not gname:
+                    continue
+                box_art = format_box_art_url(node.get("boxArtURL"))
+                st_edges = (node.get("streams") or {}).get("edges") or []
+                bids = [
+                    str(((se.get("node") or {}).get("broadcaster") or {}).get("id"))
+                    for se in st_edges
+                    if ((se.get("node") or {}).get("broadcaster") or {}).get("id")
+                ]
+                if bids:
+                    game_broadcasters[gname.lower()] = {"name": gname, "box_art": box_art, "bids": bids}
+
+            for edge in ((top_data.get("streams") or {}).get("edges") or []):
+                node = edge.get("node") or {}
+                gobj = node.get("game") or {}
+                bobj = node.get("broadcaster") or {}
+                gname = clean_text(gobj.get("displayName") or gobj.get("name") or "")
+                bid = str(bobj.get("id") or "")
+                if gname and bid:
+                    entry = game_broadcasters.setdefault(
+                        gname.lower(),
+                        {"name": gname, "box_art": format_box_art_url(gobj.get("boxArtURL")), "bids": []},
+                    )
+                    if bid not in entry["bids"]:
+                        entry["bids"].append(bid)
+        except Exception as err:
+            logger.debug("TopLiveGames GQL discovery note: %s", err)
+
+        # 3. Ensure priority_games + dashboard_games + DEFAULT_DROPS_GAMES_ROSTER (including WARDOGS) are checked
+        target_games_ordered: List[str] = []
+        seen_target_low: Set[str] = set()
+        for g in list(priority_games or []) + dashboard_games + DEFAULT_DROPS_GAMES_ROSTER:
+            gs = clean_text(g)
+            if gs and gs.lower() not in seen_target_low:
+                seen_target_low.add(gs.lower())
+                target_games_ordered.append(gs)
+
+        missing_games = [g for g in target_games_ordered if g.lower() not in game_broadcasters]
+        if missing_games:
+            q_check = """
+            query CheckGameTopStream($name: String!) {
+                game(name: $name) {
+                    id
+                    name
+                    displayName
+                    boxArtURL
+                    streams(first: 2) {
+                        edges {
+                            node {
+                                broadcaster {
+                                    id
+                                    login
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            """
+            for i in range(0, len(missing_games), 30):
+                chunk = missing_games[i : i + 30]
+                ops = [{"operationName": "CheckGameTopStream", "query": q_check, "variables": {"name": g}} for g in chunk]
+                try:
+                    batch_res = self.post_gql_batch(ops, timeout=12)
+                    for item in batch_res:
+                        gobj = ((item or {}).get("data") or {}).get("game")
+                        if not gobj:
+                            continue
+                        gname = clean_text(gobj.get("displayName") or gobj.get("name") or "")
+                        box_art = format_box_art_url(gobj.get("boxArtURL"))
+                        st_edges = (gobj.get("streams") or {}).get("edges") or []
+                        bids = [
+                            str(((se.get("node") or {}).get("broadcaster") or {}).get("id"))
+                            for se in st_edges
+                            if ((se.get("node") or {}).get("broadcaster") or {}).get("id")
+                        ]
+                        if gname and bids:
+                            game_broadcasters[gname.lower()] = {"name": gname, "box_art": box_art, "bids": bids}
+                except Exception as err:
+                    logger.debug("Batch CheckGameTopStream error: %s", err)
+
+        # 4. Batch-query DropsHighlightService_AvailableDrops (up to 35 broadcasters per batch)
+        broadcaster_ids: List[str] = []
+        seen_bids: Set[str] = set()
+        box_art_by_game_low: Dict[str, str] = {}
+
+        # Put priority/target games first so they are always queried in the first batch
+        for g in target_games_ordered:
+            info = game_broadcasters.get(g.lower())
+            if info:
+                if info.get("box_art"):
+                    box_art_by_game_low[g.lower()] = info["box_art"]
+                for bid in info["bids"][:1]:
+                    if bid not in seen_bids:
+                        seen_bids.add(bid)
+                        broadcaster_ids.append(bid)
+
+        for g_low, info in game_broadcasters.items():
+            if info.get("box_art"):
+                box_art_by_game_low.setdefault(g_low, info["box_art"])
+            for bid in info["bids"][:1]:
+                if bid not in seen_bids:
+                    seen_bids.add(bid)
+                    broadcaster_ids.append(bid)
+
+        discovered_campaigns: Dict[str, Dict[str, Any]] = {}
+        for i in range(0, len(broadcaster_ids), 35):
+            chunk_bids = broadcaster_ids[i : i + 35]
+            ops = [
+                {
+                    "operationName": "DropsHighlightService_AvailableDrops",
+                    "extensions": {
+                        "persistedQuery": {
+                            "version": 1,
+                            "sha256Hash": "9a62a09bce5b53e26e64a671e530bc599cb6aab1e5ba3cbd5d85966d3940716f",
+                        }
+                    },
+                    "variables": {"channelID": bid},
+                }
+                for bid in chunk_bids
+            ]
+            try:
+                batch_res = self.post_gql_batch(ops, timeout=15)
+                for item in batch_res:
+                    camps = (((item or {}).get("data") or {}).get("channel") or {}).get("viewerDropCampaigns") or []
+                    for camp in camps:
+                        if not isinstance(camp, dict):
+                            continue
+                        cid = str(camp.get("id") or "")
+                        if not cid or cid in discovered_campaigns or is_campaign_expired(camp):
+                            continue
+                        gname = extract_game_name(camp, "")
+                        if not gname:
+                            continue
+                        raw_drops = camp.get("timeBasedDrops") or []
+                        if not raw_drops:
+                            continue
+
+                        # Normalize and sort timeBasedDrops by requiredMinutesWatched ascending
+                        norm_drops = []
+                        for d in raw_drops:
+                            d_copy = dict(d)
+                            req_mins = int(d_copy.get("requiredMinutesWatched") or 0)
+                            req_subs = int(d_copy.get("requiredSubs") or 0)
+                            d_img = str(d_copy.get("image_url") or "")
+                            if not d_img:
+                                for edge in d_copy.get("benefitEdges") or []:
+                                    ben = (edge or {}).get("benefit") or {}
+                                    if ben.get("imageAssetURL"):
+                                        d_img = str(ben["imageAssetURL"])
+                                        break
+                            d_copy["image_url"] = d_img
+                            d_copy["requiredMinutesWatched"] = req_mins
+                            d_copy["requiredSubs"] = req_subs
+                            d_copy["requirement_text"] = (
+                                f"{req_subs} sub(s)" if req_subs > 0 and req_mins == 0 else f"{req_mins}m"
+                            )
+                            if not isinstance(d_copy.get("self"), dict):
+                                d_copy["self"] = {
+                                    "currentMinutesWatched": 0,
+                                    "currentSubs": 0,
+                                    "isClaimed": False,
+                                    "dropInstanceID": None,
+                                    "hasPreconditionsMet": True,
+                                }
+                            norm_drops.append(d_copy)
+
+                        norm_drops.sort(key=lambda x: (int(x.get("requiredMinutesWatched") or 0), str(x.get("name") or "")))
+
+                        d_meta = dashboard_meta.get(cid) or {}
+                        d_game = d_meta.get("game") if isinstance(d_meta.get("game"), dict) else {}
+                        c_game = camp.get("game") if isinstance(camp.get("game"), dict) else {}
+                        cover_url = (
+                            box_art_by_game_low.get(gname.lower())
+                            or format_box_art_url(d_game.get("boxArtURL") or c_game.get("boxArtURL"))
+                            or str(camp.get("imageURL") or d_meta.get("imageURL") or "")
+                        )
+                        end_at = str(camp.get("endAt") or d_meta.get("endAt") or "")
+                        game_slug = gname.lower().replace(" ", "-").replace(":", "").replace("'", "")
+                        stream_url = f"https://www.twitch.tv/directory/category/{urllib.parse.quote(game_slug)}?filter=drops"
+
+                        discovered_campaigns[cid] = {
+                            "id": cid,
+                            "real_twitch_id": cid,
+                            "name": clean_text(camp.get("name") or d_meta.get("name") or f"{gname} Drops"),
+                            "game": {
+                                "id": str(c_game.get("id") or d_game.get("id") or ""),
+                                "displayName": gname,
+                                "name": gname,
+                                "boxArtURL": cover_url,
+                            },
+                            "status": str(d_meta.get("status") or camp.get("status") or "ACTIVE"),
+                            "startAt": camp.get("startAt") or d_meta.get("startAt"),
+                            "endAt": end_at,
+                            "time_left": format_time_left(end_at),
+                            "cover_url": cover_url,
+                            "detailsURL": camp.get("detailsURL") or d_meta.get("detailsURL") or "",
+                            "accountLinkURL": camp.get("accountLinkURL") or d_meta.get("accountLinkURL") or "",
+                            "self": d_meta.get("self") or camp.get("self") or {},
+                            "timeBasedDrops": norm_drops,
+                            "stream_url": stream_url,
+                            "source": "twitch_gql",
+                        }
+            except Exception as err:
+                logger.debug("Batch DropsHighlightService_AvailableDrops error: %s", err)
+
+        logger.info("Discovered %d live drop campaigns directly from Twitch GQL", len(discovered_campaigns))
+        return list(discovered_campaigns.values())
+
     def get_all_active_campaigns(
         self,
         priority_games: Optional[List[str]] = None,
@@ -676,20 +1089,87 @@ class TwitchClient:
     ) -> List[Dict[str, Any]]:
         """
         Fetch all active drop campaigns currently streaming on Twitch merged with user progress.
-        Combines drophunter.app/drops (all 85+ games & 110+ live campaigns) + user inventory progress.
-        Preserves real-time watched minutes, drop instance IDs, and optionally expired inventory campaigns
-        so the user can view both active progress and drops that are no longer available for collection.
+        Combines direct Twitch GQL live discovery (WARDOGS, Rust, etc.) + DropHunter/cached catalog + user inventory.
+        Preserves real-time watched minutes, drop instance IDs, and optionally expired inventory campaigns.
         """
+        global DROPHUNTER_CACHE
         campaigns_map: Dict[str, Dict[str, Any]] = {}
+        now = time.time()
 
-        # 1. Fetch comprehensive live campaigns roster from drophunter.app
+        # 1. Load DropHunter or disk cache first
         dh_campaigns = fetch_drophunter_live_campaigns(force_refresh=force_refresh)
         for dh_c in dh_campaigns:
+            if not include_expired_inventory and is_campaign_expired(dh_c):
+                continue
             cid = dh_c.get("id")
             if cid:
                 campaigns_map[cid] = normalize_cached_campaign(dh_c)
 
-        # 2. Add or merge in-progress & recent campaigns from user inventory (real minutes & drop IDs)
+        # Check if any priority/queued game is missing from current cached campaigns
+        prio_low = [g.strip().lower() for g in (priority_games or []) if g and g.strip()]
+        cached_games_low = {extract_game_name(c, "").lower() for c in campaigns_map.values() if not is_campaign_expired(c)}
+        missing_prio = any(
+            not any(p == cg or p in cg or cg in p for cg in cached_games_low)
+            for p in prio_low
+        )
+
+        # 2. Fetch live campaigns directly from Twitch GraphQL when refreshing, cache expired (>10m), empty, or missing queued game
+        cache_age = now - float(DROPHUNTER_CACHE.get("timestamp") or 0)
+        if force_refresh or not campaigns_map or cache_age >= 600 or missing_prio:
+            gql_live_camps = self.fetch_twitch_gql_live_campaigns(priority_games=priority_games)
+            for gc in gql_live_camps:
+                gc_id = gc.get("id")
+                gc_game = extract_game_name(gc, "")
+                gc_name = clean_text(gc.get("name") or "")
+                matched_existing_id = None
+                for ex_id, ex_c in campaigns_map.items():
+                    ex_game = extract_game_name(ex_c, "")
+                    ex_name = clean_text(ex_c.get("name") or "")
+                    if gc_id and (gc_id == ex_id or gc_id == ex_c.get("real_twitch_id")):
+                        matched_existing_id = ex_id
+                        break
+                    if gc_game and ex_game and gc_game.lower() == ex_game.lower():
+                        if gc_name and ex_name and (
+                            gc_name.lower() == ex_name.lower()
+                            or gc_name.lower() in ex_name.lower()
+                            or ex_name.lower() in gc_name.lower()
+                        ):
+                            matched_existing_id = ex_id
+                            break
+                if matched_existing_id:
+                    ex_c = campaigns_map[matched_existing_id]
+                    ex_c["timeBasedDrops"] = _merge_campaign_drops(
+                        ex_c.get("timeBasedDrops") or [],
+                        gc.get("timeBasedDrops") or [],
+                    )
+                    ex_c["real_twitch_id"] = gc_id
+                    ex_c["endAt"] = gc.get("endAt") or ex_c.get("endAt")
+                    ex_c["time_left"] = gc.get("time_left") or ex_c.get("time_left") or format_time_left(ex_c.get("endAt"))
+                    if gc.get("cover_url") and not ex_c.get("cover_url"):
+                        ex_c["cover_url"] = gc["cover_url"]
+                elif gc_id:
+                    campaigns_map[gc_id] = gc
+
+            # Update in-memory and disk cache with the merged live campaigns so subsequent polls are fast & fresh
+            if campaigns_map:
+                active_to_cache = [c for c in campaigns_map.values() if not is_campaign_expired(c)]
+                updated_iso = datetime.now(timezone.utc).isoformat()
+                DROPHUNTER_CACHE["timestamp"] = now
+                DROPHUNTER_CACHE["campaigns"] = active_to_cache
+                DROPHUNTER_CACHE["updated_at"] = updated_iso
+                try:
+                    os.makedirs(DATA_DIR, exist_ok=True)
+                    with open(CAMPAIGNS_CACHE_FILE, "w", encoding="utf-8") as f:
+                        json.dump({
+                            "timestamp": now,
+                            "updated_at": updated_iso,
+                            "total_campaigns": len(active_to_cache),
+                            "campaigns": active_to_cache,
+                        }, f, indent=2)
+                except Exception as cache_err:
+                    logger.debug("Could not persist merged campaigns cache: %s", cache_err)
+
+        # 3. Add or merge in-progress & recent campaigns from user inventory (real minutes & drop IDs)
         inv = inv_override if inv_override is not None else self.get_inventory()
         in_prog = inv.get("dropCampaignsInProgress") or []
         if isinstance(in_prog, dict):
@@ -888,7 +1368,7 @@ class TwitchClient:
             cover_url = camp.get("cover_url") or ""
             if not cover_url and isinstance(camp.get("game"), dict):
                 cover_url = str(camp["game"].get("boxArtURL") or "")
-            time_left = camp.get("time_left") or ""
+            time_left = camp.get("time_left") or format_time_left(camp.get("endAt"))
             camp_expired = is_campaign_expired(camp)
             if camp_expired and not time_left:
                 time_left = "Campaign Ended"
@@ -1047,6 +1527,8 @@ class TwitchClient:
                     needs_collection_drops.append(drop_entry)
                 elif status == "UNAVAILABLE":
                     unavailable_drops.append(drop_entry)
+
+            formatted_drops.sort(key=lambda x: (int(x.get("required_minutes") or 0), str(x.get("name") or "")))
 
             claimed_cnt = sum(1 for d in formatted_drops if d["status"] == "CLAIMED")
             ready_cnt = sum(1 for d in formatted_drops if d["status"] == "READY_TO_CLAIM")

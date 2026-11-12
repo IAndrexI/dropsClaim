@@ -49,53 +49,34 @@ def load_env(path: str = os.path.join(BASE_DIR, ".env")) -> dict:
 
 
 def refresh_campaigns(force: bool = True) -> dict:
-    logger.info("Initiating daily Twitch drop campaigns refresh...")
+    logger.info("Initiating Twitch drop campaigns refresh (Twitch GQL + DropHunter)...")
     env = load_env()
     token = env.get("TWITCH_AUTH_TOKEN", "").strip()
     priority_str = env.get("TWITCH_PRIORITY_GAMES", "")
     priority_games = [g.strip() for g in priority_str.split(",") if g.strip()]
 
-    # 1. Fetch live campaigns from DropHunter
-    raw_campaigns = fetch_drophunter_live_campaigns(force_refresh=force)
-    active_campaigns = [c for c in raw_campaigns if not is_campaign_expired(c)]
-    logger.info("Retrieved %d active campaigns across games from DropHunter.", len(active_campaigns))
-
-    # 2. Enrich with Twitch user inventory if authenticated
-    overview = {}
     client = TwitchClient(auth_token=token)
     if token and client.validate_session():
         logger.info("Authenticated as Twitch user: %s (ID: %s)", client.user_login, client.user_id)
-        overview = client.get_drops_overview(priority_games=priority_games, force_refresh=force)
-        camps = overview.get("campaigns", [])
-        total = overview.get("total_campaigns", 0)
-        claimed_hist = overview.get("claimed_history_count", 0)
-        ready_cnt = overview.get("ready_to_claim_count", 0)
-        in_prog_cnt = overview.get("in_progress_count", 0)
-        logger.info(
-            "Overview: %d total campaigns, %d in progress, %d ready to claim, %d claimed in history.",
-            total, in_prog_cnt, ready_cnt, claimed_hist
-        )
     else:
-        logger.info("No Twitch session token configured or session inactive. Using raw active campaigns roster.")
-        overview = client.get_drops_overview(priority_games=priority_games, force_refresh=force)
+        logger.info("Using public Twitch GQL + DropHunter discovery for active campaigns roster.")
 
-    # 3. Save raw DropHunter campaigns to cache file (get_drops_overview already saves enriched overview to twitch_inventory.json)
-    os.makedirs(DATA_DIR, exist_ok=True)
-    cache_payload = {
-        "timestamp": datetime.now(timezone.utc).timestamp(),
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-        "total_campaigns": len(active_campaigns),
-        "campaigns": active_campaigns,
-    }
-    with open(CAMPAIGNS_CACHE_FILE, "w", encoding="utf-8") as f:
-        json.dump(cache_payload, f, indent=2)
-
+    overview = client.get_drops_overview(priority_games=priority_games, force_refresh=force)
+    camps = overview.get("campaigns", [])
+    total = overview.get("total_campaigns", len(camps))
+    claimed_hist = overview.get("claimed_history_count", 0)
+    ready_cnt = overview.get("ready_to_claim_count", 0)
+    in_prog_cnt = overview.get("in_progress_count", 0)
+    logger.info(
+        "Overview: %d total campaigns, %d in progress, %d ready to claim, %d claimed in history.",
+        total, in_prog_cnt, ready_cnt, claimed_hist
+    )
     logger.info("Successfully updated campaigns cache file: %s", CAMPAIGNS_CACHE_FILE)
     return {
-        "timestamp": cache_payload["timestamp"],
-        "updated_at": cache_payload["updated_at"],
-        "total_campaigns": overview.get("total_campaigns", len(active_campaigns)),
-        "campaigns": overview.get("campaigns", active_campaigns),
+        "timestamp": datetime.now(timezone.utc).timestamp(),
+        "updated_at": overview.get("last_refreshed_at") or datetime.now(timezone.utc).isoformat(),
+        "total_campaigns": total,
+        "campaigns": camps,
     }
 
 

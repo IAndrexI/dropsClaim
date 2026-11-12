@@ -266,6 +266,71 @@ class MiningQueueAndSwapTests(unittest.TestCase):
             self.assertTrue(stat.get("switching"))
             self.assertIn("No drop progress increase after 3 mins", stat.get("message", ""))
 
+    def test_direct_twitch_gql_campaign_discovery_and_wardogs_mining(self):
+        client = m.TwitchClient("")
+
+        def fake_batch(ops, timeout=15):
+            results = []
+            for op in ops:
+                if op.get("operationName") == "CheckGameTopStream":
+                    gname = (op.get("variables") or {}).get("name")
+                    if gname == "WARDOGS":
+                        results.append({
+                            "data": {
+                                "game": {
+                                    "id": "743893402",
+                                    "name": "WARDOGS",
+                                    "displayName": "WARDOGS",
+                                    "boxArtURL": "https://www.twitch.tv/boxart/743893402-{width}x{height}.jpg",
+                                    "streams": {"edges": [{"node": {"broadcaster": {"id": "56395702", "login": "coconutb"}}}]},
+                                }
+                            }
+                        })
+                    else:
+                        results.append({"data": {"game": None}})
+                elif op.get("operationName") == "DropsHighlightService_AvailableDrops":
+                    if (op.get("variables") or {}).get("channelID") == "56395702":
+                        results.append({
+                            "data": {
+                                "channel": {
+                                    "viewerDropCampaigns": [
+                                        {
+                                            "id": "2965fe2b-6ebb-4547-929c-e70112337fda",
+                                            "name": "Season 3",
+                                            "game": {"id": "743893402", "name": "WARDOGS"},
+                                            "endAt": "2099-11-26T09:59:59.999Z",
+                                            "timeBasedDrops": [
+                                                {
+                                                    "id": "d_900",
+                                                    "name": "Dog Of War",
+                                                    "requiredMinutesWatched": 900,
+                                                    "benefitEdges": [{"benefit": {"imageAssetURL": "https://www.twitch.tv/reward/dog.png"}}],
+                                                },
+                                                {
+                                                    "id": "d_15",
+                                                    "name": "Walk It Off",
+                                                    "requiredMinutesWatched": 15,
+                                                    "benefitEdges": [{"benefit": {"imageAssetURL": "https://www.twitch.tv/reward/walk.png"}}],
+                                                },
+                                            ],
+                                        }
+                                    ]
+                                }
+                            }
+                        })
+            return results
+
+        with mock.patch("src.twitch_drops.twitch_api.fetch_drophunter_live_campaigns", return_value=[]), \
+             mock.patch.object(client, "post_gql", return_value={"data": {"games": {"edges": []}, "streams": {"edges": []}}}), \
+             mock.patch.object(client, "post_gql_batch", side_effect=fake_batch), \
+             mock.patch.object(client, "get_inventory", return_value={}):
+            camps = client.get_all_active_campaigns(priority_games=["WARDOGS"], force_refresh=True)
+            self.assertEqual(len(camps), 1)
+            self.assertEqual(camps[0]["game"]["displayName"], "WARDOGS")
+            self.assertEqual(camps[0]["name"], "Season 3")
+            # Ensure drops are sorted by requiredMinutesWatched ascending (15m before 900m)
+            self.assertEqual([d["name"] for d in camps[0]["timeBasedDrops"]], ["Walk It Off", "Dog Of War"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -325,7 +325,11 @@ class DropsMiner:
 
         best_drop = None
         for tc in target_camps:
-            for d in tc.get("timeBasedDrops") or []:
+            sorted_drops = sorted(
+                tc.get("timeBasedDrops") or [],
+                key=lambda x: (int(x.get("requiredMinutesWatched") or 0), str(x.get("name") or "")),
+            )
+            for d in sorted_drops:
                 s = d.get("self") or {}
                 d_id = str(d.get("id") or "").lower()
                 drop_inst_id = str(s.get("dropInstanceID") or s.get("dropInstanceId") or "")
@@ -646,6 +650,15 @@ class DropsMiner:
                 fast_first=True,
                 excluded_channels=excluded_channels,
             )
+            if not found_ch and excluded_channels:
+                # If all live channels for this game were on cooldown, retry without exclusions rather than sitting idle
+                found_ch = self.client.find_eligible_channel(
+                    cand_game,
+                    fast_first=True,
+                    excluded_channels=None,
+                )
+                if found_ch and found_ch.get("channel_login"):
+                    self.unproductive_channels.pop(str(found_ch["channel_login"]).strip().lower(), None)
             if found_ch:
                 chosen_campaign = candidate_camp
                 channel = found_ch

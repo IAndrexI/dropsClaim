@@ -1587,18 +1587,25 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if self.path == "/api/campaigns/refresh":
             env = load_env_file()
             token = resolve_token(env.get("TWITCH_AUTH_TOKEN", "").strip())
+            mining_cfg = get_mining_config()
+            queue_list = list(mining_cfg.get("queue") or mining_cfg.get("activated_games") or [])
             priority_str = env.get("TWITCH_PRIORITY_GAMES", "")
-            priority_games = [g.strip() for g in priority_str.split(",") if g.strip()]
+            env_prio = [g.strip() for g in priority_str.split(",") if g.strip()]
+            priority_games = list(dict.fromkeys(queue_list + env_prio))
 
             client = TwitchClient(token)
+            if token:
+                client.validate_session()
             overview = client.get_drops_overview(priority_games=priority_games, force_refresh=True)
+            active_cnt = overview.get("active_campaigns_count", overview.get("total_campaigns", 0))
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({
                 "success": True,
-                "message": f"Successfully refreshed live campaigns! Found {overview.get('total_campaigns', 0)} active campaigns.",
+                "message": f"Refreshed live Twitch Drops directly from Twitch API! Found {active_cnt} active campaigns ({overview.get('total_campaigns', 0)} total).",
                 "total_campaigns": overview.get("total_campaigns", 0),
+                "active_campaigns_count": active_cnt,
                 "last_refreshed_at": overview.get("last_refreshed_at", ""),
                 "campaigns": overview.get("campaigns", []),
             }).encode("utf-8"))
