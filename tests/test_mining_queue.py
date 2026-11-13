@@ -505,6 +505,54 @@ class MiningQueueAndSwapTests(unittest.TestCase):
         self.assertIn("direct-update-modal", html)
         self.assertIn("openDirectUpdateModal", html)
         self.assertIn("executeDirectModalUpdate", html)
+        self.assertIn("miner-game-cover", html)
+        self.assertIn("miner-banner-main", html)
+        self.assertIn("chip-game-logo", html)
+        self.assertIn("camp-game-fullname", html)
+        self.assertIn("KNOWN_GAME_LOGOS", html)
+        self.assertIn("minsWatchedLabel", html)
+
+    def test_mystery_drop_and_day_tier_label_extraction(self):
+        client = t_api.TwitchClient("dummy_token")
+        mock_camps = [{
+            "id": "c_evolutions",
+            "name": "Evolutions",
+            "game": {"displayName": "Evolutions", "name": "Evolutions"},
+            "timeBasedDrops": [
+                {
+                    "id": "drop_day1",
+                    "name": "???",
+                    "requiredMinutesWatched": 20,
+                    "benefitEdges": [
+                        {
+                            "benefit": {
+                                "id": "ben_1",
+                                "name": "Day 1",
+                                "imageAssetURL": "https://static-cdn.jtvnw.net/custom-reward-images/silhouette.png"
+                            }
+                        }
+                    ],
+                    "self": {
+                        "currentMinutesWatched": 0,
+                        "dropInstanceID": None,
+                        "isClaimed": False,
+                        "hasPreconditionsMet": True
+                    }
+                }
+            ]
+        }]
+        with mock.patch.object(client, "get_all_active_campaigns", return_value=mock_camps), \
+             mock.patch.object(client, "get_inventory", return_value={"dropCampaignsInProgress": mock_camps}):
+            overview = client.get_drops_overview()
+            self.assertEqual(len(overview["campaigns"]), 1)
+            camp = overview["campaigns"][0]
+            self.assertEqual(camp["name"], "Evolutions")
+            drop = camp["drops"][0]
+            self.assertTrue(drop["is_mystery"])
+            self.assertEqual(drop["tier_label"], "Day 1")
+            self.assertIn("???", drop["name"])
+            self.assertEqual(drop["required_minutes"], 20)
+            self.assertEqual(drop["watched_minutes"], 0)
 
 
 if __name__ == "__main__":

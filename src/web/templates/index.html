@@ -356,13 +356,22 @@
 
     /* Campaign Cards with Image and Links */
     .camp-card-body { display: flex; gap: 14px; }
-    .camp-cover { width: 56px; height: 75px; object-fit: cover; border-radius: 6px; border: 1px solid #1e293b; flex-shrink: 0; background: #0c1322; }
+    .camp-cover { width: 62px; height: 84px; object-fit: cover; border-radius: 8px; border: 1px solid #334155; flex-shrink: 0; background: #0c1322; box-shadow: 0 4px 10px rgba(0, 0, 0, 0.35); }
+    .camp-cover-fallback { width: 62px; height: 84px; border-radius: 8px; border: 1px solid #1e293b; flex-shrink: 0; background: #0f172a; display: flex; flex-direction: column; align-items: center; justify-content: center; font-size: 1.3rem; color: #64748b; text-align: center; padding: 4px; }
+    .camp-cover-fallback small { font-size: 0.65rem; line-height: 1.1; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; max-width: 100%; white-space: nowrap; color: #94a3b8; }
+    .drop-thumb-fallback { width: 34px; height: 34px; border-radius: 4px; background: #1e293b; display: inline-flex; align-items: center; justify-content: center; font-size: 1.15rem; flex-shrink: 0; border: 1px solid #334155; }
     .camp-info { flex: 1; min-width: 0; }
     .camp-actions { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
     .btn-link { color: #60a5fa; text-decoration: none; font-size: 0.8rem; font-weight: 500; display: inline-flex; align-items: center; gap: 4px; }
     .btn-link:hover { text-decoration: underline; color: #93c5fd; }
     .btn-danger { background: #dc2626; border-color: #dc2626; }
     .btn-danger:hover { background: #b91c1c; }
+
+    /* Game Logo in Active Telemetry Banner & Queue Chips */
+    .miner-banner-main { display: flex; gap: 16px; align-items: center; }
+    .miner-game-logo { width: 56px; height: 76px; object-fit: cover; border-radius: 8px; border: 1px solid #334155; background: #090d16; flex-shrink: 0; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45); }
+    .chip-game-logo { width: 20px; height: 26px; object-fit: cover; border-radius: 3px; border: 1px solid #334155; margin-right: 6px; vertical-align: middle; display: inline-block; }
+    .camp-game-fullname { font-size: 0.86rem; font-weight: 700; color: #93c5fd; letter-spacing: 0.02em; }
     
     /* Toast alert */
     #toast { position: fixed; bottom: 20px; right: 20px; background: #1e293b; border: 1px solid #3b82f6; color: white; padding: 12px 20px; border-radius: 8px; font-size: 0.9rem; z-index: 9999; display: none; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5); }
@@ -525,15 +534,22 @@
 
       <!-- Live Miner Telemetry Banner (Pretending to watch stream under account - strictly 1 stream at a time) -->
       <div class="live-miner-banner" id="live-miner-banner">
-        <div class="miner-details">
-          <div class="miner-title">
-            <span class="live-indicator-dot" id="miner-dot"></span>
-            <span id="miner-status-heading">Twitch Drops Miner</span>
-            <span class="live-stream-badge" id="miner-stream-badge">1 STREAM ACTIVE</span>
+        <div class="miner-banner-main">
+          <img id="miner-game-cover" class="miner-game-logo" src="" alt="Game Logo" style="display: none;" referrerpolicy="no-referrer">
+          <div class="miner-details">
+            <div class="miner-title">
+              <span class="live-indicator-dot" id="miner-dot"></span>
+              <span id="miner-status-heading">Twitch Drops Miner</span>
+              <span class="live-stream-badge" id="miner-stream-badge">1 STREAM ACTIVE</span>
+            </div>
+            <div id="miner-game-badge-wrap" style="display: none; margin-top: 4px; margin-bottom: 4px; align-items: center; gap: 8px; flex-wrap: wrap;">
+              <span class="store-tag store-twitch" id="miner-game-tag" style="font-size: 0.76rem; font-weight: 700;">GAME</span>
+              <span id="miner-campaign-tag" style="font-size: 0.82rem; color: #93c5fd; font-weight: 600;"></span>
+            </div>
+            <p class="miner-sub" id="miner-status-sub">
+              Pretending to watch stream under your account. Strictly 1 stream at a time (zero bandwidth browser simulation).
+            </p>
           </div>
-          <p class="miner-sub" id="miner-status-sub">
-            Pretending to watch stream under your account. Strictly 1 stream at a time (zero bandwidth browser simulation).
-          </p>
         </div>
         <div class="miner-telemetry-stats" id="miner-telemetry-stats">
           <span class="miner-stat-pill" id="miner-stream-channel">Channel: Searching...</span>
@@ -548,6 +564,7 @@
         <div class="mini-viewer-card" id="mini-viewer-card">
           <div class="mini-viewer-header">
             <div class="mini-viewer-title">
+              <img id="mini-viewer-game-icon" src="" alt="Game Icon" style="width: 20px; height: 26px; border-radius: 3px; object-fit: cover; display: none; margin-right: 4px;" referrerpolicy="no-referrer">
               <span class="live-indicator-dot" style="width: 6px; height: 6px;"></span>
               <span id="mini-viewer-channel-label">Active Stream Preview</span>
             </div>
@@ -1205,6 +1222,56 @@
       renderStoresGrid(data.amazon || {}, data.gog || {});
     }
 
+    // Official Verified Twitch Box-Art & Game Logos
+    const KNOWN_GAME_LOGOS = {
+      "evolutions": "https://static-cdn.jtvnw.net/ttv-boxart/1982936547_IGDB-285x380.jpg",
+      "pokémon community game": "https://static-cdn.jtvnw.net/ttv-boxart/329951934_IGDB-285x380.jpg",
+      "pokémon trading card game pocket": "https://static-cdn.jtvnw.net/ttv-boxart/375403621_IGDB-285x380.jpg",
+      "pokémon trading card game live": "https://static-cdn.jtvnw.net/ttv-boxart/155409827-285x380.jpg",
+      "pokémon": "https://static-cdn.jtvnw.net/ttv-boxart/1982936547_IGDB-285x380.jpg",
+      "pokemon": "https://static-cdn.jtvnw.net/ttv-boxart/1982936547_IGDB-285x380.jpg",
+      "wardogs": "https://static-cdn.jtvnw.net/ttv-boxart/743893402_IGDB-285x380.jpg",
+      "rust": "https://static-cdn.jtvnw.net/ttv-boxart/263490_IGDB-285x380.jpg",
+      "world of warcraft": "https://static-cdn.jtvnw.net/ttv-boxart/18122-285x380.jpg",
+      "overwatch 2": "https://static-cdn.jtvnw.net/ttv-boxart/515025-285x380.jpg",
+      "overwatch": "https://static-cdn.jtvnw.net/ttv-boxart/488552-285x380.jpg",
+      "marvel rivals": "https://static-cdn.jtvnw.net/ttv-boxart/1476685419_IGDB-285x380.jpg",
+      "escape from tarkov": "https://static-cdn.jtvnw.net/ttv-boxart/491931-285x380.jpg",
+      "warframe": "https://static-cdn.jtvnw.net/ttv-boxart/66170-285x380.jpg",
+      "rainbow six siege": "https://static-cdn.jtvnw.net/ttv-boxart/460630-285x380.jpg",
+      "apex legends": "https://static-cdn.jtvnw.net/ttv-boxart/511224-285x380.jpg",
+      "grand theft auto v": "https://static-cdn.jtvnw.net/ttv-boxart/32982_IGDB-285x380.jpg",
+      "dead by daylight": "https://static-cdn.jtvnw.net/ttv-boxart/491487-285x380.jpg",
+      "fortnite": "https://static-cdn.jtvnw.net/ttv-boxart/33214-285x380.jpg",
+      "valorant": "https://static-cdn.jtvnw.net/ttv-boxart/516575-285x380.jpg",
+      "sea of thieves": "https://static-cdn.jtvnw.net/ttv-boxart/490377-285x380.jpg",
+      "once human": "https://static-cdn.jtvnw.net/ttv-boxart/1283626244_IGDB-285x380.jpg",
+      "delta force": "https://static-cdn.jtvnw.net/ttv-boxart/1568265005_IGDB-285x380.jpg",
+      "the finals": "https://static-cdn.jtvnw.net/ttv-boxart/1709407338_IGDB-285x380.jpg",
+      "arc raiders": "https://static-cdn.jtvnw.net/ttv-boxart/1709407338_IGDB-285x380.jpg",
+      "path of exile": "https://static-cdn.jtvnw.net/ttv-boxart/29307_IGDB-285x380.jpg",
+      "path of exile 2": "https://static-cdn.jtvnw.net/ttv-boxart/518184_IGDB-285x380.jpg",
+      "diablo iv": "https://static-cdn.jtvnw.net/ttv-boxart/515024-285x380.jpg",
+      "just chatting": "https://static-cdn.jtvnw.net/ttv-boxart/509658-285x380.jpg"
+    };
+
+    function getGameCoverFallback(gameName, existingUrl) {
+      if (existingUrl && String(existingUrl).trim()) return existingUrl;
+      const gLow = String(gameName || "").toLowerCase().trim();
+      if (KNOWN_GAME_LOGOS[gLow]) return KNOWN_GAME_LOGOS[gLow];
+      for (const [k, v] of Object.entries(KNOWN_GAME_LOGOS)) {
+        if (k === gLow || k.includes(gLow) || gLow.includes(k)) return v;
+      }
+      if (lastTwitchData && Array.isArray(lastTwitchData.campaigns)) {
+        const found = lastTwitchData.campaigns.find(c => {
+          const cg = String(c.game || "").toLowerCase().trim();
+          return cg === gLow || cg.includes(gLow) || gLow.includes(cg);
+        });
+        if (found && found.cover_url) return found.cover_url;
+      }
+      return "";
+    }
+
     // Live Stream Mini-Viewer State
     let isMiniViewerOpen = false;
     let currentPreviewChannel = "";
@@ -1227,12 +1294,14 @@
       const card = document.getElementById("mini-viewer-card");
       const btn = document.getElementById("btn-toggle-miniviewer");
       const label = document.getElementById("mini-viewer-channel-label");
+      const miniGameIcon = document.getElementById("mini-viewer-game-icon");
       const iframe = document.getElementById("mini-viewer-iframe");
       const overlay = document.getElementById("mini-viewer-warn-overlay");
 
       const lastTwitch = (window.lastTelemetryData && window.lastTelemetryData.twitch) || {};
       const minerStat = lastTwitch.miner_status || {};
       const channelLogin = minerStat.channel_login || "";
+      const gameTitle = minerStat.game || "Twitch Drops";
 
       if (!channelLogin) {
         showToast("No active stream currently being watched to preview.");
@@ -1242,7 +1311,17 @@
       isMiniViewerOpen = true;
       if (card) card.style.display = "flex";
       if (btn) btn.innerHTML = "&#10006; Hide Mini-Viewer";
-      if (label) label.innerText = `Previewing: ${minerStat.channel_name || channelLogin} (${minerStat.game || 'Drops'})`;
+      
+      const cover = minerStat.game_cover_url || getGameCoverFallback(gameTitle);
+      if (miniGameIcon) {
+        if (cover) {
+          miniGameIcon.src = cover;
+          miniGameIcon.style.display = "inline-block";
+        } else {
+          miniGameIcon.style.display = "none";
+        }
+      }
+      if (label) label.innerText = `Watching: @${minerStat.channel_name || channelLogin} • Game: ${gameTitle}`;
 
       if (minerStat.user_active) {
         suspendMiniViewerForExternalViewing();
@@ -1369,9 +1448,16 @@
           : "Twitch access is switched ON. Actively monitoring drops and verifying real-time progress.";
       }
 
+      const gameCoverImg = document.getElementById("miner-game-cover");
+      const gameBadgeWrap = document.getElementById("miner-game-badge-wrap");
+      const gameTag = document.getElementById("miner-game-tag");
+      const campTag = document.getElementById("miner-campaign-tag");
+
       if (!minerDot) return;
 
       if (currentMiningMode === "stopped" || minerStat.mode === "stopped") {
+        if (gameCoverImg) gameCoverImg.style.display = "none";
+        if (gameBadgeWrap) gameBadgeWrap.style.display = "none";
         minerDot.className = "live-indicator-dot idle";
         minerHeading.innerText = "Twitch Drops Miner (Fully Stopped)";
         minerBadge.innerText = "STOPPED";
@@ -1390,9 +1476,31 @@
         minerDot.className = "live-indicator-dot";
         const cname = minerStat.channel_name || minerStat.channel_login || "Live Streamer";
         const gname = minerStat.game || "Live Drop";
-        minerHeading.innerText = `Watching 1 Active Stream: ${cname} (${gname})`;
+        minerHeading.innerText = `Watching: @${cname} • Game: ${gname}`;
         minerBadge.innerText = "1 STREAM ACTIVE";
         minerBadge.style.display = "inline-flex";
+
+        const cover = minerStat.game_cover_url || getGameCoverFallback(gname);
+        if (gameCoverImg) {
+          if (cover) {
+            gameCoverImg.src = cover;
+            gameCoverImg.alt = gname;
+            gameCoverImg.style.display = "block";
+          } else {
+            gameCoverImg.style.display = "none";
+          }
+        }
+
+        if (gameBadgeWrap && gameTag) {
+          gameBadgeWrap.style.display = "flex";
+          gameTag.innerText = `GAME: ${gname.toUpperCase()}`;
+          if (campTag) {
+            const cTitle = minerStat.campaign && minerStat.campaign.toLowerCase() !== gname.toLowerCase()
+              ? `Campaign: ${minerStat.campaign}`
+              : "Active Drop Campaign";
+            campTag.innerText = cTitle;
+          }
+        }
 
         const ulogin = minerStat.user_login || twitch.username || "iandrexi";
         const dropTagInfo = minerStat.verified_drops
@@ -1422,6 +1530,8 @@
         streamLink.innerText = `Open Stream (${minerStat.channel_login || 'Twitch'})`;
         streamLink.style.display = "inline-flex";
       } else if (minerStat.switching) {
+        if (gameCoverImg) gameCoverImg.style.display = "none";
+        if (gameBadgeWrap) gameBadgeWrap.style.display = "none";
         minerDot.className = "live-indicator-dot";
         const selGame = minerStat.selected_game || minerStat.game || "Auto-Mine";
         minerHeading.innerText = `Switching Stream -> ${selGame}`;
@@ -1434,6 +1544,8 @@
         viewersPill.innerText = "--";
         streamLink.style.display = "none";
       } else {
+        if (gameCoverImg) gameCoverImg.style.display = "none";
+        if (gameBadgeWrap) gameBadgeWrap.style.display = "none";
         minerDot.className = "live-indicator-dot idle";
         minerHeading.innerText = "Twitch Drops Miner (Idle / Between Cycles)";
         minerBadge.innerText = "STANDBY";
@@ -1513,6 +1625,10 @@
       } else {
         container.innerHTML = selectedPriorityGames.map((gName, idx) => {
           const isFirst = idx === 0;
+          const cover = getGameCoverFallback(gName);
+          const logoHtml = cover 
+            ? `<img src="${cover}" class="chip-game-logo" alt="${escapeHtml(gName)}" referrerpolicy="no-referrer">` 
+            : `<span style="margin-right: 4px;">🎮</span>`;
           const upBtn = idx > 0
             ? `<span class="chip-remove" style="color: #60a5fa; margin-left: 2px;" title="Move Up in Queue" onclick="queueGameAction('${escapeJsAttr(gName)}', 'move_up')">&uarr;</span>`
             : "";
@@ -1523,8 +1639,9 @@
             ? `<span class="chip-remove" style="color: #34d399; font-size: 0.72rem;" title="Promote to #1 & Mine Immediately" onclick="queueGameAction('${escapeJsAttr(gName)}', 'mine_now')">[Mine #1]</span>`
             : "";
           return `
-            <div class="chip ${isFirst ? 'active' : ''}" style="${!isFirst ? 'border-color: #3b82f6; background: rgba(59, 130, 246, 0.14); color: #bfdbfe;' : ''}">
-              <span>${isFirst ? `[#1 MINING NOW]: ${escapeHtml(gName)}` : `[#${idx + 1} IN QUEUE]: ${escapeHtml(gName)}`}</span>
+            <div class="chip ${isFirst ? 'active' : ''}" style="${!isFirst ? 'border-color: #3b82f6; background: rgba(59, 130, 246, 0.14); color: #bfdbfe;' : ''}; display: inline-flex; align-items: center;">
+              ${logoHtml}
+              <span style="font-weight: 600;">${isFirst ? `[#1 MINING NOW]: ${escapeHtml(gName)}` : `[#${idx + 1} IN QUEUE]: ${escapeHtml(gName)}`}</span>
               ${mineNowBtn}
               ${upBtn}
               ${downBtn}
@@ -1903,9 +2020,10 @@
           ? `<span class="badge ${camp.is_expired ? 'badge-unavailable' : 'badge-upcoming'}">${escapeHtml(camp.time_left)}</span>`
           : '';
 
-        const coverHtml = camp.cover_url
-          ? `<img src="${camp.cover_url}" alt="${escapeHtml(camp.game)}" class="camp-cover" referrerpolicy="no-referrer" onerror="this.style.display='none'">`
-          : '';
+        const coverUrl = camp.cover_url || getGameCoverFallback(camp.game);
+        const coverHtml = coverUrl
+          ? `<img src="${coverUrl}" alt="${escapeHtml(camp.game)}" class="camp-cover" referrerpolicy="no-referrer" onerror="this.onerror=null; this.src='https://static-cdn.jtvnw.net/ttv-boxart/1982936547_IGDB-285x380.jpg';">`
+          : `<div class="camp-cover-fallback"><span>🎮</span><small>${escapeHtml(camp.game || "Game")}</small></div>`;
 
         const dropsHtml = (camp.drops || []).map(drop => {
           let badge = `<span class="badge badge-needs">[NEEDS COLLECTION]</span>`;
@@ -1932,15 +2050,24 @@
             }
           }
 
+          const isMystery = Boolean(drop.is_mystery || (drop.name && drop.name.includes("???")));
+          let dropTitle = (drop.name && String(drop.name).trim()) ? drop.name : `${camp.game} Drop Reward`;
+          if (isMystery && dropTitle === "???") {
+            dropTitle = drop.tier_label ? `??? (${drop.tier_label})` : "??? (Mystery Reward)";
+          }
           const thumbHtml = drop.image_url
-            ? `<img src="${drop.image_url}" alt="${escapeHtml(drop.name)}" class="drop-thumb" referrerpolicy="no-referrer" onerror="this.style.display='none'">`
-            : '';
+            ? `<img src="${drop.image_url}" alt="${escapeHtml(dropTitle)}" class="drop-thumb" referrerpolicy="no-referrer" onerror="this.onerror=null; this.src='https://static-cdn.jtvnw.net/custom-reward-images/default-4.png';">`
+            : (isMystery 
+                ? `<span class="drop-thumb-fallback" title="Mystery Drop Reward" style="background: rgba(145, 70, 255, 0.2); border-color: #9146ff; color: #a970ff;">❓</span>`
+                : `<span class="drop-thumb-fallback" title="Drop Reward">🎁</span>`);
 
           const unavailReasonHtml = (drop.status === "UNAVAILABLE" && drop.unavailable_reason)
             ? `<div class="drop-unavail-reason">Unavailable for Collection: ${escapeHtml(drop.unavailable_reason)}</div>`
             : '';
 
           const hasProgress = drop.required_minutes > 0;
+          const tierStr = drop.tier_label ? ` (${escapeHtml(drop.tier_label)})` : '';
+          const minsWatchedLabel = `${drop.watched_minutes}/${drop.required_minutes}m${tierStr}`;
           const remainingText = (drop.status === "IN_PROGRESS" || drop.status === "AVAILABLE") && drop.remaining_minutes > 0
             ? ` (${drop.remaining_minutes}m needed)`
             : '';
@@ -1953,7 +2080,7 @@
               <div class="drop-header">
                 <div class="drop-title-wrap">
                   ${thumbHtml}
-                  <span class="drop-name">${escapeHtml(drop.name)}</span>
+                  <span class="drop-name" style="font-weight: 600; color: #f1f5f9;">${escapeHtml(dropTitle)}</span>
                 </div>
                 <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
                   ${badge}
@@ -1964,7 +2091,7 @@
               ${hasProgress ? `
                 <div class="progress-box">
                   <div class="progress-label">
-                    <span>${drop.watched_minutes} / ${drop.required_minutes} minutes watched${remainingText}</span>
+                    <span>${minsWatchedLabel}${remainingText}</span>
                     <span>${drop.progress_percent}%</span>
                   </div>
                   <div class="progress-track">
@@ -1984,7 +2111,10 @@
           <div class="card" style="${isTarget ? 'border-color: #9146ff; box-shadow: 0 0 12px rgba(145, 70, 255, 0.25);' : ''}">
             <div>
               <div class="card-top">
-                <span class="store-tag store-twitch">${escapeHtml(camp.game || "Twitch Game")}</span>
+                <div class="camp-game-badge-group">
+                  <span class="store-tag store-twitch">${escapeHtml(camp.game || "Twitch Game")}</span>
+                  <span class="camp-game-fullname">${escapeHtml(camp.game || "Twitch Game")}</span>
+                </div>
                 <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: flex-end;">
                   ${timeBadge}
                   ${actBadge}
@@ -1994,7 +2124,12 @@
               <div class="camp-card-body">
                 ${coverHtml}
                 <div class="camp-info">
-                  <div class="item-title">${escapeHtml(camp.name)}</div>
+                  <div class="item-title" style="font-size: 1.05rem; font-weight: 700; color: #f8fafc; margin-bottom: 2px;">
+                    ${escapeHtml(camp.name)}
+                  </div>
+                  <div style="font-size: 0.8rem; color: #94a3b8; margin-bottom: 6px;">
+                    <strong style="color: #cbd5e1;">Game Category:</strong> ${escapeHtml(camp.game || "Twitch Game")}
+                  </div>
                   <div class="item-sub" style="display: flex; gap: 10px; align-items: center; margin-bottom: 6px; flex-wrap: wrap;">
                     <span style="color: #34d399;">Collected: ${camp.claimed_count || 0}/${totalDrops}</span>
                     <span style="color: #60a5fa;">Needs Collection: ${needsCount}</span>

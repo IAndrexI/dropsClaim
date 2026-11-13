@@ -22,6 +22,8 @@ ALLOWED_DOMAINS = {
     "pubsub-edge.twitch.tv",
     "usher.ttvnw.net",
     "ttvnw.net",
+    "static-cdn.jtvnw.net",
+    "jtvnw.net",
     "drophunter.app",
 
     # Epic Games Official Services

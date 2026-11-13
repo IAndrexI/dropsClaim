@@ -234,6 +234,52 @@ def format_box_art_url(url: Optional[str]) -> str:
     return url.replace("{width}", "285").replace("{height}", "380").replace("52x72", "285x380")
 
 
+GAME_LOGO_FALLBACKS: Dict[str, str] = {
+    "evolutions": "https://static-cdn.jtvnw.net/ttv-boxart/1982936547_IGDB-285x380.jpg",
+    "pokémon community game": "https://static-cdn.jtvnw.net/ttv-boxart/329951934_IGDB-285x380.jpg",
+    "pokémon trading card game pocket": "https://static-cdn.jtvnw.net/ttv-boxart/375403621_IGDB-285x380.jpg",
+    "pokémon trading card game live": "https://static-cdn.jtvnw.net/ttv-boxart/155409827-285x380.jpg",
+    "pokémon": "https://static-cdn.jtvnw.net/ttv-boxart/1982936547_IGDB-285x380.jpg",
+    "pokemon": "https://static-cdn.jtvnw.net/ttv-boxart/1982936547_IGDB-285x380.jpg",
+    "wardogs": "https://static-cdn.jtvnw.net/ttv-boxart/743893402_IGDB-285x380.jpg",
+    "rust": "https://static-cdn.jtvnw.net/ttv-boxart/263490_IGDB-285x380.jpg",
+    "world of warcraft": "https://static-cdn.jtvnw.net/ttv-boxart/18122-285x380.jpg",
+    "overwatch 2": "https://static-cdn.jtvnw.net/ttv-boxart/515025-285x380.jpg",
+    "overwatch": "https://static-cdn.jtvnw.net/ttv-boxart/488552-285x380.jpg",
+    "marvel rivals": "https://static-cdn.jtvnw.net/ttv-boxart/1476685419_IGDB-285x380.jpg",
+    "escape from tarkov": "https://static-cdn.jtvnw.net/ttv-boxart/491931-285x380.jpg",
+    "warframe": "https://static-cdn.jtvnw.net/ttv-boxart/66170-285x380.jpg",
+    "rainbow six siege": "https://static-cdn.jtvnw.net/ttv-boxart/460630-285x380.jpg",
+    "apex legends": "https://static-cdn.jtvnw.net/ttv-boxart/511224-285x380.jpg",
+    "grand theft auto v": "https://static-cdn.jtvnw.net/ttv-boxart/32982_IGDB-285x380.jpg",
+    "dead by daylight": "https://static-cdn.jtvnw.net/ttv-boxart/491487-285x380.jpg",
+    "fortnite": "https://static-cdn.jtvnw.net/ttv-boxart/33214-285x380.jpg",
+    "valorant": "https://static-cdn.jtvnw.net/ttv-boxart/516575-285x380.jpg",
+    "sea of thieves": "https://static-cdn.jtvnw.net/ttv-boxart/490377-285x380.jpg",
+    "once human": "https://static-cdn.jtvnw.net/ttv-boxart/1283626244_IGDB-285x380.jpg",
+    "delta force": "https://static-cdn.jtvnw.net/ttv-boxart/1568265005_IGDB-285x380.jpg",
+    "the finals": "https://static-cdn.jtvnw.net/ttv-boxart/1709407338_IGDB-285x380.jpg",
+    "arc raiders": "https://static-cdn.jtvnw.net/ttv-boxart/1709407338_IGDB-285x380.jpg",
+    "path of exile": "https://static-cdn.jtvnw.net/ttv-boxart/29307_IGDB-285x380.jpg",
+    "path of exile 2": "https://static-cdn.jtvnw.net/ttv-boxart/518184_IGDB-285x380.jpg",
+    "diablo iv": "https://static-cdn.jtvnw.net/ttv-boxart/515024-285x380.jpg",
+    "just chatting": "https://static-cdn.jtvnw.net/ttv-boxart/509658-285x380.jpg",
+}
+
+
+def resolve_game_logo(game_name: str, existing_url: Optional[str] = None) -> str:
+    """Return a verified Twitch box-art / game logo URL for the given game."""
+    if existing_url and str(existing_url).strip():
+        return format_box_art_url(str(existing_url).strip())
+    g_low = clean_text(game_name or "").lower().strip()
+    if g_low in GAME_LOGO_FALLBACKS:
+        return GAME_LOGO_FALLBACKS[g_low]
+    for k, v in GAME_LOGO_FALLBACKS.items():
+        if k == g_low or k in g_low or g_low in k:
+            return v
+    return ""
+
+
 DEFAULT_DROPS_GAMES_ROSTER: List[str] = [
     "Evolutions",
     "Pokémon Community Game",
@@ -1316,6 +1362,10 @@ class TwitchClient:
                     camp_copy["time_left"] = "Campaign Ended"
                 campaigns_map[cid] = camp_copy
 
+        for c in campaigns_map.values():
+            if not c.get("cover_url"):
+                c["cover_url"] = resolve_game_logo(extract_game_name(c, ""))
+
         return list(campaigns_map.values())
 
     def get_drops_overview(
@@ -1471,20 +1521,44 @@ class TwitchClient:
                 has_preconditions = bool(self_data.get("hasPreconditionsMet", True))
                 drop_instance_id = self_data.get("dropInstanceID") or self_data.get("dropInstanceId")
 
-                # Extract reward image and benefit info
+                # Extract reward image, benefit info, and tier labels (e.g. Day 1, Stage 1, ???)
                 d_img = str(d.get("image_url") or "")
                 benefit_ids = []
                 benefit_names = []
+                raw_dname = clean_text(d.get("name") or "")
+                raw_bname = ""
                 for edge in d.get("benefitEdges") or []:
                     ben = edge.get("benefit") or {}
                     if ben.get("id"):
                         benefit_ids.append(str(ben["id"]).lower())
                     if ben.get("name"):
-                        benefit_names.append(clean_text(ben["name"]).lower())
-                        if d_name == "Drop Reward" or not d_name:
-                            d_name = clean_text(ben["name"])
+                        b_clean = clean_text(ben["name"])
+                        benefit_names.append(b_clean.lower())
+                        if not raw_bname:
+                            raw_bname = b_clean
                     if not d_img and ben.get("imageAssetURL"):
                         d_img = str(ben["imageAssetURL"])
+
+                # Detect tier labels like (Day 1), Day 1, Stage 1
+                tier_label = ""
+                for cand_text in [raw_dname, raw_bname, str(d.get("preconditionDrops") or "")]:
+                    m = re.search(r"\b(Day\s*\d+|Stage\s*\d+|Part\s*\d+)\b", cand_text, re.IGNORECASE)
+                    if m:
+                        tier_label = m.group(1).strip()
+                        break
+
+                # Resolve drop display name cleanly
+                is_mystery = (raw_dname == "???" or raw_bname == "???" or d_name == "???")
+                if is_mystery:
+                    d_name = f"??? ({tier_label})" if tier_label else "???"
+                elif raw_bname and raw_bname not in ("Drop Reward", "???") and (d_name in ("Drop Reward", "") or not d_name):
+                    d_name = raw_bname
+                elif raw_dname and raw_dname not in ("Drop Reward", ""):
+                    d_name = raw_dname
+                elif raw_bname:
+                    d_name = raw_bname
+                elif not d_name or d_name == "Drop Reward":
+                    d_name = f"{gname} Drop Reward"
 
                 d_img_key = extract_reward_image_key(d_img)
 
@@ -1581,6 +1655,8 @@ class TwitchClient:
                 drop_entry = {
                     "id": d_id,
                     "name": d_name,
+                    "tier_label": tier_label,
+                    "is_mystery": is_mystery,
                     "game": gname,
                     "campaign_name": camp_name,
                     "status": status,

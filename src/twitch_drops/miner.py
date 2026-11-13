@@ -817,6 +817,7 @@ class DropsMiner:
             "paused": False,
             "user_active": False,
             "game": game_name,
+            "game_cover_url": chosen_campaign.get("cover_url") or "",
             "selected_game": selected_game_cfg or game_name,
             "queue": queue_cfg,
             "mode": mode_cfg,

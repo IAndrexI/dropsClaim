@@ -527,7 +527,14 @@ def get_miner_status():
     if os.path.exists(status_file):
         try:
             with open(status_file, "r", encoding="utf-8") as f:
-                return json.load(f)
+                stat = json.load(f) or {}
+                if stat.get("game") and not stat.get("game_cover_url"):
+                    try:
+                        from src.twitch_drops.twitch_api import resolve_game_logo
+                        stat["game_cover_url"] = resolve_game_logo(stat["game"])
+                    except Exception:
+                        pass
+                return stat
         except Exception:
             pass
     return {"active": False}
