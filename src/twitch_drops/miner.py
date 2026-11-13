@@ -588,6 +588,7 @@ class DropsMiner:
             "[MINER] Active mine swapped (mode=%s, next=%s, queue=%d)! Instantly leaving %s (%s) and switching to new stream.",
             new_cfg.get("mode"), next_target, len(new_cfg.get("queue", [])), old_channel_name, old_game_name
         )
+        self.current_stream = None
         try:
             if os.path.exists(STATUS_FILE):
                 with open(STATUS_FILE, "r", encoding="utf-8") as f:
@@ -602,6 +603,12 @@ class DropsMiner:
             "switching": True,
             "game": new_cfg.get("selected_game") or "",
             "selected_game": new_cfg.get("selected_game") or "",
+            "channel_name": "",
+            "channel_login": "",
+            "channel_id": "",
+            "stream_id": "",
+            "stream_url": "",
+            "viewers": 0,
             "queue": new_cfg.get("queue", []),
             "mode": new_cfg.get("mode", "default"),
             "message": f"Left {old_channel_name} ({old_game_name}). Switching to next target: {next_target}...",
@@ -929,11 +936,18 @@ class DropsMiner:
                         mins_stalled, channel["channel_name"], channel["channel_login"], game_name, current_watched
                     )
                     self._mark_channel_unproductive(channel["channel_login"])
+                    self.current_stream = None
                     save_miner_status({
                         "active": False,
                         "switching": True,
                         "game": game_name,
                         "selected_game": selected_game_cfg or game_name,
+                        "channel_name": "",
+                        "channel_login": "",
+                        "channel_id": "",
+                        "stream_id": "",
+                        "stream_url": "",
+                        "viewers": 0,
                         "queue": queue_cfg,
                         "mode": mode_cfg,
                         "message": (
@@ -997,7 +1011,20 @@ class DropsMiner:
                 logger.warning("[MINER] Heartbeat returned non-204, verifying stream status...")
 
         # Reset active status when switching streams at end of 15-min cycle
-        save_miner_status({"active": False, "queue": queue_cfg, "message": "Refreshing stream & checking queue."})
+        self.current_stream = None
+        save_miner_status({
+            "active": False,
+            "switching": True,
+            "queue": queue_cfg,
+            "channel_name": "",
+            "channel_login": "",
+            "channel_id": "",
+            "stream_id": "",
+            "stream_url": "",
+            "viewers": 0,
+            "message": "Refreshing stream & checking queue.",
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        })
 
     def start(self):
         """Start the miner daemon."""
@@ -1011,8 +1038,19 @@ class DropsMiner:
         def handle_signal(sig, frame):
             logger.info("Received termination signal (%s). Exiting gracefully...", sig)
             self.running = False
+            self.current_stream = None
             release_pid_lock()
-            save_miner_status({"active": False, "message": "Miner stopped by system signal."})
+            save_miner_status({
+                "active": False,
+                "channel_name": "",
+                "channel_login": "",
+                "channel_id": "",
+                "stream_id": "",
+                "stream_url": "",
+                "viewers": 0,
+                "message": "Miner stopped by system signal.",
+                "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            })
             sys.exit(0)
 
         try:

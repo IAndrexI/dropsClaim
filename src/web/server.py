@@ -475,6 +475,12 @@ def save_mining_config(mode: str, activated_games: list, resolve_stream: bool = 
             "user_active": False,
             "game": selected_game,
             "selected_game": selected_game,
+            "channel_name": "",
+            "channel_login": "",
+            "channel_id": "",
+            "stream_id": "",
+            "stream_url": "",
+            "viewers": 0,
             "queue": clean_queue,
             "mode": clean_mode,
             "message": msg,
@@ -1618,6 +1624,30 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     os.remove(PID_FILE)
                 except Exception:
                     pass
+            # Clear previous stream info in miner_status.json
+            status_file = os.path.join(APP_DIR, "data", "miner_status.json")
+            try:
+                if os.path.exists(status_file):
+                    with open(status_file, "r", encoding="utf-8") as f:
+                        cur_stat = json.load(f) or {}
+                else:
+                    cur_stat = {}
+                cur_stat.update({
+                    "active": False,
+                    "switching": False,
+                    "channel_name": "",
+                    "channel_login": "",
+                    "channel_id": "",
+                    "stream_id": "",
+                    "stream_url": "",
+                    "viewers": 0,
+                    "message": "Terminated bot processes and cleared stream.",
+                    "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                })
+                with open(status_file, "w", encoding="utf-8") as f:
+                    json.dump(cur_stat, f, indent=2)
+            except Exception:
+                pass
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
