@@ -556,6 +556,7 @@
           <span class="miner-stat-pill" id="miner-drop-live-progress" style="display: none; border-color: #3b82f6; color: #93c5fd;">Drop: --</span>
           <span class="miner-stat-pill" id="miner-stream-progress">Session: 0/15 mins</span>
           <span class="miner-stat-pill" id="miner-stream-viewers">0 Viewers</span>
+          <button class="btn btn-sm" id="btn-restart-mining" onclick="restartSelectedMining()" style="border-color: #f59e0b; color: #fbbf24; background: rgba(245, 158, 11, 0.12); font-weight: 600;" title="Fully restart mining for the selected game (reconnects to live stream and resets watchdog)">&#8635; Restart Mining</button>
           <button class="btn btn-sm" id="btn-toggle-miniviewer" onclick="toggleMiniViewer()" style="border-color: #8b5cf6; color: #c084fc; display: none;">&#128065; Show Mini-Viewer</button>
           <a href="#" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-primary" id="miner-stream-link" style="display: none;">Open Watched Stream</a>
         </div>
@@ -1561,6 +1562,27 @@
         streamLink.style.display = "none";
       }
 
+      const restartBtn = document.getElementById("btn-restart-mining");
+      if (restartBtn) {
+        if (minerStat.active && minerStat.game) {
+          restartBtn.style.display = "inline-flex";
+          restartBtn.disabled = false;
+          restartBtn.innerHTML = `&#8635; Restart Mining (${escapeHtml(minerStat.game)})`;
+          restartBtn.title = `Force reconnect, clear stream stalls, and restart mining for ${escapeHtml(minerStat.game)}`;
+        } else if (minerStat.switching) {
+          restartBtn.style.display = "inline-flex";
+          restartBtn.disabled = true;
+          restartBtn.innerHTML = `&#8635; Restarting Stream...`;
+          restartBtn.title = "Reconnecting to live stream...";
+        } else {
+          const topG = (selectedPriorityGames && selectedPriorityGames[0]) || minerStat.selected_game || "";
+          restartBtn.style.display = "inline-flex";
+          restartBtn.disabled = false;
+          restartBtn.innerHTML = topG ? `&#8635; Restart Mining (${escapeHtml(topG)})` : `&#8635; Restart Mining`;
+          restartBtn.title = topG ? `Start or restart mining ${escapeHtml(topG)}` : "Start or restart mining selected game";
+        }
+      }
+
       // Mini-Viewer Controls & Protection (Enforce single viewing at all times)
       const btnMini = document.getElementById("btn-toggle-miniviewer");
       if (isStopped || !minerStat.active || !minerStat.channel_login) {
@@ -1868,6 +1890,55 @@
       }
     }
 
+    async function restartSelectedMining(gameName) {
+      const g = gameName || (lastTwitchData && lastTwitchData.miner_status ? (lastTwitchData.miner_status.game || lastTwitchData.miner_status.selected_game) : "") || (selectedPriorityGames && selectedPriorityGames[0]) || "";
+      const btn = document.getElementById("btn-restart-mining");
+      const prevText = btn ? btn.innerHTML : "";
+      if (btn) {
+        btn.innerHTML = "&#8635; Restarting...";
+        btn.disabled = true;
+      }
+      applyImmediateMinerStatus(
+        {
+          active: false,
+          switching: true,
+          game: g || "Selected Game",
+          selected_game: g || "",
+          queue: selectedPriorityGames,
+          message: `Restarting mining for '${g || 'selected game'}'... Connecting to fresh stream.`
+        },
+        currentMiningMode,
+        selectedPriorityGames
+      );
+      showToast(`Restarting stream mining for ${g ? `'${g}'` : 'selected game'}...`);
+
+      try {
+        const res = await fetch("/api/twitch/restart-mining", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: jsonStringify({ game: g })
+        });
+        const data = await res.json();
+        if (data.success) {
+          const returnedQueue = data.queue || selectedPriorityGames;
+          const returnedMode = data.mode || currentMiningMode;
+          applyImmediateMinerStatus(data.miner_status, returnedMode, returnedQueue);
+          showToast(data.message || `Mining successfully restarted!`);
+          fetchData(true);
+          broadcastSyncEvent("restart_mining");
+        } else {
+          showToast("Failed to restart mining: " + (data.error || "Unknown error"));
+        }
+      } catch (err) {
+        showToast("Error restarting mining: " + err.message);
+      } finally {
+        if (btn) {
+          btn.innerHTML = prevText || "&#8635; Restart Mining";
+          btn.disabled = false;
+        }
+      }
+    }
+
     function renderCollectedItemsSection(twitch, searchQuery) {
       const items = twitch.collected_items || [];
       const filteredItems = searchQuery
@@ -2138,6 +2209,9 @@
                   <div class="camp-actions">
                     ${(!camp.is_expired && camp.status !== "UNAVAILABLE" && camp.status !== "COMPLETED") ? `
                       ${isTarget ? `
+                        <button class="btn btn-sm" style="border-color: #f59e0b; color: #fbbf24; background: rgba(245, 158, 11, 0.12); font-weight: 600;" onclick="restartSelectedMining('${escapeJsAttr(camp.game)}')" title="Fully restart mining for ${escapeJsAttr(camp.game)}">
+                          &#8635; Restart Mining
+                        </button>
                         <button class="btn btn-sm btn-danger" onclick="queueGameAction('${escapeJsAttr(camp.game)}', 'remove')">
                           Stop &amp; Remove (#1)
                         </button>

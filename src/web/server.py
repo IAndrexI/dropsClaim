@@ -508,6 +508,9 @@ def save_mining_config(mode: str, activated_games: list, resolve_stream: bool = 
             "viewers": 0,
             "queue": clean_queue,
             "mode": clean_mode,
+            "progress_verified": False,
+            "minutes_without_progress": 0,
+            "progress_check_minutes": 5,
             "message": msg,
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
@@ -524,6 +527,8 @@ def save_mining_config(mode: str, activated_games: list, resolve_stream: bool = 
 
 def get_miner_status():
     status_file = os.path.join(APP_DIR, "data", "miner_status.json")
+    if not os.path.exists(status_file) and os.path.exists(os.path.join(APP_DIR, "miner_status.json")):
+        status_file = os.path.join(APP_DIR, "miner_status.json")
     if os.path.exists(status_file):
         try:
             with open(status_file, "r", encoding="utf-8") as f:
@@ -538,6 +543,73 @@ def get_miner_status():
         except Exception:
             pass
     return {"active": False}
+
+
+def restart_mining(target_game: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Fully restart mining for the selected game.
+    Clears stall counters, forces stream re-resolution, and ensures the miner daemon is actively running.
+    """
+    env = load_env_file()
+    token = resolve_token(env.get("TWITCH_AUTH_TOKEN", "").strip())
+    current_cfg = get_mining_config()
+    current_stat = get_miner_status()
+    current_queue = list(current_cfg.get("queue") or current_cfg.get("activated_games") or [])
+
+    req_game = (target_game or "").strip()
+    selected_game = req_game or (current_queue[0] if current_queue else str(current_stat.get("game") or "").strip())
+
+    mode = current_cfg.get("mode", "default")
+    if mode == "stopped":
+        mode = "selective" if current_queue else "default"
+
+    if selected_game:
+        new_queue = [selected_game] + [g for g in current_queue if g.lower() != selected_game.lower()]
+    else:
+        new_queue = current_queue
+
+    status_file = os.path.join(APP_DIR, "data", "miner_status.json")
+    if not os.path.isdir(os.path.join(APP_DIR, "data")) and os.path.exists(os.path.join(APP_DIR, "miner_status.json")):
+        status_file = os.path.join(APP_DIR, "miner_status.json")
+    os.makedirs(os.path.dirname(status_file), exist_ok=True)
+    try:
+        with open(status_file, "w", encoding="utf-8") as f:
+            json.dump({
+                "active": False,
+                "switching": True,
+                "game": selected_game,
+                "selected_game": selected_game,
+                "channel_name": "",
+                "channel_login": "",
+                "channel_id": "",
+                "stream_id": "",
+                "stream_url": "",
+                "viewers": 0,
+                "queue": new_queue,
+                "mode": mode,
+                "message": f"Manual restart triggered for '{selected_game or 'active game'}'. Connecting to fresh stream and resetting watchdog...",
+                "progress_verified": False,
+                "minutes_without_progress": 0,
+                "progress_check_minutes": 5,
+                "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }, f, indent=2)
+    except Exception:
+        pass
+
+    cfg = save_mining_config(mode=mode, activated_games=new_queue, resolve_stream=True)
+    if token:
+        ensure_miner_daemon_running(token)
+    mstat = get_miner_status()
+    game_lbl = selected_game or "selected game"
+    return {
+        "success": True,
+        "game": selected_game,
+        "mode": mode,
+        "queue": new_queue,
+        "mining_config": cfg,
+        "miner_status": mstat,
+        "message": f"Successfully restarted mining for '{game_lbl}'! Reconnecting to live stream...",
+    }
  
  
 def get_git_status():
@@ -1465,6 +1537,21 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             }).encode("utf-8"))
             return
 
+        elif self.path == "/api/twitch/restart-mining":
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length) if content_length > 0 else b"{}"
+            try:
+                payload = json.loads(body.decode("utf-8")) if body else {}
+            except Exception:
+                payload = {}
+            target_g = str(payload.get("game") or "").strip()
+            res_data = restart_mining(target_g)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(res_data).encode("utf-8"))
+            return
+
         elif self.path in ("/api/twitch/toggle-activation", "/api/twitch/queue"):
             content_length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(content_length)
@@ -1476,6 +1563,15 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             game = payload.get("game", "").strip()
             action = str(payload.get("action") or "").strip().lower()
             activated = bool(payload.get("activated", True))
+
+            if action in ("restart", "restart_mining", "restart_miner"):
+                res_data = restart_mining(game)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps(res_data).encode("utf-8"))
+                return
+
             current_cfg = get_mining_config()
             current_queue = list(current_cfg.get("queue") or current_cfg.get("activated_games") or [])
             prev_top = current_queue[0].lower() if current_queue else ""

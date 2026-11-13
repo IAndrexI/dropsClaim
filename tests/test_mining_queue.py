@@ -511,6 +511,8 @@ class MiningQueueAndSwapTests(unittest.TestCase):
         self.assertIn("camp-game-fullname", html)
         self.assertIn("KNOWN_GAME_LOGOS", html)
         self.assertIn("minsWatchedLabel", html)
+        self.assertIn("btn-restart-mining", html)
+        self.assertIn("restartSelectedMining", html)
 
     def test_mystery_drop_and_day_tier_label_extraction(self):
         client = t_api.TwitchClient("dummy_token")
@@ -553,6 +555,39 @@ class MiningQueueAndSwapTests(unittest.TestCase):
             self.assertIn("???", drop["name"])
             self.assertEqual(drop["required_minutes"], 20)
             self.assertEqual(drop["watched_minutes"], 0)
+
+    def test_restart_mining_resets_watchdog_and_switches_stream(self):
+        with open(self.cfg_file, "w", encoding="utf-8") as f:
+            json.dump({"mode": "default", "queue": ["Rust", "Valorant"], "updated_at": 100}, f)
+        with open(self.stat_file, "w", encoding="utf-8") as f:
+            json.dump({
+                "active": True,
+                "game": "Rust",
+                "minutes_without_progress": 4,
+                "progress_verified": False,
+            }, f)
+
+        with mock.patch("src.web.server.APP_DIR", self.tmp), \
+             mock.patch("src.web.server.resolve_token", return_value="fake_twitch_token"), \
+             mock.patch("src.web.server.ensure_miner_daemon_running", return_value=True), \
+             mock.patch.object(t_api.TwitchClient, "find_eligible_channel", return_value={
+                 "channel_name": "FreshStreamer",
+                 "channel_login": "fresh_streamer",
+                 "channel_id": "c_fresh",
+                 "stream_id": "s_fresh",
+                 "viewers": 500,
+                 "verified_drops": True,
+                 "has_drops_in_title": True,
+             }):
+            res = s.restart_mining("Rust")
+            self.assertTrue(res["success"])
+            self.assertEqual(res["game"], "Rust")
+            self.assertEqual(res["queue"][0], "Rust")
+
+            stat = s.get_miner_status()
+            self.assertEqual(stat["game"], "Rust")
+            self.assertEqual(stat["minutes_without_progress"], 0)
+            self.assertEqual(stat.get("channel_login"), "fresh_streamer")
 
 
 if __name__ == "__main__":
