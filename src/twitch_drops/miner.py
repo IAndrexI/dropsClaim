@@ -131,14 +131,14 @@ class DropsMiner:
         self.last_inventory: Dict[str, Any] = {}
         self.last_config_sig: Optional[tuple] = None
         self._allow_token_reload: bool = False
-        # Track channels that failed to increase drop progress within 2-5 mins (login.lower() -> timestamp)
+        # Track channels that failed to increase drop progress within 5 mins (login.lower() -> timestamp)
         self.unproductive_channels: Dict[str, float] = {}
         self.unproductive_cooldown_secs: float = 1800.0  # 30 minutes cooldown before retrying a stalled channel
         try:
             env_check_mins = int(os.environ.get("TWITCH_PROGRESS_CHECK_MINS", "5"))
         except Exception:
             env_check_mins = 5
-        self.progress_check_minutes: int = max(2, min(5, env_check_mins))
+        self.progress_check_minutes: int = max(2, min(10, env_check_mins))
 
     def _refresh_auth_if_needed(self) -> bool:
         """Reload Twitch OAuth token from token store or .env if updated via Web UI while daemon is running."""
@@ -782,7 +782,7 @@ class DropsMiner:
             first_camp = eligible_campaigns[0]
             game_name = extract_game_name(first_camp, "Unknown")
             camp_name = first_camp.get("name", game_name)
-            logger.warning("[MINER] No live streams with drops enabled for '%s'. Retrying in 3 minutes (or immediately on queue change)...", game_name)
+            logger.warning("[MINER] No live streams with drops enabled for '%s'. Retrying in 5 minutes (or immediately on queue change)...", game_name)
             save_miner_status({
                 "active": False,
                 "game": game_name,
@@ -790,10 +790,10 @@ class DropsMiner:
                 "selected_game": selected_game_cfg or game_name,
                 "queue": queue_cfg,
                 "mode": mode_cfg,
-                "message": f"No live streams currently online with drops enabled for {game_name}.",
+                "message": f"No live streams currently online with drops enabled for {game_name}. Retrying in 5 minutes...",
                 "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             })
-            self._interruptible_sleep(180, cycle_sig)
+            self._interruptible_sleep(300, cycle_sig)
             return
 
         stream_url = f"https://www.twitch.tv/{channel['channel_login']}"
@@ -922,7 +922,18 @@ class DropsMiner:
                 })
                 return
 
-            # 2-5 Minute Progress Watchdog: verify drop progress is actually increasing on this channel
+            # 5-Minute Progress Watchdog & Status Refresh: verify drop progress is actively increasing on this channel
+            if (minute + 1) % 5 == 0 or (minute + 1) % self.progress_check_minutes == 0:
+                logger.info(
+                    "[MINER] Refreshing stream progress status (5 min check) on %s (@%s) for '%s'...",
+                    channel["channel_name"], channel["channel_login"], game_name
+                )
+                # Ensure fresh inventory data from Twitch for 5-minute progress verification
+                try:
+                    self.last_inventory = self.client.get_inventory()
+                except Exception as inv_err:
+                    logger.debug("Inventory refresh during 5m check error: %s", inv_err)
+
             current_watched = self._get_campaign_total_watched(
                 game_name,
                 camp_name,
@@ -976,6 +987,7 @@ class DropsMiner:
                 return
 
             mins_without_prog = (minute + 1) - last_progress_minute
+            next_check_in = max(0, self.progress_check_minutes - (mins_without_prog % self.progress_check_minutes))
             current_status = {
                 "active": True,
                 "switching": False,
@@ -996,6 +1008,8 @@ class DropsMiner:
                 "progress_verified": progress_verified,
                 "minutes_without_progress": mins_without_prog,
                 "progress_check_minutes": self.progress_check_minutes,
+                "next_progress_check_in": next_check_in,
+                "last_progress_check_minute": minute + 1,
                 "game_id": channel.get("game_id", ""),
                 "stream_url": stream_url,
                 "viewers": channel["viewers"],

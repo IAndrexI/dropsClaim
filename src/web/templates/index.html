@@ -1508,8 +1508,8 @@
           : "Drops in Channel Title";
         const progCheckInfo = minerStat.progress_verified
           ? "Progress Confirmed (+1m)"
-          : `Progress Watchdog (${minerStat.minutes_without_progress || 0}/${minerStat.progress_check_minutes || 3}m check)`;
-        minerSub.innerText = `Watching under @${ulogin} — strictly 1 stream at a time [${dropTagInfo} | ${progCheckInfo}]. Automatically switches channel if progress doesn't increase in 2-5 mins.`;
+          : `Progress Watchdog (${minerStat.minutes_without_progress || 0}/${minerStat.progress_check_minutes || 5}m check)`;
+        minerSub.innerText = `Watching under @${ulogin} — strictly 1 stream at a time [${dropTagInfo} | ${progCheckInfo}]. Automatically refreshes status and verifies stream progress every 5 mins.`;
 
         channelPill.innerText = `Channel: ${cname} (Drops Enabled)`;
         if (dropLivePill) {
@@ -1522,7 +1522,7 @@
         }
         progressPill.innerText = minerStat.progress_verified
           ? `Progress: Verified (${minerStat.minutes_watched || 1}/15m)`
-          : `Progress Check: ${minerStat.minutes_watched || 1}/${minerStat.progress_check_minutes || 3}m`;
+          : `Progress Check: ${minerStat.minutes_without_progress || 0}/${minerStat.progress_check_minutes || 5}m`;
         viewersPill.innerText = `${(minerStat.viewers || 0).toLocaleString()} Viewers`;
         
         const targetUrl = minerStat.stream_url || `https://www.twitch.tv/${minerStat.channel_login || ''}`;

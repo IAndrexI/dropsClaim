@@ -205,13 +205,13 @@ class MiningQueueAndSwapTests(unittest.TestCase):
             ch_none = client.find_eligible_channel("Rust", fast_first=True)
             self.assertIsNone(ch_none)
 
-    def test_stalled_progress_after_3_minutes_switches_channel_immediately(self):
+    def test_stalled_progress_after_5_minutes_switches_channel_immediately(self):
         with open(self.cfg_file, "w", encoding="utf-8") as f:
             json.dump({"mode": "default", "queue": ["Rust"], "updated_at": 100}, f)
 
         dm = m.DropsMiner("fake_token", priority_games=["Rust"])
         dm.running = True
-        dm.progress_check_minutes = 3
+        dm.progress_check_minutes = 5
 
         fake_camp = {
             "id": "camp_rust",
@@ -258,14 +258,14 @@ class MiningQueueAndSwapTests(unittest.TestCase):
              mock.patch.object(dm, "_interruptible_sleep", return_value=False):
             dm.run_cycle()
 
-            # Must stop after exactly 3 heartbeats (3 minutes without progress), NOT 15 minutes!
-            self.assertEqual(len(heartbeats_sent), 3)
+            # Must stop after exactly 5 heartbeats (5 minutes without progress), NOT 15 minutes!
+            self.assertEqual(len(heartbeats_sent), 5)
             self.assertIn("stalled_channel", dm._get_excluded_channels())
 
             with open(self.stat_file, "r", encoding="utf-8") as f:
                 stat = json.load(f)
             self.assertTrue(stat.get("switching"))
-            self.assertIn("No drop progress increase after 3 mins", stat.get("message", ""))
+            self.assertIn("No drop progress increase after 5 mins", stat.get("message", ""))
 
     def test_direct_twitch_gql_campaign_discovery_and_wardogs_mining(self):
         client = m.TwitchClient("")
