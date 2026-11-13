@@ -322,8 +322,9 @@
           </div>
           <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
             <div class="mode-switch-box">
-              <button class="mode-btn active" id="btn-mode-default" onclick="setMiningMode('default')">Default Mode (Queue + Auto-Mine)</button>
-              <button class="mode-btn" id="btn-mode-selective" onclick="setMiningMode('selective')">Selective Mode (Queue Only)</button>
+              <button class="mode-btn active" id="btn-mode-default" onclick="setMiningMode('default')">Default (Queue + Auto-Mine)</button>
+              <button class="mode-btn" id="btn-mode-selective" onclick="setMiningMode('selective')">Selective (Queue Only)</button>
+              <button class="mode-btn" id="btn-mode-stopped" style="color: #f87171;" onclick="setMiningMode('stopped')">&#9632; Fully Stop Miner</button>
             </div>
             <button class="btn btn-sm btn-danger" onclick="deactivateAllGames()">Clear Queue</button>
             <button class="btn btn-sm" onclick="resetToDefaultMode()">Reset to Auto-Mine</button>
@@ -817,17 +818,25 @@
 
       const btnDefault = document.getElementById("btn-mode-default");
       const btnSelective = document.getElementById("btn-mode-selective");
+      const btnStopped = document.getElementById("btn-mode-stopped");
       if (btnDefault && btnSelective) {
         btnDefault.classList.toggle("active", currentMiningMode === "default");
         btnSelective.classList.toggle("active", currentMiningMode === "selective");
+        if (btnStopped) btnStopped.classList.toggle("active", currentMiningMode === "stopped");
       }
 
       const modeBadge = document.getElementById("mode-badge-label");
       if (modeBadge) {
-        modeBadge.innerText = currentMiningMode === "selective" 
-          ? "[MODE: SELECTIVE - QUEUE ONLY (1 AT A TIME)]" 
-          : "[MODE: DEFAULT - QUEUE + AUTO-MINE (1 AT A TIME)]";
-        modeBadge.style.color = currentMiningMode === "selective" ? "#38bdf8" : "#a855f7";
+        if (currentMiningMode === "stopped") {
+          modeBadge.innerText = "[MINER FULLY STOPPED]";
+          modeBadge.style.color = "#ef4444";
+        } else if (currentMiningMode === "selective") {
+          modeBadge.innerText = "[MODE: SELECTIVE - QUEUE ONLY (1 AT A TIME)]";
+          modeBadge.style.color = "#38bdf8";
+        } else {
+          modeBadge.innerText = "[MODE: DEFAULT - QUEUE + AUTO-MINE (1 AT A TIME)]";
+          modeBadge.style.color = "#a855f7";
+        }
       }
 
       // Update Git status in System tab automatically if data present
@@ -876,9 +885,13 @@
 
       const modeDesc = document.getElementById("mining-mode-desc");
       if (modeDesc) {
-        modeDesc.innerText = currentMiningMode === "selective"
-          ? "Selective Mode: strictly watches ONLY 1 stream at a time (#1 in your queue). When #1 finishes all drops, it automatically advances and swaps to #2 in your queue."
-          : "Default Mode: mines your queued games 1 at a time in exact queue order, then auto-picks remaining active drops when the queue finishes.";
+        if (currentMiningMode === "stopped") {
+          modeDesc.innerText = "Miner is Fully Stopped: No streams are being watched or mined under your account. Click 'Default' or 'Selective' anytime to resume.";
+        } else if (currentMiningMode === "selective") {
+          modeDesc.innerText = "Selective Mode: strictly watches ONLY 1 stream at a time (#1 in your queue). When #1 finishes all drops, it automatically advances and swaps to #2 in your queue.";
+        } else {
+          modeDesc.innerText = "Default Mode: mines your queued games 1 at a time in exact queue order, then auto-picks remaining active drops when the queue finishes.";
+        }
       }
 
       const actCountElem = document.getElementById("activated-count");
@@ -916,7 +929,22 @@
 
       if (!minerDot) return;
 
-      if (minerStat.active) {
+      if (currentMiningMode === "stopped" || minerStat.mode === "stopped") {
+        minerDot.className = "live-indicator-dot idle";
+        minerHeading.innerText = "Twitch Drops Miner (Fully Stopped)";
+        minerBadge.innerText = "STOPPED";
+        minerBadge.style.background = "rgba(239, 68, 68, 0.15)";
+        minerBadge.style.color = "#f87171";
+        minerBadge.style.borderColor = "#ef4444";
+        minerBadge.style.display = "inline-flex";
+
+        minerSub.innerText = "Miner is completely stopped. Zero stream viewing, zero heartbeats. Click 'Default' or 'Selective' anytime to resume.";
+        channelPill.innerText = "Channel: None (Stopped)";
+        if (dropLivePill) dropLivePill.style.display = "none";
+        progressPill.innerText = "Status: Stopped";
+        viewersPill.innerText = "0 Viewers";
+        streamLink.style.display = "none";
+      } else if (minerStat.active) {
         minerDot.className = "live-indicator-dot";
         const cname = minerStat.channel_name || minerStat.channel_login || "Live Streamer";
         const gname = minerStat.game || "Live Drop";
@@ -1015,7 +1043,13 @@
       if (actCountElem) actCountElem.innerText = selectedPriorityGames.length;
 
       if (selectedPriorityGames.length === 0) {
-        container.innerHTML = `<span style="font-size: 0.8rem; color: #94a3b8;">${currentMiningMode === 'selective' ? 'Queue is empty. Click "Mine Now (#1)" or "+ Add to Queue" on any campaign below to start mining.' : 'Queue is empty (Auto-selecting 1 active drop campaign at a time). Click "Mine Now (#1)" or "+ Add to Queue" below to prioritize games.'}</span>`;
+        if (currentMiningMode === "stopped") {
+          container.innerHTML = `<span style="font-size: 0.8rem; color: #f87171;">Miner is completely stopped. No stream is being watched.</span>`;
+        } else if (currentMiningMode === "selective") {
+          container.innerHTML = `<span style="font-size: 0.8rem; color: #94a3b8;">Queue is empty. Click "Mine Now (#1)" or "+ Add to Queue" on any campaign below to start mining.</span>`;
+        } else {
+          container.innerHTML = `<span style="font-size: 0.8rem; color: #94a3b8;">Queue is empty (Auto-selecting 1 active drop campaign at a time). Click "Mine Now (#1)" or "+ Add to Queue" below to prioritize games.</span>`;
+        }
       } else {
         container.innerHTML = selectedPriorityGames.map((gName, idx) => {
           const isFirst = idx === 0;

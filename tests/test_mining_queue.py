@@ -398,5 +398,42 @@ class MiningQueueAndSwapTests(unittest.TestCase):
             self.assertNotIn("coconutb", dm._get_excluded_channels())
 
 
+    def test_stopped_mode_disables_stream_watching_completely(self):
+        with open(self.cfg_file, "w", encoding="utf-8") as f:
+            json.dump({"mode": "stopped", "queue": ["Rust"], "updated_at": 100}, f)
+
+        dm = m.DropsMiner("fake_token", priority_games=["Rust"])
+        fake_camp = {
+            "id": "camp_rust",
+            "name": "Rust Drops",
+            "game": {"displayName": "Rust"},
+            "status": "ACTIVE",
+            "timeBasedDrops": [
+                {
+                    "id": "d_rust",
+                    "name": "Rust Jacket",
+                    "requiredMinutesWatched": 60,
+                    "self": {"isClaimed": False, "currentMinutesWatched": 0},
+                }
+            ],
+        }
+
+        with mock.patch.object(dm.client, "get_inventory", return_value={"dropCampaignsInProgress": [fake_camp]}), \
+             mock.patch.object(dm.client, "get_all_active_campaigns", return_value=[fake_camp]), \
+             mock.patch.object(dm.client, "find_eligible_channel") as mock_find, \
+             mock.patch.object(dm, "_interruptible_sleep", return_value=False):
+            camps = dm.get_eligible_campaigns()
+            self.assertEqual(camps, [])
+
+            dm.run_cycle()
+            mock_find.assert_not_called()
+
+            with open(self.stat_file, "r", encoding="utf-8") as f:
+                stat = json.load(f)
+            self.assertFalse(stat.get("active"))
+            self.assertEqual(stat.get("mode"), "stopped")
+            self.assertIn("stopped", stat.get("message", "").lower())
+
+
 if __name__ == "__main__":
     unittest.main()

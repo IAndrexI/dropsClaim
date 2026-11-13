@@ -320,7 +320,12 @@ def save_mining_config(mode: str, activated_games: list, resolve_stream: bool = 
     data_dir = os.path.join(APP_DIR, "data")
     os.makedirs(data_dir, exist_ok=True)
     config_file = os.path.join(data_dir, "mining_config.json")
-    clean_mode = "selective" if mode == "selective" else "default"
+    if mode in ("stopped", "pause", "stop"):
+        clean_mode = "stopped"
+    elif mode == "selective":
+        clean_mode = "selective"
+    else:
+        clean_mode = "default"
     # Preserve ordered queue while deduplicating case-insensitively (strictly 1 mined at a time: queue[0])
     seen = set()
     clean_queue = []
@@ -373,8 +378,9 @@ def save_mining_config(mode: str, activated_games: list, resolve_stream: bool = 
 
     env = load_env_file()
     token = resolve_token(env.get("TWITCH_AUTH_TOKEN", "").strip())
-    ensure_miner_daemon_running(token)
-    target_game = selected_game
+    if clean_mode != "stopped":
+        ensure_miner_daemon_running(token)
+    target_game = selected_game if clean_mode != "stopped" else ""
 
     # If in default mode with an empty queue, pick the first eligible campaign from cache
     if not target_game and clean_mode == "default":
@@ -394,6 +400,25 @@ def save_mining_config(mode: str, activated_games: list, resolve_stream: bool = 
                 pass
 
     new_status = None
+    if clean_mode == "stopped":
+        new_status = {
+            "active": False,
+            "switching": False,
+            "paused": True,
+            "user_active": False,
+            "game": "",
+            "selected_game": "",
+            "channel_name": "",
+            "channel_login": "",
+            "channel_id": "",
+            "stream_id": "",
+            "stream_url": "",
+            "viewers": 0,
+            "queue": clean_queue,
+            "mode": "stopped",
+            "message": "Miner is completely stopped. No streams will be watched.",
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
     # Try resolving a live channel for queue items in order
     candidates_to_try = list(clean_queue) if clean_queue else ([target_game] if target_game else [])
     if candidates_to_try and token:
@@ -660,10 +685,10 @@ def build_status_payload():
     env = load_env_file()
     data_dir = os.path.join(APP_DIR, "data", "fgc")
     twitch_token = resolve_token(env.get("TWITCH_AUTH_TOKEN", "").strip())
-    ensure_miner_daemon_running(twitch_token)
-
     mining_cfg = get_mining_config()
     miner_stat = get_miner_status()
+    if mining_cfg.get("mode") != "stopped":
+        ensure_miner_daemon_running(twitch_token)
     queue_list = list(mining_cfg.get("queue") or mining_cfg.get("activated_games") or [])
     watched_game_str = str(miner_stat.get("game") or "").strip() if miner_stat.get("active") else ""
     active_target_game = queue_list[0] if queue_list else watched_game_str

@@ -476,6 +476,9 @@ class DropsMiner:
         """
         config = load_mining_config()
         mode = config.get("mode", "default")
+        if mode == "stopped":
+            logger.info("[STOPPED MODE] Miner is stopped by user. No streams will be watched.")
+            return []
         queue_games = [g.strip() for g in config.get("queue", []) if g.strip()]
         if not queue_games and self.priority_games and mode != "selective":
             queue_games = list(self.priority_games)
@@ -673,17 +676,25 @@ class DropsMiner:
         self.last_config_sig = cycle_sig
 
         if not eligible_campaigns:
-            msg = (
-                f"Queued games ({', '.join(queue_cfg)}) have no active watch-time drops right now."
-                if (mode_cfg == "selective" and queue_cfg)
-                else (
-                    "Selective mode active: Add games to your mining queue below to start mining."
-                    if mode_cfg == "selective"
-                    else "No eligible campaigns to mine at this moment."
-                )
-            )
+            if mode_cfg == "stopped":
+                msg = "Miner is stopped. Twitch stream viewing is completely turned off."
+            elif mode_cfg == "selective" and queue_cfg:
+                msg = f"Queued games ({', '.join(queue_cfg)}) have no active watch-time drops right now."
+            elif mode_cfg == "selective":
+                msg = "Selective mode active: Add games to your mining queue below to start mining."
+            else:
+                msg = "No eligible campaigns to mine at this moment."
+
             save_miner_status({
                 "active": False,
+                "switching": False,
+                "paused": False,
+                "channel_name": "",
+                "channel_login": "",
+                "channel_id": "",
+                "stream_id": "",
+                "stream_url": "",
+                "viewers": 0,
                 "selected_game": selected_game_cfg,
                 "queue": queue_cfg,
                 "mode": mode_cfg,
@@ -691,7 +702,7 @@ class DropsMiner:
                 "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             })
             logger.info("[MINER] %s Waiting (will wake immediately if queue changes)...", msg)
-            self._interruptible_sleep(600, cycle_sig)
+            self._interruptible_sleep(600 if mode_cfg != "stopped" else 60, cycle_sig)
             return
 
         chosen_campaign = None
