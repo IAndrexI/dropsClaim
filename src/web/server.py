@@ -591,14 +591,20 @@ def get_git_status():
 
 
 def perform_git_update():
-    update_script = os.path.join(APP_DIR, "update.sh")
-    if not os.path.exists(update_script):
+    if os.path.exists("/opt/auto-loot-claimer/update.sh"):
+        update_script = "/opt/auto-loot-claimer/update.sh"
+        target_dir = "/opt/auto-loot-claimer"
+    elif os.path.exists(os.path.join(APP_DIR, "update.sh")):
+        update_script = os.path.join(APP_DIR, "update.sh")
+        target_dir = APP_DIR
+    else:
         update_script = os.path.join(APP_DIR, "scripts", "update_from_github.sh")
+        target_dir = APP_DIR
 
     if os.path.exists(update_script) and os.name != "nt":
         run_env = os.environ.copy()
         run_env["SKIP_WEB_RESTART"] = "1"
-        res = subprocess.run(["bash", update_script], cwd=APP_DIR, env=run_env, capture_output=True, text=True, timeout=120)
+        res = subprocess.run(["bash", update_script], cwd=target_dir, env=run_env, capture_output=True, text=True, timeout=120)
         if res.returncode == 0:
             try:
                 subprocess.Popen(
@@ -607,7 +613,7 @@ def perform_git_update():
                         "-c",
                         "sleep 1.5; if command -v rc-service >/dev/null 2>&1; then rc-service auto-loot-web restart >/dev/null 2>&1; elif command -v systemctl >/dev/null 2>&1; then systemctl restart auto-loot-web.service >/dev/null 2>&1; fi",
                     ],
-                    cwd=APP_DIR,
+                    cwd=target_dir,
                     start_new_session=True,
                 )
             except Exception:

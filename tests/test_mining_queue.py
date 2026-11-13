@@ -501,6 +501,10 @@ class MiningQueueAndSwapTests(unittest.TestCase):
         self.assertIn("toggleMiniViewer", html)
         self.assertIn("suspendMiniViewerForExternalViewing", html)
         self.assertIn("resumeMiniViewer", html)
+        self.assertIn("btn-header-direct-update", html)
+        self.assertIn("direct-update-modal", html)
+        self.assertIn("openDirectUpdateModal", html)
+        self.assertIn("executeDirectModalUpdate", html)
 
 
 if __name__ == "__main__":

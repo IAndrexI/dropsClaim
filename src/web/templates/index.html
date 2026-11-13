@@ -366,6 +366,68 @@
     
     /* Toast alert */
     #toast { position: fixed; bottom: 20px; right: 20px; background: #1e293b; border: 1px solid #3b82f6; color: white; padding: 12px 20px; border-radius: 8px; font-size: 0.9rem; z-index: 9999; display: none; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5); }
+
+    /* Direct Update Modal */
+    .update-modal-backdrop {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0, 0, 0, 0.78);
+      backdrop-filter: blur(4px);
+      z-index: 10000;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+    .update-modal-content {
+      background: #0b0f19;
+      border: 1px solid #1e293b;
+      border-radius: 12px;
+      width: 100%;
+      max-width: 600px;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    .update-modal-header {
+      padding: 14px 20px;
+      background: #0f172a;
+      border-bottom: 1px solid #1e293b;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .update-modal-header h3 {
+      margin: 0;
+      font-size: 1.05rem;
+      color: #38bdf8;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .update-modal-body {
+      padding: 20px;
+      font-size: 0.86rem;
+      color: #cbd5e1;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .update-log-terminal {
+      background: #030712;
+      border: 1px solid #1e293b;
+      border-radius: 8px;
+      padding: 12px;
+      font-family: monospace;
+      font-size: 0.78rem;
+      color: #94a3b8;
+      max-height: 200px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      line-height: 1.4;
+      display: none;
+    }
   </style>
 </head>
 <body>
@@ -380,6 +442,7 @@
           <span class="sync-dot"></span>
           <span id="sync-text">LIVE SYNCED</span>
         </span>
+        <button id="btn-header-direct-update" class="btn btn-sm" onclick="openDirectUpdateModal()" style="border-color: #38bdf8; color: #38bdf8; font-weight: 600; display: inline-flex; align-items: center; gap: 5px;" title="Directly update app from GitHub on the page">&#8635; Update App</button>
         <button id="btn-install-app" class="btn btn-sm" onclick="installAppPrompt()" style="display: none; border-color: #8b5cf6; color: #c084fc;" title="Install as desktop or mobile app">Install App</button>
         <span id="app-mode-badge" class="badge" style="display: none; background: rgba(99, 102, 241, 0.15); color: #818cf8;">[APP MODE]</span>
         <button class="btn btn-primary" onclick="claimDropsNow()">Claim Ready Drops</button>
@@ -840,6 +903,39 @@
             <button class="btn btn-sm" onclick="fetchAutostartStatus()">Refresh Status</button>
           </div>
           <div id="autostart-output" style="display: none; margin-top: 12px; padding: 10px; background: #0f172a; border-radius: 6px; font-family: monospace; font-size: 0.78rem; white-space: pre-wrap; max-height: 140px; overflow-y: auto; color: #cbd5e1; border: 1px solid #334155;"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Direct Method Update Modal -->
+  <div id="direct-update-modal" class="update-modal-backdrop" onclick="if(event.target === this) closeDirectUpdateModal()">
+    <div class="update-modal-content">
+      <div class="update-modal-header">
+        <h3><span>&#8635;</span> Direct System Update</h3>
+        <button class="btn btn-sm" onclick="closeDirectUpdateModal()" style="padding: 2px 8px; font-size: 0.8rem;">&#10006;</button>
+      </div>
+      <div class="update-modal-body">
+        <p style="margin: 0; line-height: 1.5;">
+          Directly execute <code>bash /opt/auto-loot-claimer/update.sh</code> on your server to pull the latest GitHub commits, update background services, and restart cleanly.
+        </p>
+
+        <div style="background: rgba(15, 23, 42, 0.8); border: 1px solid #1e293b; border-radius: 8px; padding: 12px; font-size: 0.84rem; line-height: 1.6;">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <span><strong>Installed Commit:</strong> <code id="modal-git-local-hash" style="color: #38bdf8;">--</code></span>
+            <span id="modal-git-status-badge" class="badge" style="background: rgba(34, 197, 94, 0.15); color: #4ade80;">[READY]</span>
+          </div>
+          <div><strong>Latest GitHub Remote:</strong> <code id="modal-git-remote-hash" style="color: #facc15;">--</code></div>
+          <div id="modal-git-diff-status" style="margin-top: 4px; font-size: 0.78rem; color: #94a3b8;">Status: Checking GitHub for updates...</div>
+        </div>
+
+        <div id="modal-update-log" class="update-log-terminal"></div>
+
+        <div style="display: flex; gap: 10px; justify-content: flex-end; align-items: center; margin-top: 4px;">
+          <button class="btn" onclick="closeDirectUpdateModal()" id="btn-modal-cancel-update">Close</button>
+          <button class="btn btn-primary" id="btn-modal-run-update" onclick="executeDirectModalUpdate()" style="display: inline-flex; align-items: center; gap: 6px;">
+            &#8635; Run Update Now
+          </button>
         </div>
       </div>
     </div>
@@ -2285,35 +2381,174 @@
 
     async function checkGitUpdates() {
       const badge = document.getElementById("git-status-badge");
-      if (!badge) return;
-      badge.innerText = "[CHECKING...]";
-      badge.style.color = "#38bdf8";
-      badge.style.background = "rgba(56, 189, 248, 0.15)";
+      const headerBtn = document.getElementById("btn-header-direct-update");
+      if (badge) {
+        badge.innerText = "[CHECKING...]";
+        badge.style.color = "#38bdf8";
+        badge.style.background = "rgba(56, 189, 248, 0.15)";
+      }
       try {
         const res = await fetch("/api/system/git-status");
         const data = await res.json();
-        document.getElementById("git-local-hash").innerText = data.commit_short || "Unknown";
-        document.getElementById("git-local-msg").innerText = data.commit_message || "Unknown";
-        document.getElementById("git-local-date").innerText = data.commit_date || "Unknown";
+        const localHash = document.getElementById("git-local-hash");
+        const localMsg = document.getElementById("git-local-msg");
+        const localDate = document.getElementById("git-local-date");
+        if (localHash) localHash.innerText = data.commit_short || "Unknown";
+        if (localMsg) localMsg.innerText = data.commit_message || "Unknown";
+        if (localDate) localDate.innerText = data.commit_date || "Unknown";
         
         const remoteInfo = document.getElementById("git-remote-info");
         const remoteHash = document.getElementById("git-remote-hash");
 
-        if (data.updates_available) {
-          badge.innerText = "[UPDATE AVAILABLE]";
-          badge.style.color = "#facc15";
-          badge.style.background = "rgba(250, 204, 21, 0.15)";
-          remoteInfo.style.display = "block";
-          remoteHash.innerText = data.remote_commit || "Newer commit on GitHub";
-        } else {
-          badge.innerText = "[UP TO DATE]";
-          badge.style.color = "#4ade80";
-          badge.style.background = "rgba(34, 197, 94, 0.15)";
-          remoteInfo.style.display = "none";
+        if (headerBtn) {
+          if (data.updates_available) {
+            headerBtn.innerHTML = "&#8635; Update App (New Commit!)";
+            headerBtn.style.borderColor = "#facc15";
+            headerBtn.style.color = "#facc15";
+            headerBtn.style.background = "rgba(250, 204, 21, 0.12)";
+          } else {
+            headerBtn.innerHTML = "&#8635; Update App";
+            headerBtn.style.borderColor = "#38bdf8";
+            headerBtn.style.color = "#38bdf8";
+            headerBtn.style.background = "transparent";
+          }
+        }
+
+        if (badge) {
+          if (data.updates_available) {
+            badge.innerText = "[UPDATE AVAILABLE]";
+            badge.style.color = "#facc15";
+            badge.style.background = "rgba(250, 204, 21, 0.15)";
+            if (remoteInfo) remoteInfo.style.display = "block";
+            if (remoteHash) remoteHash.innerText = data.remote_commit || "Newer commit on GitHub";
+          } else {
+            badge.innerText = "[UP TO DATE]";
+            badge.style.color = "#4ade80";
+            badge.style.background = "rgba(34, 197, 94, 0.15)";
+            if (remoteInfo) remoteInfo.style.display = "none";
+          }
         }
       } catch (err) {
-        badge.innerText = "[OFFLINE/ERROR]";
-        badge.style.color = "#f87171";
+        if (badge) {
+          badge.innerText = "[OFFLINE/ERROR]";
+          badge.style.color = "#f87171";
+        }
+      }
+    }
+
+    async function openDirectUpdateModal() {
+      const modal = document.getElementById("direct-update-modal");
+      if (modal) modal.style.display = "flex";
+      const log = document.getElementById("modal-update-log");
+      if (log) {
+        log.style.display = "none";
+        log.innerText = "";
+      }
+      const runBtn = document.getElementById("btn-modal-run-update");
+      const cancelBtn = document.getElementById("btn-modal-cancel-update");
+      if (runBtn) {
+        runBtn.disabled = false;
+        runBtn.innerHTML = "&#8635; Run Update Now";
+      }
+      if (cancelBtn) cancelBtn.disabled = false;
+
+      // Populate current status
+      try {
+        const res = await fetch("/api/system/git-status");
+        const data = await res.json();
+        const localHash = document.getElementById("modal-git-local-hash");
+        const remoteHash = document.getElementById("modal-git-remote-hash");
+        const statusBadge = document.getElementById("modal-git-status-badge");
+        const diffStatus = document.getElementById("modal-git-diff-status");
+
+        if (localHash) localHash.innerText = data.commit_short || "Unknown";
+        if (remoteHash) remoteHash.innerText = data.remote_commit || (data.commit_short || "Latest on main");
+        
+        if (statusBadge) {
+          if (data.updates_available) {
+            statusBadge.innerText = "[UPDATE AVAILABLE]";
+            statusBadge.style.color = "#facc15";
+            statusBadge.style.background = "rgba(250, 204, 21, 0.15)";
+            if (diffStatus) diffStatus.innerText = "Newer commits available on GitHub origin/main. Click 'Run Update Now' to deploy directly.";
+          } else {
+            statusBadge.innerText = "[UP TO DATE]";
+            statusBadge.style.color = "#4ade80";
+            statusBadge.style.background = "rgba(34, 197, 94, 0.15)";
+            if (diffStatus) diffStatus.innerText = "Your server is on the latest commit. You can still re-run the update script anytime to refresh services.";
+          }
+        }
+      } catch (e) {
+        console.debug("Modal status check note:", e);
+      }
+    }
+
+    function closeDirectUpdateModal() {
+      const modal = document.getElementById("direct-update-modal");
+      if (modal) modal.style.display = "none";
+    }
+
+    async function executeDirectModalUpdate() {
+      const runBtn = document.getElementById("btn-modal-run-update");
+      const cancelBtn = document.getElementById("btn-modal-cancel-update");
+      const logBox = document.getElementById("modal-update-log");
+      const statusBadge = document.getElementById("modal-git-status-badge");
+      const diffStatus = document.getElementById("modal-git-diff-status");
+
+      if (runBtn) {
+        runBtn.disabled = true;
+        runBtn.innerHTML = `<span class="live-indicator-dot" style="width: 8px; height: 8px;"></span> Executing bash /opt/auto-loot-claimer/update.sh...`;
+      }
+      if (cancelBtn) cancelBtn.disabled = true;
+      if (logBox) {
+        logBox.style.display = "block";
+        logBox.innerText = "[INIT] Calling server update script...\n[EXEC] bash /opt/auto-loot-claimer/update.sh\nPulling commits from GitHub, reconciling files, and restarting background services...\n\n";
+      }
+
+      try {
+        const res = await fetch("/api/system/git-update", { method: "POST" });
+        const data = await res.json();
+        const output = data.output || "";
+        if (logBox) logBox.innerText += output + "\n";
+        
+        if (data.success) {
+          if (statusBadge) {
+            statusBadge.innerText = "[UPDATE COMPLETED]";
+            statusBadge.style.color = "#4ade80";
+            statusBadge.style.background = "rgba(34, 197, 94, 0.15)";
+          }
+          if (diffStatus) {
+            diffStatus.innerText = "Update applied successfully! Services restarting. Reloading page in 3 seconds...";
+          }
+          showToast("Update applied successfully! Reloading page...");
+          
+          let count = 3;
+          if (runBtn) runBtn.innerHTML = `Reloading in ${count}s...`;
+          const countdown = setInterval(() => {
+            count--;
+            if (runBtn) runBtn.innerHTML = `Reloading in ${count}s...`;
+            if (count <= 0) {
+              clearInterval(countdown);
+              window.location.reload();
+            }
+          }, 1000);
+        } else {
+          if (statusBadge) {
+            statusBadge.innerText = "[UPDATE FAILED]";
+            statusBadge.style.color = "#f87171";
+            statusBadge.style.background = "rgba(239, 68, 68, 0.15)";
+          }
+          if (diffStatus) diffStatus.innerText = "Update encountered an error. Check terminal logs above.";
+          showToast("Update encountered an error. See log output.");
+          if (runBtn) {
+            runBtn.disabled = false;
+            runBtn.innerHTML = "&#8635; Retry Update";
+          }
+          if (cancelBtn) cancelBtn.disabled = false;
+        }
+      } catch (err) {
+        if (logBox) logBox.innerText += `\n[NOTICE] Server service restarting: ${err.message}\nReloading page in 3 seconds...`;
+        showToast("Server restarting. Reloading in 3 seconds...");
+        setTimeout(() => window.location.reload(), 3000);
       }
     }
 
