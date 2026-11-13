@@ -130,14 +130,44 @@ class DropsMiner:
         self.failed_claim_ids: set = set()
         self.last_inventory: Dict[str, Any] = {}
         self.last_config_sig: Optional[tuple] = None
+        self._allow_token_reload: bool = False
         # Track channels that failed to increase drop progress within 2-5 mins (login.lower() -> timestamp)
         self.unproductive_channels: Dict[str, float] = {}
         self.unproductive_cooldown_secs: float = 1800.0  # 30 minutes cooldown before retrying a stalled channel
         try:
-            env_check_mins = int(os.environ.get("TWITCH_PROGRESS_CHECK_MINS", "3"))
+            env_check_mins = int(os.environ.get("TWITCH_PROGRESS_CHECK_MINS", "5"))
         except Exception:
-            env_check_mins = 3
+            env_check_mins = 5
         self.progress_check_minutes: int = max(2, min(5, env_check_mins))
+
+    def _refresh_auth_if_needed(self) -> bool:
+        """Reload Twitch OAuth token from token store or .env if updated via Web UI while daemon is running."""
+        if not self._allow_token_reload and self.client.auth_token:
+            return True
+        try:
+            env_tok = os.environ.get("TWITCH_AUTH_TOKEN", "").strip()
+            env_path = os.path.join(BASE_DIR, ".env")
+            if os.path.exists(env_path):
+                with open(env_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        s = line.strip()
+                        if s.startswith("TWITCH_AUTH_TOKEN="):
+                            env_tok = s.split("=", 1)[1].strip().strip("'\"")
+                            break
+            from src.auth.twitch_auth import client_id_for, resolve_token
+            latest_token = resolve_token(env_tok)
+            if latest_token:
+                latest_cid = client_id_for(latest_token)
+                if latest_token != self.client.auth_token or latest_cid != self.client.client_id:
+                    logger.info("[MINER] Detected updated Twitch token on disk; reloading session...")
+                    self.client = TwitchClient(auth_token=latest_token, client_id=latest_cid)
+                    self.client.validate_session()
+                elif not self.client.user_id:
+                    self.client.validate_session()
+                return bool(self.client.user_id or self.client.auth_token)
+        except Exception as e:
+            logger.debug("Token reload check error: %s", e)
+        return bool(self.client.auth_token)
 
     def _get_excluded_channels(self) -> Set[str]:
         """Return currently blacklisted/unproductive channel logins, pruning expired cooldowns."""
@@ -161,6 +191,7 @@ class DropsMiner:
         camp_name: str,
         fallback_camp: Optional[dict] = None,
         live_drop_info: Optional[dict] = None,
+        session_ctx: Optional[dict] = None,
     ) -> int:
         """
         Compute total watched minutes across drops in the active campaign so any 1-minute progress increase
@@ -191,6 +222,10 @@ class DropsMiner:
 
         if live_drop_info:
             total_watched = max(total_watched, int(live_drop_info.get("current_drop_watched") or 0))
+        if isinstance(session_ctx, dict):
+            sess_game = str((session_ctx.get("game") or {}).get("displayName") or (session_ctx.get("game") or {}).get("name") or "").lower()
+            if not sess_game or sess_game == game_name.lower() or game_name.lower() in sess_game:
+                total_watched = max(total_watched, int(session_ctx.get("currentMinutesWatched") or 0))
         return total_watched
 
     def _get_config_signature(self) -> tuple:
@@ -291,10 +326,17 @@ class DropsMiner:
             logger.error("Error checking pending drops: %s", err)
         return claimed_count
 
-    def _get_live_drop_progress(self, game_name: str, camp_name: str, fallback_camp: Optional[dict] = None) -> Dict[str, Any]:
+    def _get_live_drop_progress(
+        self,
+        game_name: str,
+        camp_name: str,
+        fallback_camp: Optional[dict] = None,
+        session_ctx: Optional[dict] = None,
+    ) -> Dict[str, Any]:
         """
         Extract the active unclaimed drop's current watch progress for telemetry.
-        Cross-references gameEventDrops and drop进度 to accurately detect when all drops in a campaign are completed.
+        Cross-references gameEventDrops, Inventory, and DropCurrentSessionContext to accurately
+        track live per-minute progress and detect when all drops in a campaign are completed.
         """
         inv = self.last_inventory or {}
         inv_camps = inv.get("dropCampaignsInProgress") or inv.get("dropCampaignInProgress") or []
@@ -323,6 +365,20 @@ class DropsMiner:
         if not target_camps and fallback_camp:
             target_camps = [fallback_camp]
 
+        sess_drop_id = ""
+        sess_watched = 0
+        sess_req = 0
+        sess_game = ""
+        if isinstance(session_ctx, dict):
+            sess_drop_id = str(session_ctx.get("dropID") or "").lower()
+            sess_watched = int(session_ctx.get("currentMinutesWatched") or 0)
+            sess_req = int(session_ctx.get("requiredMinutesWatched") or 0)
+            sess_game = str(
+                (session_ctx.get("game") or {}).get("displayName")
+                or (session_ctx.get("game") or {}).get("name")
+                or ""
+            ).lower()
+
         best_drop = None
         for tc in target_camps:
             sorted_drops = sorted(
@@ -338,6 +394,16 @@ class DropsMiner:
                 if req <= 0 or subs > 0:
                     continue
                 watched = int(s.get("currentMinutesWatched") or 0)
+                if sess_drop_id and d_id == sess_drop_id:
+                    watched = max(watched, sess_watched)
+                elif (
+                    (not sess_game or sess_game == game_name.lower() or game_name.lower() in sess_game)
+                    and sess_req > 0
+                    and req == sess_req
+                    and sess_watched > watched
+                ):
+                    watched = max(watched, sess_watched)
+
                 is_claimed = bool(s.get("isClaimed")) or (d_id and d_id in claimed_ids)
                 if is_claimed or (drop_inst_id and drop_inst_id in self.failed_claim_ids):
                     continue
@@ -357,6 +423,19 @@ class DropsMiner:
                     best_drop = candidate
                     if watched > 0 and watched < req:
                         return best_drop
+
+        if (
+            best_drop
+            and best_drop["current_drop_watched"] == 0
+            and sess_watched > 0
+            and (not sess_game or sess_game == game_name.lower() or game_name.lower() in sess_game)
+            and sess_watched < best_drop["current_drop_required"]
+        ):
+            req = best_drop["current_drop_required"]
+            best_drop["current_drop_watched"] = sess_watched
+            best_drop["current_drop_percent"] = min(100, int((sess_watched / req) * 100)) if req > 0 else 0
+            best_drop["current_drop_remaining"] = max(0, req - sess_watched)
+
         return best_drop or {}
 
     def _campaign_has_unclaimed_watchable_drops(self, camp: dict) -> bool:
@@ -540,6 +619,21 @@ class DropsMiner:
         selected_game_cfg = queue_cfg[0] if queue_cfg else ""
         mode_cfg = config.get("mode", "default")
 
+        if not self._refresh_auth_if_needed():
+            save_miner_status({
+                "active": False,
+                "paused": False,
+                "selected_game": selected_game_cfg,
+                "queue": queue_cfg,
+                "mode": mode_cfg,
+                "message": "Waiting for valid Twitch login token (connect your Twitch account in the Accounts tab)...",
+                "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            })
+            self._interruptible_sleep(15, cycle_sig)
+            return
+
+        pause_when_user_active = os.environ.get("TWITCH_PAUSE_WHEN_USER_ACTIVE", "").strip().lower() == "true"
+
         # 1. Always refresh inventory & claim pending drops (unless user just clicked switch in last second)
         if not config_just_swapped:
             self.claim_pending_drops()
@@ -547,7 +641,7 @@ class DropsMiner:
                 logger.info("[MINER] Queue/selection changed during claim check. Switching immediately.")
                 return
 
-            if self.client.is_user_actively_using_twitch():
+            if pause_when_user_active and self.client.is_user_actively_using_twitch():
                 logger.info("[MINER] User is currently using Twitch. Pausing miner to ensure ONLY 1 viewing of Twitch.")
                 save_miner_status({
                     "active": False,
@@ -743,8 +837,7 @@ class DropsMiner:
                 self._handle_mid_cycle_swap(channel["channel_name"], game_name)
                 return
 
-            # Check if user started using Twitch mid-stream
-            if self.client.is_user_actively_using_twitch():
+            if pause_when_user_active and self.client.is_user_actively_using_twitch():
                 logger.info("[MINER] User started using Twitch. Stopping stream viewing immediately to ensure ONLY 1 viewing.")
                 save_miner_status({
                     "active": False,
@@ -758,6 +851,11 @@ class DropsMiner:
                 })
                 break
 
+            if not broadcast_id and channel.get("channel_login"):
+                playback_info = self.client.get_playback_stream_info(channel["channel_login"])
+                broadcast_id = playback_info.get("broadcast_id") or channel.get("stream_id", "")
+                sub_playlist_url = playback_info.get("sub_playlist_url") or sub_playlist_url
+
             success = self.client.send_minute_watched_heartbeat(
                 channel_id=channel["channel_id"],
                 stream_id=broadcast_id,
@@ -767,9 +865,21 @@ class DropsMiner:
                 sub_playlist_url=sub_playlist_url,
             )
 
-            # Claim any drops completed during this minute & refresh live inventory progress
+            # Interruptible ~60s sleep BEFORE checking inventory/progress so a full minute of watch time elapses
+            # and Twitch's Spade/Drops backend credits the heartbeat! Wakes within 0.2s if user changes queue/mode.
+            if self._interruptible_sleep(random.uniform(58.0, 60.0), cycle_sig):
+                self._handle_mid_cycle_swap(channel["channel_name"], game_name)
+                return
+
+            # Claim any drops completed during this minute & refresh live inventory + DropCurrentSessionContext progress
             claimed_now = self.claim_pending_drops()
-            live_drop_info = self._get_live_drop_progress(game_name, camp_name, fallback_camp=chosen_campaign)
+            session_ctx = self.client.get_drop_current_session(channel["channel_id"], channel["channel_login"])
+            if not session_ctx and isinstance(getattr(self.client, "last_drop_session", None), dict):
+                session_ctx = self.client.last_drop_session
+
+            live_drop_info = self._get_live_drop_progress(
+                game_name, camp_name, fallback_camp=chosen_campaign, session_ctx=session_ctx
+            )
 
             # Check if all drops for this campaign/game are now completed!
             if not live_drop_info or not live_drop_info.get("current_drop_required"):
@@ -795,7 +905,11 @@ class DropsMiner:
 
             # 2-5 Minute Progress Watchdog: verify drop progress is actually increasing on this channel
             current_watched = self._get_campaign_total_watched(
-                game_name, camp_name, fallback_camp=chosen_campaign, live_drop_info=live_drop_info
+                game_name,
+                camp_name,
+                fallback_camp=chosen_campaign,
+                live_drop_info=live_drop_info,
+                session_ctx=session_ctx,
             )
             if current_watched > baseline_watched or claimed_now > 0:
                 gained = max(1, current_watched - baseline_watched)
@@ -803,8 +917,8 @@ class DropsMiner:
                 last_progress_minute = minute + 1
                 progress_verified = True
                 logger.info(
-                    "[MINER] Drop progress verified on %s (@%s) for '%s' (+%dm watched).",
-                    channel["channel_name"], channel["channel_login"], game_name, gained
+                    "[MINER] Drop progress verified on %s (@%s) for '%s' (+%dm watched, now %dm total).",
+                    channel["channel_name"], channel["channel_login"], game_name, gained, current_watched
                 )
             else:
                 mins_stalled = (minute + 1) - last_progress_minute
@@ -876,16 +990,11 @@ class DropsMiner:
                         f"({live_drop_info.get('current_drop_percent', 0)}%)]"
                     )
                 logger.info(
-                    "[MINER] Heartbeat minute %d/15 sent successfully for %s on channel %s%s",
+                    "[MINER] Heartbeat minute %d/15 completed for %s on channel %s%s",
                     minute + 1, game_name, channel["channel_name"], drop_prog_str
                 )
             else:
                 logger.warning("[MINER] Heartbeat returned non-204, verifying stream status...")
-
-            # Interruptible ~60s sleep: wakes within 0.2s if user changes queue, selected game, or mode!
-            if self._interruptible_sleep(random.uniform(58.0, 62.0), cycle_sig):
-                self._handle_mid_cycle_swap(channel["channel_name"], game_name)
-                return
 
         # Reset active status when switching streams at end of 15-min cycle
         save_miner_status({"active": False, "queue": queue_cfg, "message": "Refreshing stream & checking queue."})
@@ -912,16 +1021,15 @@ class DropsMiner:
         except Exception:
             pass
 
-        if not self.client.validate_session():
-            logger.critical("Authentication failed! Please verify your TWITCH_AUTH_TOKEN.")
-            release_pid_lock()
-            sys.exit(1)
-
+        self._allow_token_reload = True
         self.running = True
-        logger.info(
-            "Twitch session valid! Mining as: %s (ID: %s) [Single viewing & Queue enforced]",
-            self.client.user_login, self.client.user_id
-        )
+        if self.client.validate_session():
+            logger.info(
+                "Twitch session valid! Mining as: %s (ID: %s) [Single viewing & Queue enforced]",
+                self.client.user_login, self.client.user_id
+            )
+        else:
+            logger.warning("Initial Twitch session validation did not succeed yet; daemon will stay alive and retry automatically.")
 
         while self.running:
             try:

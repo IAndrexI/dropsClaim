@@ -78,7 +78,8 @@ def main():
         return
 
     auth_token = args.token or resolve_token(os.environ.get("TWITCH_AUTH_TOKEN", "").strip())
-    if not auth_token:
+    is_oneshot_cmd = bool(args.test or args.inventory or args.campaigns or args.claim_now)
+    if not auth_token and is_oneshot_cmd:
         print("[ERROR] Not logged in to Twitch! Run: python -m src.twitch_drops.main --login   (or set TWITCH_AUTH_TOKEN / pass --token)")
         print("\nHow to get your Twitch auth-token:")
         print("  1. Open https://www.twitch.tv in your desktop browser and make sure you are logged in.")
@@ -108,7 +109,7 @@ def main():
         if not client.validate_session():
             sys.exit(1)
         inv = client.get_inventory()
-        campaigns = inv.get("dropCampaignInProgress") or []
+        campaigns = inv.get("dropCampaignsInProgress") or inv.get("dropCampaignInProgress") or []
         if isinstance(campaigns, dict):
             campaigns = [campaigns]
         print("\n=== Current Drop Progress ===")

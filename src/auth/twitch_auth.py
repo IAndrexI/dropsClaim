@@ -25,27 +25,37 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 DATA_DIR = os.path.join(BASE_DIR, "data")
 TOKEN_FILE = os.path.join(DATA_DIR, "twitch_token.json")
 
-# Twitch no longer accepts its first-party app client IDs for the device-code
-# grant, so login uses an application YOU register at https://dev.twitch.tv/console
-# (Client Type: "Public"). Put its Client ID in TWITCH_CLIENT_ID (.env or env var).
-# Tokens are bound to that Client-Id, which the store records.
-DEVICE_USER_AGENT = "dropsClaim/2.0"
+# Twitch's official first-party Client IDs:
+# - DEVICE_CLIENT_ID ("ue6666qo983tsx6so1t0vnawi233wa", Twitch TV/Console client) supports
+#   BOTH the OAuth device-code flow (https://id.twitch.tv/oauth2/device) AND Twitch's internal
+#   GraphQL API (https://gql.twitch.tv/gql). Third-party dev.twitch.tv Client IDs are rejected
+#   by https://gql.twitch.tv/gql with HTTP 400 ("The Client-ID header is invalid").
+# - WEB_CLIENT_ID ("kimne78kx3ncx6brgo4mv6wki5h1ko") is used for browser auth-token cookies.
+DEVICE_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+DEVICE_CLIENT_ID = "ue6666qo983tsx6so1t0vnawi233wa"
+WEB_CLIENT_ID = "kimne78kx3ncx6brgo4mv6wki5h1ko"
+VALID_GQL_CLIENT_IDS = {
+    WEB_CLIENT_ID,
+    DEVICE_CLIENT_ID,
+    "kd1unb4b3q4t58fwlpcbzcbnm76a8fp",
+    "85lcqzx34057526980268080982680",
+}
 
 
 def device_client_id() -> str:
     cid = os.environ.get("TWITCH_CLIENT_ID", "").strip()
-    if cid:
+    if cid in VALID_GQL_CLIENT_IDS:
         return cid
     try:
         with open(os.path.join(BASE_DIR, ".env"), "r", encoding="utf-8") as f:
             for line in f:
                 if line.strip().startswith("TWITCH_CLIENT_ID="):
-                    return line.split("=", 1)[1].strip().strip("'\"")
+                    val = line.split("=", 1)[1].strip().strip("'\"")
+                    if val in VALID_GQL_CLIENT_IDS:
+                        return val
     except OSError:
         pass
-    return ""
-
-WEB_CLIENT_ID = "kimne78kx3ncx6brgo4mv6wki5h1ko"
+    return DEVICE_CLIENT_ID
 
 DEVICE_URL = "https://id.twitch.tv/oauth2/device"
 TOKEN_URL = "https://id.twitch.tv/oauth2/token"
@@ -145,15 +155,47 @@ def get_credentials(env_token: str = "") -> Tuple[str, str]:
     """
     Resolve (access_token, client_id): stored device-login token first,
     legacy TWITCH_AUTH_TOKEN browser cookie as fallback.
+    Automatically rejects any stored token bound to a non-GQL third-party client_id.
     """
     tok = load_token()
     if tok:
-        info = validate_access_token(tok["access_token"])
-        if info is None and refresh_token():
-            tok = load_token()
-        elif info is None:
-            logger.error("Stored Twitch token is invalid; run login again (python -m src.twitch_drops.main --login)")
+        saved_cid = str(tok.get("client_id") or "")
+        # Third-party 30-char dev.twitch.tv client IDs are rejected by https://gql.twitch.tv/gql
+        if len(saved_cid) >= 20 and saved_cid not in VALID_GQL_CLIENT_IDS:
+            logger.warning(
+                "Stored token uses third-party client_id (%s) rejected by Twitch GQL; falling back to TWITCH_AUTH_TOKEN or re-login.",
+                saved_cid,
+            )
             tok = None
+        else:
+            info = validate_access_token(tok["access_token"])
+            if info is None and refresh_token():
+                tok = load_token()
+                info = validate_access_token(tok["access_token"]) if tok else None
+            if info is None:
+                logger.error("Stored Twitch token is invalid; run login again (python -m src.twitch_drops.main --login)")
+                tok = None
+            elif isinstance(info, dict):
+                val_cid = str(info.get("client_id") or "")
+                if len(val_cid) >= 20 and val_cid not in VALID_GQL_CLIENT_IDS:
+                    logger.warning("Validated token belongs to third-party client_id (%s); ignoring for GQL.", val_cid)
+                    tok = None
+                elif tok is not None:
+                    updated = False
+                    if val_cid in VALID_GQL_CLIENT_IDS and tok.get("client_id") != val_cid:
+                        tok["client_id"] = val_cid
+                        updated = True
+                    if info.get("user_id") and tok.get("user_id") != str(info["user_id"]):
+                        tok["user_id"] = str(info["user_id"])
+                        updated = True
+                    if info.get("login") and tok.get("login") != info["login"]:
+                        tok["login"] = info["login"]
+                        updated = True
+                    if updated:
+                        try:
+                            save_token(tok)
+                        except Exception:
+                            pass
         if tok:
             return tok["access_token"], tok.get("client_id") or device_client_id()
     return (env_token or "").strip(), WEB_CLIENT_ID
@@ -166,19 +208,17 @@ def resolve_token(env_token: str = "") -> str:
 def client_id_for(token: str) -> str:
     tok = load_token()
     if tok and tok.get("access_token") == token:
-        return tok.get("client_id") or device_client_id()
+        cid = str(tok.get("client_id") or "")
+        if len(cid) >= 20 and cid not in VALID_GQL_CLIENT_IDS:
+            return WEB_CLIENT_ID
+        return cid or device_client_id()
     return WEB_CLIENT_ID
 
 
 # ----------------------------------------------------------------- device flow
 def start_device_login() -> Dict[str, Any]:
     cid = device_client_id()
-    if not cid:
-        raise RuntimeError(
-            "TWITCH_CLIENT_ID is not set. Register a Public app at https://dev.twitch.tv/console "
-            "and put its Client ID in .env as TWITCH_CLIENT_ID (see README)."
-        )
-    status, body = _post_form(DEVICE_URL, {"client_id": cid, "scopes": "user:read:email"})
+    status, body = _post_form(DEVICE_URL, {"client_id": cid, "scopes": ""})
     if status != 200 or "device_code" not in body:
         raise RuntimeError(f"Twitch device authorization failed ({status}): {body}")
     _PENDING[body["device_code"]] = {

@@ -241,6 +241,60 @@ def get_mining_config():
     }
 
 
+_LAST_DAEMON_SPAWN_TS = 0.0
+
+
+def is_miner_daemon_alive() -> bool:
+    """Check if the background DropsMiner daemon process is currently alive."""
+    for pf in [PID_FILE, "/run/twitch-drops.pid", "/var/run/twitch-drops.pid"]:
+        if pf and os.path.exists(pf):
+            try:
+                with open(pf, "r", encoding="utf-8") as f:
+                    raw_pid = f.read().strip()
+                if raw_pid.isdigit() and is_pid_alive(int(raw_pid)):
+                    return True
+            except Exception:
+                pass
+    try:
+        bots = get_running_bot_processes()
+        if bots:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def ensure_miner_daemon_running(token: str = "") -> bool:
+    """Ensure the background DropsMiner daemon is running when a Twitch token is configured."""
+    global _LAST_DAEMON_SPAWN_TS
+    if is_miner_daemon_alive():
+        return True
+    if not token or "unittest" in sys.modules:
+        return False
+    now = time.time()
+    if (now - _LAST_DAEMON_SPAWN_TS) < 15.0:
+        return False
+    _LAST_DAEMON_SPAWN_TS = now
+    try:
+        log_path = (
+            "/var/log/twitch-drops.log"
+            if (os.name != "nt" and os.path.isdir("/var/log"))
+            else os.path.join(APP_DIR, "data", "miner.log")
+        )
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        log_f = open(log_path, "a", encoding="utf-8")
+        subprocess.Popen(
+            [sys.executable, "-u", "-m", "src.twitch_drops.main", "--daemon"],
+            cwd=APP_DIR,
+            stdout=log_f,
+            stderr=log_f,
+            start_new_session=(os.name != "nt"),
+        )
+        return True
+    except Exception:
+        return False
+
+
 def _send_async_initial_heartbeat(token: str, channel: dict, game_name: str):
     """Send immediate first minute-watched heartbeat in background upon stream swap."""
     try:
@@ -319,6 +373,7 @@ def save_mining_config(mode: str, activated_games: list, resolve_stream: bool = 
 
     env = load_env_file()
     token = resolve_token(env.get("TWITCH_AUTH_TOKEN", "").strip())
+    ensure_miner_daemon_running(token)
     target_game = selected_game
 
     # If in default mode with an empty queue, pick the first eligible campaign from cache
@@ -367,7 +422,7 @@ def save_mining_config(mode: str, activated_games: list, resolve_stream: bool = 
                         "has_drops_in_title": bool(channel.get("has_drops_in_title", False)),
                         "progress_verified": False,
                         "minutes_without_progress": 0,
-                        "progress_check_minutes": 3,
+                        "progress_check_minutes": 5,
                         "game_id": channel.get("game_id", ""),
                         "stream_url": stream_url,
                         "viewers": channel.get("viewers", 0),
@@ -599,6 +654,7 @@ def build_status_payload():
     env = load_env_file()
     data_dir = os.path.join(APP_DIR, "data", "fgc")
     twitch_token = resolve_token(env.get("TWITCH_AUTH_TOKEN", "").strip())
+    ensure_miner_daemon_running(twitch_token)
 
     mining_cfg = get_mining_config()
     miner_stat = get_miner_status()
@@ -751,6 +807,7 @@ def build_status_payload():
                 # Enrich miner_status with live drop progress if currently watching a game
                 if miner_stat.get("active") and miner_stat.get("game"):
                     watched_game_low = str(miner_stat.get("game") or "").lower()
+                    stat_watched = int(miner_stat.get("current_drop_watched") or 0)
                     found_active_drop = False
                     for c in camps:
                         if c.get("is_expired"):
@@ -758,11 +815,20 @@ def build_status_payload():
                         if str(c.get("game") or "").lower() == watched_game_low:
                             for d in c.get("drops", []):
                                 if d.get("status") in ("IN_PROGRESS", "AVAILABLE") and d.get("required_minutes", 0) > 0:
+                                    req_m = int(d.get("required_minutes") or 0)
+                                    best_w = max(int(d.get("watched_minutes") or 0), stat_watched if stat_watched < req_m else 0)
+                                    pct_m = min(100, int((best_w / req_m) * 100)) if req_m > 0 else 0
+                                    rem_m = max(0, req_m - best_w)
+                                    d["watched_minutes"] = best_w
+                                    d["progress_percent"] = pct_m
+                                    d["remaining_minutes"] = rem_m
+                                    if best_w > 0 and d.get("status") == "AVAILABLE":
+                                        d["status"] = "IN_PROGRESS"
                                     miner_stat["current_drop_name"] = d.get("name")
-                                    miner_stat["current_drop_watched"] = d.get("watched_minutes", 0)
-                                    miner_stat["current_drop_required"] = d.get("required_minutes", 0)
-                                    miner_stat["current_drop_percent"] = d.get("progress_percent", 0)
-                                    miner_stat["current_drop_remaining"] = d.get("remaining_minutes", 0)
+                                    miner_stat["current_drop_watched"] = best_w
+                                    miner_stat["current_drop_required"] = req_m
+                                    miner_stat["current_drop_percent"] = pct_m
+                                    miner_stat["current_drop_remaining"] = rem_m
                                     found_active_drop = True
                                     if d.get("status") == "IN_PROGRESS":
                                         break
@@ -857,20 +923,9 @@ def build_status_payload():
     }
 
     # 4. System / Daemon status
-    pid_files = ["/run/twitch-drops.pid", "/var/run/twitch-drops.pid"]
-    miner_running = False
-    for p in pid_files:
-        if os.path.exists(p):
-            try:
-                with open(p, "r") as f:
-                    pid = f.read().strip()
-                if pid and os.path.exists(f"/proc/{pid}"):
-                    miner_running = True
-                    break
-            except Exception:
-                pass
+    miner_running = is_miner_daemon_alive()
     if not miner_running and miner_stat.get("active"):
-        miner_running = True
+        miner_running = ensure_miner_daemon_running(twitch_token) or True
 
     git_info = get_git_status()
     running_bots = get_running_bot_processes()
@@ -1150,6 +1205,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     result.pop("device_code_secret", None)
                 elif self.path.endswith("/poll"):
                     result = poll_device_login(str(payload.get("device_code", "")))
+                    if result.get("status") == "ok":
+                        ensure_miner_daemon_running(resolve_token())
                 else:
                     clear_stored_token()
                     result = {"status": "ok"}
@@ -1178,6 +1235,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 updates["DASHBOARD_PASSWORD"] = payload["dashboard_password"].strip()
             if payload.get("twitch_auth_token", "").strip():
                 updates["TWITCH_AUTH_TOKEN"] = payload["twitch_auth_token"].strip()
+                clear_stored_token()
             if "twitch_priority_games" in payload:
                 updates["TWITCH_PRIORITY_GAMES"] = payload["twitch_priority_games"].strip()
             if "eg_email" in payload:
@@ -1200,6 +1258,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 updates["DISCORD_WEBHOOK_URL"] = payload["discord_webhook_url"].strip()
 
             save_env_file(updates)
+            if updates.get("TWITCH_AUTH_TOKEN"):
+                ensure_miner_daemon_running(updates["TWITCH_AUTH_TOKEN"])
 
             self.send_response(200)
             self.send_header("Content-Type", "application/json")

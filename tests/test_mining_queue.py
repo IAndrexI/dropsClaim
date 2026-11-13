@@ -331,6 +331,72 @@ class MiningQueueAndSwapTests(unittest.TestCase):
             # Ensure drops are sorted by requiredMinutesWatched ascending (15m before 900m)
             self.assertEqual([d["name"] for d in camps[0]["timeBasedDrops"]], ["Walk It Off", "Dog Of War"])
 
+    def test_watch_loop_progresses_via_drop_session_even_when_user_online_on_twitch(self):
+        with open(self.cfg_file, "w", encoding="utf-8") as f:
+            json.dump({"mode": "default", "queue": ["WARDOGS"], "updated_at": 100}, f)
+
+        dm = m.DropsMiner("fake_token", priority_games=["WARDOGS"])
+        fake_camp = {
+            "id": "camp_wardogs",
+            "name": "WARDOGS Season 3",
+            "game": {"id": "743893402", "displayName": "WARDOGS"},
+            "endAt": "2099-01-01T00:00:00Z",
+            "timeBasedDrops": [
+                {
+                    "id": "drop_wardogs_2",
+                    "name": "Walk It Off",
+                    "requiredMinutesWatched": 2,
+                    "self": {"currentMinutesWatched": 0, "isClaimed": False},
+                    "benefitEdges": [],
+                }
+            ],
+        }
+        fake_channel = {
+            "channel_id": "56395702",
+            "channel_login": "coconutb",
+            "channel_name": "CoconutB",
+            "stream_id": "s_56395702",
+            "stream_title": "WARDOGS !drops",
+            "viewers": 1200,
+            "game_name": "WARDOGS",
+            "game_id": "743893402",
+            "verified_drops": True,
+            "has_drops_in_title": True,
+        }
+
+        heartbeats_sent = []
+        session_watched = [0]
+
+        def fake_heartbeat(*args, **kwargs):
+            heartbeats_sent.append(True)
+            session_watched[0] += 1
+            return True
+
+        def fake_drop_session(channel_id, channel_login=""):
+            return {
+                "channel": {"id": str(channel_id), "name": channel_login},
+                "game": {"id": "743893402", "displayName": "WARDOGS"},
+                "currentMinutesWatched": session_watched[0],
+                "requiredMinutesWatched": 2,
+                "dropID": "drop_wardogs_2",
+            }
+
+        with mock.patch.object(dm.client, "get_inventory", return_value={"dropCampaignsInProgress": []}), \
+             mock.patch.object(dm.client, "is_user_actively_using_twitch", return_value=True), \
+             mock.patch.object(dm.client, "get_all_active_campaigns", return_value=[fake_camp]), \
+             mock.patch.object(dm.client, "find_eligible_channel", return_value=fake_channel), \
+             mock.patch.object(dm.client, "get_playback_stream_info", return_value={"broadcast_id": "s_56395702", "sub_playlist_url": None}), \
+             mock.patch.object(dm.client, "send_minute_watched_heartbeat", side_effect=fake_heartbeat), \
+             mock.patch.object(dm.client, "get_drop_current_session", side_effect=fake_drop_session), \
+             mock.patch.object(dm, "claim_pending_drops", return_value=0), \
+             mock.patch.object(dm, "_interruptible_sleep", return_value=False):
+            dm.run_cycle()
+
+            # Even though is_user_actively_using_twitch returned True, miner did NOT pause,
+            # sent 2 heartbeats, saw session_watched reach 2/2, and completed the drop!
+            self.assertEqual(len(heartbeats_sent), 2)
+            self.assertNotIn("coconutb", dm._get_excluded_channels())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -630,7 +630,7 @@ class TwitchClient:
         :param user_agent: Optional custom browser user-agent
         """
         self.auth_token = auth_token.strip()
-        from src.auth.twitch_auth import client_id_for
+        from src.auth.twitch_auth import client_id_for, load_token
         self.client_id = client_id or client_id_for(self.auth_token)
         self.user_agent = user_agent or (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -639,6 +639,16 @@ class TwitchClient:
         )
         self.user_id: Optional[str] = None
         self.user_login: Optional[str] = None
+        self.last_drop_session: Dict[str, Any] = {}
+        try:
+            stored = load_token()
+            if stored and stored.get("access_token") == self.auth_token:
+                if stored.get("user_id"):
+                    self.user_id = str(stored["user_id"])
+                if stored.get("login"):
+                    self.user_login = str(stored["login"])
+        except Exception:
+            pass
 
     def _make_request(self, url: str, data: bytes, headers: Dict[str, str], timeout: int = 15) -> bytes:
         """Make an HTTP POST request using Python standard library."""
@@ -697,30 +707,61 @@ class TwitchClient:
 
     def validate_session(self) -> bool:
         """Validate the OAuth token and fetch current user profile."""
+        if not self.auth_token:
+            return False
         query = """
         query CheckUserSession {
             currentUser {
                 id
                 login
                 displayName
-                email
             }
         }
         """
         try:
             res = self.post_gql(query, operation_name="CheckUserSession")
-            user = res.get("data", {}).get("currentUser")
-            if user:
+            user = (res.get("data") or {}).get("currentUser")
+            if user and user.get("id"):
                 self.user_id = str(user.get("id"))
                 self.user_login = user.get("login")
                 logger.info("Authenticated successfully as: %s (ID: %s)", self.user_login, self.user_id)
                 return True
-            else:
-                logger.error("Authentication failed: currentUser is null. Check your auth-token.")
-                return False
         except Exception as e:
-            logger.error("Error validating session: %s", e)
-            return False
+            logger.debug("Primary GQL CheckUserSession error: %s", e)
+
+        # Fallback: inspect token via https://id.twitch.tv/oauth2/validate to sync client_id/user_id
+        try:
+            from src.auth.twitch_auth import VALID_GQL_CLIENT_IDS, validate_access_token
+            info = validate_access_token(self.auth_token)
+            if isinstance(info, dict) and info.get("user_id"):
+                token_cid = str(info.get("client_id") or "")
+                if token_cid in VALID_GQL_CLIENT_IDS:
+                    self.client_id = token_cid
+                    self.user_id = str(info["user_id"])
+                    self.user_login = str(info.get("login") or "")
+                    logger.info("Authenticated via OAuth validate as: %s (ID: %s)", self.user_login, self.user_id)
+                    return True
+        except Exception as val_err:
+            logger.debug("OAuth validate fallback error: %s", val_err)
+
+        # Final fallback: if stored token failed and TWITCH_AUTH_TOKEN in env differs, try env token
+        env_tok = os.environ.get("TWITCH_AUTH_TOKEN", "").strip()
+        if env_tok and env_tok != self.auth_token:
+            self.auth_token = env_tok
+            self.client_id = TWITCH_CLIENT_ID
+            try:
+                res = self.post_gql(query, operation_name="CheckUserSession")
+                user = (res.get("data") or {}).get("currentUser")
+                if user and user.get("id"):
+                    self.user_id = str(user.get("id"))
+                    self.user_login = user.get("login")
+                    logger.info("Authenticated via fallback TWITCH_AUTH_TOKEN as: %s (ID: %s)", self.user_login, self.user_id)
+                    return True
+            except Exception:
+                pass
+
+        logger.error("Authentication failed: currentUser is null. Check your auth-token.")
+        return False
 
     def is_user_actively_using_twitch(self) -> bool:
         """
@@ -1354,6 +1395,20 @@ class TwitchClient:
         needs_collection_drops: List[Dict[str, Any]] = []
         unavailable_drops: List[Dict[str, Any]] = []
 
+        # Read active miner status so real-time DropCurrentSessionContext progress is reflected immediately on UI cards
+        live_miner_stat: Dict[str, Any] = {}
+        miner_stat_file = os.path.join(DATA_DIR, "miner_status.json")
+        if os.path.exists(miner_stat_file):
+            try:
+                with open(miner_stat_file, "r", encoding="utf-8") as f:
+                    live_miner_stat = json.load(f) or {}
+            except Exception:
+                live_miner_stat = {}
+        active_mined_game = str(live_miner_stat.get("game") or "").strip().lower() if live_miner_stat.get("active") else ""
+        active_mined_drop_name = clean_text(live_miner_stat.get("current_drop_name") or "").lower()
+        active_mined_watched = int(live_miner_stat.get("current_drop_watched") or 0) if active_mined_game else 0
+        active_mined_req = int(live_miner_stat.get("current_drop_required") or 0) if active_mined_game else 0
+
         total_ready = 0
         total_in_prog = 0
         total_claimed_in_camps = 0
@@ -1390,6 +1445,17 @@ class TwitchClient:
                 req_text = str(d.get("requirement_text") or "")
                 self_data = d.get("self") or {}
                 watched_min = int(self_data.get("currentMinutesWatched") or 0)
+                if (
+                    active_mined_watched > watched_min
+                    and not camp_expired
+                    and req_min > 0
+                    and gname.lower() == active_mined_game
+                    and (
+                        (active_mined_drop_name and d_name.lower() == active_mined_drop_name)
+                        or (active_mined_req > 0 and req_min == active_mined_req)
+                    )
+                ):
+                    watched_min = active_mined_watched
                 current_subs = int(self_data.get("currentSubs") or 0)
                 is_claimed = bool(self_data.get("isClaimed", False))
                 has_preconditions = bool(self_data.get("hasPreconditionsMet", True))
@@ -1956,6 +2022,28 @@ class TwitchClient:
             logger.debug("Stream chunk touch error: %s", e)
         return False
 
+    def get_drop_current_session(self, channel_id: str, channel_login: str = "") -> Dict[str, Any]:
+        """
+        Query DropCurrentSessionContext for the watched channel.
+        Binds/refreshes the active drop watching session on Twitch's backend and returns
+        real-time per-minute progress (currentMinutesWatched, requiredMinutesWatched, dropID).
+        """
+        if not self.auth_token or not channel_id:
+            return {}
+        try:
+            res = self.post_persisted_gql(
+                operation_name="DropCurrentSessionContext",
+                sha256_hash="4d06b702d25d652afb9ef835d2a550031f1cf762b193523a92166f40ea3d142b",
+                variables={"channelID": str(channel_id), "channelLogin": ""},
+            )
+            session = ((res.get("data") or {}).get("currentUser") or {}).get("dropCurrentSession")
+            if isinstance(session, dict):
+                self.last_drop_session = session
+                return session
+        except Exception as e:
+            logger.debug("DropCurrentSessionContext error for %s: %s", channel_id, e)
+        return {}
+
     def send_minute_watched_heartbeat(
         self,
         channel_id: str,
@@ -1968,9 +2056,25 @@ class TwitchClient:
         """
         Send a stream-viewing progress heartbeat to Twitch's tracking endpoint (https://spade.twitch.tv/track).
         Simulates watching the stream under the user's account without video bandwidth.
-        Also refreshes DropsHighlightService_AvailableDrops for the watched channel so Twitch's
-        drop progress session remains bound to this channel.
+        Also refreshes DropsHighlightService_AvailableDrops and DropCurrentSessionContext for the
+        watched channel so Twitch's drop progress session remains bound to this channel.
         """
+        if not self.user_id and self.auth_token:
+            try:
+                self.validate_session()
+            except Exception:
+                pass
+
+        if (not stream_id or not sub_playlist_url) and channel_login:
+            try:
+                pb = self.get_playback_stream_info(channel_login)
+                if not stream_id and pb.get("broadcast_id"):
+                    stream_id = pb["broadcast_id"]
+                if not sub_playlist_url and pb.get("sub_playlist_url"):
+                    sub_playlist_url = pb["sub_playlist_url"]
+            except Exception:
+                pass
+
         try:
             self.post_persisted_gql(
                 operation_name="DropsHighlightService_AvailableDrops",
@@ -1980,29 +2084,30 @@ class TwitchClient:
         except Exception:
             pass
 
+        try:
+            self.get_drop_current_session(str(channel_id), str(channel_login or ""))
+        except Exception:
+            pass
+
         if sub_playlist_url:
             self.touch_stream_chunk(sub_playlist_url)
 
-        uid_val: Any = str(self.user_id) if self.user_id else ""
+        uid_val: Any = str(self.user_id) if self.user_id else 0
         if isinstance(uid_val, str) and uid_val.isdigit():
             uid_val = int(uid_val)
 
         properties: Dict[str, Any] = {
-            "channel_id": str(channel_id),
             "broadcast_id": str(stream_id),
-            "player": "site",
-            "user_id": uid_val,
-            "live": True,
+            "channel_id": str(channel_id),
             "channel": str(channel_login) if channel_login else "",
+            "hidden": False,
+            "live": True,
             "location": "channel",
             "logged_in": True,
-            "hidden": False,
             "muted": False,
+            "player": "site",
+            "user_id": uid_val,
         }
-        if game_name:
-            properties["game"] = str(game_name)
-        if game_id:
-            properties["game_id"] = str(game_id)
 
         payload = [
             {

@@ -101,23 +101,27 @@ fi
 echo "[4/4] Restarting active background services..."
 if command -v rc-service >/dev/null 2>&1; then
     # Alpine Linux OpenRC
-    if rc-service twitch-drops status >/dev/null 2>&1; then
+    if [ -f /etc/init.d/twitch-drops ] || rc-service twitch-drops status >/dev/null 2>&1; then
         echo "Restarting twitch-drops OpenRC service..."
-        rc-service twitch-drops restart || true
+        rc-service twitch-drops restart || rc-service twitch-drops start || true
     fi
-    if rc-service auto-loot-web status >/dev/null 2>&1; then
-        echo "Restarting auto-loot-web OpenRC service..."
-        rc-service auto-loot-web restart || true
+    if [ "${SKIP_WEB_RESTART:-0}" != "1" ]; then
+        if [ -f /etc/init.d/auto-loot-web ] || rc-service auto-loot-web status >/dev/null 2>&1; then
+            echo "Restarting auto-loot-web OpenRC service..."
+            rc-service auto-loot-web restart || rc-service auto-loot-web start || true
+        fi
     fi
 elif command -v systemctl >/dev/null 2>&1; then
     # Debian / Ubuntu systemd
-    if systemctl is-active --quiet twitch-drops 2>/dev/null; then
+    if systemctl list-unit-files twitch-drops.service >/dev/null 2>&1 || systemctl is-active --quiet twitch-drops 2>/dev/null; then
         echo "Restarting twitch-drops systemd service..."
         systemctl restart twitch-drops || true
     fi
-    if systemctl is-active --quiet auto-loot-web 2>/dev/null; then
-        echo "Restarting auto-loot-web systemd service..."
-        systemctl restart auto-loot-web || true
+    if [ "${SKIP_WEB_RESTART:-0}" != "1" ]; then
+        if systemctl list-unit-files auto-loot-web.service >/dev/null 2>&1 || systemctl is-active --quiet auto-loot-web 2>/dev/null; then
+            echo "Restarting auto-loot-web systemd service..."
+            systemctl restart auto-loot-web || true
+        fi
     fi
 fi
 
