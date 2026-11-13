@@ -1430,7 +1430,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             mstat = cfg.get("miner_status") or {}
             sel = cfg.get("selected_game") or mstat.get("game")
             q_len = len(cfg.get("queue") or [])
-            if mstat.get("active") and mstat.get("channel_name"):
+            if cfg.get("mode") == "stopped":
+                msg = "Disconnected from Twitch mining. Zero streams will be watched until toggled back on."
+            elif mstat.get("active") and mstat.get("channel_name"):
                 msg = f"Instantly switched stream! Now watching {mstat['channel_name']} for '{mstat.get('game')}' ({q_len} in queue)."
             elif sel:
                 msg = f"Now targeting '#1 {sel}' ({q_len} in queue, {cfg['mode']} mode)."

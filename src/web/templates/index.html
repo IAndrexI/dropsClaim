@@ -202,6 +202,97 @@
     .mode-btn { background: none; border: none; color: var(--text-muted); padding: 5px 12px; border-radius: 6px; cursor: pointer; font-size: 0.8rem; font-weight: 600; transition: all 0.2s; }
     .mode-btn.active { background: #1e293b; color: white; border: 1px solid #3b82f6; }
 
+    /* Master Light Switch Toggle */
+    .master-switch-card {
+      background: linear-gradient(135deg, rgba(19, 27, 46, 0.95), rgba(15, 23, 42, 0.98));
+      border: 1px solid #334155;
+      border-radius: 12px;
+      padding: 14px 20px;
+      margin-bottom: 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 14px;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+    }
+    .master-switch-info { display: flex; align-items: center; gap: 14px; }
+    .master-switch-icon {
+      width: 42px;
+      height: 42px;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.3rem;
+      background: rgba(145, 70, 255, 0.15);
+      border: 1px solid rgba(145, 70, 255, 0.3);
+      color: #c084fc;
+      transition: all 0.3s ease;
+    }
+    .master-switch-card.disconnected .master-switch-icon {
+      background: rgba(239, 68, 68, 0.15);
+      border-color: rgba(239, 68, 68, 0.35);
+      color: #f87171;
+    }
+    .master-switch-text h3 { font-size: 1rem; font-weight: 700; margin-bottom: 2px; }
+    .master-switch-text p { font-size: 0.8rem; color: var(--text-muted); }
+    .master-switch-ctrl { display: flex; align-items: center; gap: 12px; }
+    .toggle-switch-label {
+      position: relative;
+      display: inline-block;
+      width: 58px;
+      height: 32px;
+      cursor: pointer;
+    }
+    .toggle-switch-label input { opacity: 0; width: 0; height: 0; }
+    .toggle-slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background-color: #334155;
+      transition: 0.25s;
+      border-radius: 34px;
+      border: 1px solid #475569;
+    }
+    .toggle-slider:before {
+      position: absolute;
+      content: "";
+      height: 22px;
+      width: 22px;
+      left: 4px;
+      bottom: 4px;
+      background-color: white;
+      transition: 0.25s;
+      border-radius: 50%;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.4);
+    }
+    .toggle-switch-label input:checked + .toggle-slider {
+      background-color: #10b981;
+      border-color: #059669;
+      box-shadow: 0 0 12px rgba(16, 185, 129, 0.4);
+    }
+    .toggle-switch-label input:checked + .toggle-slider:before {
+      transform: translateX(26px);
+    }
+    .toggle-state-pill {
+      font-size: 0.78rem;
+      font-weight: 700;
+      padding: 5px 12px;
+      border-radius: 20px;
+      letter-spacing: 0.04em;
+    }
+    .toggle-state-pill.online {
+      background: rgba(16, 185, 129, 0.15);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.35);
+    }
+    .toggle-state-pill.offline {
+      background: rgba(239, 68, 68, 0.15);
+      color: #f87171;
+      border: 1px solid rgba(239, 68, 68, 0.35);
+    }
+
     /* Campaign Cards with Image and Links */
     .camp-card-body { display: flex; gap: 14px; }
     .camp-cover { width: 56px; height: 75px; object-fit: cover; border-radius: 6px; border: 1px solid #1e293b; flex-shrink: 0; background: #0c1322; }
@@ -290,6 +381,24 @@
 
     <!-- TAB 1: TWITCH DROPS (WITH SELECTION & INVENTORY CROSS-REFERENCE) -->
     <div id="tab-drops" class="tab-content">
+      <!-- Master Twitch Mining Switch (Light Switch Toggle) -->
+      <div class="master-switch-card" id="master-switch-card">
+        <div class="master-switch-info">
+          <div class="master-switch-icon" id="master-switch-icon">&#9889;</div>
+          <div class="master-switch-text">
+            <h3 id="master-switch-heading">Twitch Drops Mining: Connected</h3>
+            <p id="master-switch-sub">Stream-watching connection is active. Flipping this light switch completely disconnects Twitch stream viewing until switched back.</p>
+          </div>
+        </div>
+        <div class="master-switch-ctrl">
+          <span class="toggle-state-pill online" id="toggle-state-pill">MINING ON</span>
+          <label class="toggle-switch-label" title="Toggle Twitch Mining Access On/Off">
+            <input type="checkbox" id="master-mining-toggle" checked onchange="onMasterToggleChange(this.checked)">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
       <!-- Live Miner Telemetry Banner (Pretending to watch stream under account - strictly 1 stream at a time) -->
       <div class="live-miner-banner" id="live-miner-banner">
         <div class="miner-details">
@@ -927,6 +1036,33 @@
       const viewersPill = document.getElementById("miner-stream-viewers");
       const streamLink = document.getElementById("miner-stream-link");
 
+      // Update Master Light Switch Card
+      const masterCard = document.getElementById("master-switch-card");
+      const masterToggle = document.getElementById("master-mining-toggle");
+      const masterHeading = document.getElementById("master-switch-heading");
+      const masterSub = document.getElementById("master-switch-sub");
+      const masterPill = document.getElementById("toggle-state-pill");
+      const masterIcon = document.getElementById("master-switch-icon");
+      const isStopped = (currentMiningMode === "stopped" || minerStat.mode === "stopped");
+
+      if (masterToggle) masterToggle.checked = !isStopped;
+      if (masterCard) masterCard.classList.toggle("disconnected", isStopped);
+      if (masterPill) {
+        masterPill.className = "toggle-state-pill " + (isStopped ? "offline" : "online");
+        masterPill.innerText = isStopped ? "DISCONNECTED / OFF" : "CONNECTED / ON";
+      }
+      if (masterIcon) masterIcon.innerHTML = isStopped ? "&#9888;" : "&#9889;";
+      if (masterHeading) {
+        masterHeading.innerText = isStopped 
+          ? "Twitch Drops Mining: Completely Disconnected" 
+          : "Twitch Drops Mining: Connected & Active";
+      }
+      if (masterSub) {
+        masterSub.innerText = isStopped
+          ? "Twitch access is switched OFF. No streams will be watched or mined until you flip this switch back on."
+          : "Twitch access is switched ON. Actively monitoring drops and verifying real-time progress.";
+      }
+
       if (!minerDot) return;
 
       if (currentMiningMode === "stopped" || minerStat.mode === "stopped") {
@@ -1126,6 +1262,15 @@
         });
         updateFilterCounts(lastTwitchData);
         renderDropsGrid(lastTwitchData);
+      }
+    }
+
+    async function onMasterToggleChange(isConnected) {
+      if (!isConnected) {
+        setMiningMode("stopped");
+      } else {
+        const nextMode = selectedPriorityGames.length > 0 ? "selective" : "default";
+        setMiningMode(nextMode);
       }
     }
 
