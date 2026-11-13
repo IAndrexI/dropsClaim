@@ -5,6 +5,7 @@ import unittest
 from unittest import mock
 
 from src.twitch_drops import miner as m
+from src.twitch_drops import twitch_api as t_api
 from src.web import server as s
 
 
@@ -433,6 +434,73 @@ class MiningQueueAndSwapTests(unittest.TestCase):
             self.assertFalse(stat.get("active"))
             self.assertEqual(stat.get("mode"), "stopped")
             self.assertIn("stopped", stat.get("message", "").lower())
+
+    def test_find_eligible_channel_resolves_evolutions_alias(self):
+        client = t_api.TwitchClient("fake_token")
+        fake_ch = {
+            "channel_id": "135576689",
+            "channel_login": "pokemon_streamer",
+            "channel_name": "PokemonStreamer",
+            "stream_id": "9999",
+            "stream_title": "Pokemon Drops AFK",
+            "viewers": 50,
+            "game_name": "Pokémon Community Game",
+            "game_id": "329951934",
+            "verified_drops": True,
+            "has_drops_in_title": True,
+        }
+        with mock.patch.object(client, "find_eligible_channel", wraps=client.find_eligible_channel) as spy_find:
+            with mock.patch.object(client, "post_gql", return_value={
+                "data": {
+                    "game": {
+                        "id": "329951934",
+                        "name": "Pokémon Community Game",
+                        "streams": {
+                            "edges": [
+                                {
+                                    "node": {
+                                        "id": "9999",
+                                        "title": "Pokemon Drops AFK",
+                                        "viewersCount": 50,
+                                        "freeformTags": [{"name": "DropsEnabled"}],
+                                        "broadcaster": {"id": "135576689", "login": "pokemon_streamer", "displayName": "PokemonStreamer"},
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }), mock.patch.object(client, "post_persisted_gql", return_value={
+                "data": {
+                    "channel": {
+                        "viewerDropCampaigns": [
+                            {
+                                "id": "evo_camp",
+                                "name": "Evolutions",
+                                "timeBasedDrops": [{"id": "d1", "requiredMinutesWatched": 20}]
+                            }
+                        ]
+                    }
+                }
+            }):
+                ch = client.find_eligible_channel("Evolutions")
+                self.assertIsNotNone(ch)
+                self.assertEqual(ch["game_name"], "Evolutions")
+                self.assertEqual(ch["channel_login"], "pokemon_streamer")
+
+    def test_mini_viewer_and_auto_suspension_in_template(self):
+        template_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "src", "web", "templates", "index.html"
+        )
+        with open(template_path, "r", encoding="utf-8") as f:
+            html = f.read()
+        self.assertIn("mini-viewer-card", html)
+        self.assertIn("mini-viewer-warn-overlay", html)
+        self.assertIn("mini-viewer-iframe", html)
+        self.assertIn("toggleMiniViewer", html)
+        self.assertIn("suspendMiniViewerForExternalViewing", html)
+        self.assertIn("resumeMiniViewer", html)
 
 
 if __name__ == "__main__":

@@ -64,9 +64,15 @@ def extract_game_name(camp: Optional[Dict[str, Any]], default: str = "Twitch Gam
     g = camp.get("game")
     if isinstance(g, dict):
         name = g.get("displayName") or g.get("name") or ""
-        return clean_text(name) or default
-    if isinstance(g, str) and g.strip():
+        if clean_text(name):
+            return clean_text(name)
+    elif isinstance(g, str) and g.strip():
         return clean_text(g)
+
+    # Check campaign name for special events / global chat badge campaigns (e.g. Evolutions)
+    cname = str(camp.get("name") or "").lower()
+    if "evolution" in cname:
+        return "Evolutions"
     return default
 
 
@@ -146,6 +152,8 @@ def infer_game_from_reward(event: Dict[str, Any]) -> str:
 
     if "rust" in name_low:
         return "Rust"
+    if "evolution" in name_low or "pichu" in name_low or "pikachu" in name_low or "pokemon" in name_low:
+        return "Evolutions / Pokémon"
     return "Twitch Drop Reward"
 
 
@@ -227,6 +235,8 @@ def format_box_art_url(url: Optional[str]) -> str:
 
 
 DEFAULT_DROPS_GAMES_ROSTER: List[str] = [
+    "Evolutions",
+    "Pokémon Community Game",
     "WARDOGS",
     "Rust",
     "World of Warcraft",
@@ -1747,7 +1757,39 @@ class TwitchClient:
         """
         Find a live channel streaming the specified game with verified watch-time drops enabled
         and/or 'drops' in the channel title/tags. Skips any channel in excluded_channels.
+        Supports special campaigns and chat-badge campaigns (such as Evolutions) across qualifying categories.
         """
+        gn_low = game_name.lower().strip()
+        GAME_CATEGORY_ALIASES = {
+            "evolutions": [
+                "Pokémon Community Game",
+                "Pokémon Trading Card Game Pocket",
+                "Pokémon Trading Card Game Live",
+                "Pokémon",
+                "Just Chatting",
+            ],
+            "pokemon": [
+                "Pokémon Community Game",
+                "Pokémon Trading Card Game Pocket",
+                "Pokémon Trading Card Game Live",
+                "Pokémon",
+            ],
+            "twitch global drop": [
+                "Just Chatting",
+            ],
+        }
+        if gn_low in GAME_CATEGORY_ALIASES or "evolution" in gn_low or "pokemon" in gn_low:
+            cand_list = (
+                GAME_CATEGORY_ALIASES.get(gn_low)
+                or (GAME_CATEGORY_ALIASES["evolutions"] if "evolution" in gn_low else GAME_CATEGORY_ALIASES["pokemon"])
+            )
+            for alt_game in cand_list:
+                ch = self.find_eligible_channel(alt_game, fast_first=fast_first, excluded_channels=excluded_channels)
+                if ch:
+                    ch["game_name"] = game_name
+                    logger.info("Found eligible stream for '%s' in category '%s': @%s", game_name, alt_game, ch.get("channel_login"))
+                    return ch
+
         excluded_set: Set[str] = {
             str(ch).lower().strip() for ch in (excluded_channels or set()) if ch and str(ch).strip()
         }

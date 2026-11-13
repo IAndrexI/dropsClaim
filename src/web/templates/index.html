@@ -293,6 +293,67 @@
       border: 1px solid rgba(239, 68, 68, 0.35);
     }
 
+    /* Live Stream Mini-Viewer Component */
+    .mini-viewer-card {
+      background: #090d16;
+      border: 1px solid #1e293b;
+      border-radius: 10px;
+      margin-top: 14px;
+      width: 100%;
+      overflow: hidden;
+      display: none;
+      flex-direction: column;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+    }
+    .mini-viewer-header {
+      background: #0f172a;
+      padding: 8px 14px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid #1e293b;
+      font-size: 0.8rem;
+    }
+    .mini-viewer-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 600;
+      color: #cbd5e1;
+    }
+    .mini-viewer-frame-wrap {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      max-height: 380px;
+      background: #000;
+    }
+    .mini-viewer-frame-wrap iframe {
+      width: 100%;
+      height: 100%;
+      border: 0;
+    }
+    .mini-viewer-warn-overlay {
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(11, 15, 25, 0.94);
+      color: #f87171;
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      text-align: center;
+      gap: 10px;
+      z-index: 10;
+    }
+    .mini-viewer-warn-overlay p {
+      font-size: 0.82rem;
+      color: #cbd5e1;
+      max-width: 440px;
+      line-height: 1.5;
+    }
+
     /* Campaign Cards with Image and Links */
     .camp-card-body { display: flex; gap: 14px; }
     .camp-cover { width: 56px; height: 75px; object-fit: cover; border-radius: 6px; border: 1px solid #1e293b; flex-shrink: 0; background: #0c1322; }
@@ -416,7 +477,31 @@
           <span class="miner-stat-pill" id="miner-drop-live-progress" style="display: none; border-color: #3b82f6; color: #93c5fd;">Drop: --</span>
           <span class="miner-stat-pill" id="miner-stream-progress">Session: 0/15 mins</span>
           <span class="miner-stat-pill" id="miner-stream-viewers">0 Viewers</span>
+          <button class="btn btn-sm" id="btn-toggle-miniviewer" onclick="toggleMiniViewer()" style="border-color: #8b5cf6; color: #c084fc; display: none;">&#128065; Show Mini-Viewer</button>
           <a href="#" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-primary" id="miner-stream-link" style="display: none;">Open Watched Stream</a>
+        </div>
+
+        <!-- Embedded Mini-Viewer for Active Stream -->
+        <div class="mini-viewer-card" id="mini-viewer-card">
+          <div class="mini-viewer-header">
+            <div class="mini-viewer-title">
+              <span class="live-indicator-dot" style="width: 6px; height: 6px;"></span>
+              <span id="mini-viewer-channel-label">Active Stream Preview</span>
+            </div>
+            <div style="display: flex; gap: 8px; align-items: center;">
+              <span style="font-size: 0.72rem; color: #94a3b8;">Single-viewing protected</span>
+              <button class="btn btn-sm" style="padding: 2px 8px; font-size: 0.72rem;" onclick="closeMiniViewer()">Close Preview</button>
+            </div>
+          </div>
+          <div class="mini-viewer-frame-wrap" id="mini-viewer-frame-wrap">
+            <div class="mini-viewer-warn-overlay" id="mini-viewer-warn-overlay">
+              <div style="font-size: 1.5rem;">&#9888;</div>
+              <strong style="color: #f87171; font-size: 0.92rem;">Stream Open Elsewhere Detected!</strong>
+              <p>Twitch rules only allow <strong>1 stream</strong> to earn drops per account. To ensure your drops progress is never paused, this preview has been automatically suspended while you watch elsewhere.</p>
+              <button class="btn btn-sm btn-primary" style="margin-top: 6px;" onclick="resumeMiniViewer()">Resume Preview Here</button>
+            </div>
+            <iframe id="mini-viewer-iframe" src="" allowfullscreen="true" scrolling="no"></iframe>
+          </div>
         </div>
       </div>
 
@@ -1024,6 +1109,131 @@
       renderStoresGrid(data.amazon || {}, data.gog || {});
     }
 
+    // Live Stream Mini-Viewer State
+    let isMiniViewerOpen = false;
+    let currentPreviewChannel = "";
+    let isPreviewSuspendedDueToUserActive = false;
+
+    function getTwitchParentDomain() {
+      const host = window.location.hostname;
+      return host || "localhost";
+    }
+
+    function toggleMiniViewer() {
+      if (isMiniViewerOpen) {
+        closeMiniViewer();
+      } else {
+        openMiniViewer();
+      }
+    }
+
+    function openMiniViewer() {
+      const card = document.getElementById("mini-viewer-card");
+      const btn = document.getElementById("btn-toggle-miniviewer");
+      const label = document.getElementById("mini-viewer-channel-label");
+      const iframe = document.getElementById("mini-viewer-iframe");
+      const overlay = document.getElementById("mini-viewer-warn-overlay");
+
+      const lastTwitch = (window.lastTelemetryData && window.lastTelemetryData.twitch) || {};
+      const minerStat = lastTwitch.miner_status || {};
+      const channelLogin = minerStat.channel_login || "";
+
+      if (!channelLogin) {
+        showToast("No active stream currently being watched to preview.");
+        return;
+      }
+
+      isMiniViewerOpen = true;
+      if (card) card.style.display = "flex";
+      if (btn) btn.innerHTML = "&#10006; Hide Mini-Viewer";
+      if (label) label.innerText = `Previewing: ${minerStat.channel_name || channelLogin} (${minerStat.game || 'Drops'})`;
+
+      if (minerStat.user_active) {
+        suspendMiniViewerForExternalViewing();
+      } else {
+        isPreviewSuspendedDueToUserActive = false;
+        if (overlay) overlay.style.display = "none";
+        currentPreviewChannel = channelLogin;
+        const parent = getTwitchParentDomain();
+        if (iframe) {
+          iframe.src = `https://player.twitch.tv/?channel=${encodeURIComponent(channelLogin)}&parent=${parent}&muted=true&autoplay=true`;
+        }
+      }
+    }
+
+    function closeMiniViewer() {
+      isMiniViewerOpen = false;
+      const card = document.getElementById("mini-viewer-card");
+      const btn = document.getElementById("btn-toggle-miniviewer");
+      const iframe = document.getElementById("mini-viewer-iframe");
+      const overlay = document.getElementById("mini-viewer-warn-overlay");
+
+      if (card) card.style.display = "none";
+      if (iframe) iframe.src = "";
+      if (overlay) overlay.style.display = "none";
+      if (btn) btn.innerHTML = "&#128065; Show Mini-Viewer";
+      currentPreviewChannel = "";
+      isPreviewSuspendedDueToUserActive = false;
+    }
+
+    function suspendMiniViewerForExternalViewing() {
+      isPreviewSuspendedDueToUserActive = true;
+      const iframe = document.getElementById("mini-viewer-iframe");
+      const overlay = document.getElementById("mini-viewer-warn-overlay");
+      if (iframe) iframe.src = "";
+      if (overlay) overlay.style.display = "flex";
+      showToast("Twitch stream open elsewhere detected! Mini-viewer preview automatically suspended to protect drop mining.");
+    }
+
+    function resumeMiniViewer() {
+      const overlay = document.getElementById("mini-viewer-warn-overlay");
+      const iframe = document.getElementById("mini-viewer-iframe");
+      const lastTwitch = (window.lastTelemetryData && window.lastTelemetryData.twitch) || {};
+      const minerStat = lastTwitch.miner_status || {};
+      const channelLogin = minerStat.channel_login || currentPreviewChannel;
+
+      if (!channelLogin) {
+        closeMiniViewer();
+        return;
+      }
+
+      isPreviewSuspendedDueToUserActive = false;
+      if (overlay) overlay.style.display = "none";
+      const parent = getTwitchParentDomain();
+      currentPreviewChannel = channelLogin;
+      if (iframe) {
+        iframe.src = `https://player.twitch.tv/?channel=${encodeURIComponent(channelLogin)}&parent=${parent}&muted=true&autoplay=true`;
+      }
+      showToast("Mini-viewer preview resumed.");
+    }
+
+    function updateMiniViewerFrame(minerStat) {
+      if (!isMiniViewerOpen) return;
+      const iframe = document.getElementById("mini-viewer-iframe");
+      const overlay = document.getElementById("mini-viewer-warn-overlay");
+      const label = document.getElementById("mini-viewer-channel-label");
+
+      // Auto-suspend if user activity detected elsewhere on Twitch
+      if (minerStat.user_active) {
+        if (!isPreviewSuspendedDueToUserActive) {
+          suspendMiniViewerForExternalViewing();
+        }
+        return;
+      }
+
+      // If channel changed, update iframe
+      if (minerStat.channel_login && minerStat.channel_login !== currentPreviewChannel && !isPreviewSuspendedDueToUserActive) {
+        currentPreviewChannel = minerStat.channel_login;
+        const parent = getTwitchParentDomain();
+        if (iframe) {
+          iframe.src = `https://player.twitch.tv/?channel=${encodeURIComponent(minerStat.channel_login)}&parent=${parent}&muted=true&autoplay=true`;
+        }
+        if (label) {
+          label.innerText = `Previewing: ${minerStat.channel_name || minerStat.channel_login} (${minerStat.game || 'Drops'})`;
+        }
+      }
+    }
+
     function renderMinerTelemetry(twitch) {
       const minerStat = twitch.miner_status || {};
       const minerDot = document.getElementById("miner-dot");
@@ -1141,6 +1351,24 @@
         progressPill.innerText = "Session: Idle";
         viewersPill.innerText = "0 Viewers";
         streamLink.style.display = "none";
+      }
+
+      // Mini-Viewer Controls & Protection (Enforce single viewing at all times)
+      const btnMini = document.getElementById("btn-toggle-miniviewer");
+      if (isStopped || !minerStat.active || !minerStat.channel_login) {
+        if (btnMini) btnMini.style.display = "none";
+        if (isMiniViewerOpen) closeMiniViewer();
+      } else {
+        if (btnMini) btnMini.style.display = "inline-flex";
+        if (isMiniViewerOpen) updateMiniViewerFrame(minerStat);
+      }
+
+      if (streamLink) {
+        streamLink.onclick = function() {
+          if (isMiniViewerOpen) {
+            suspendMiniViewerForExternalViewing();
+          }
+        };
       }
     }
 
