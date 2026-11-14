@@ -1138,7 +1138,12 @@
       if (!currentData || !currentData.twitch || !currentData.twitch.miner_status) return;
       const minerStat = currentData.twitch.miner_status;
       if (!minerStat.active || !minerStat.switched_at) return;
-      const switchedMs = Date.parse(minerStat.switched_at);
+      let switchedMs = Number(minerStat.switched_at);
+      if (Number.isFinite(switchedMs) && switchedMs > 0) {
+        if (switchedMs < 1e11) switchedMs *= 1000;
+      } else {
+        switchedMs = Date.parse(minerStat.switched_at);
+      }
       if (!Number.isFinite(switchedMs)) return;
       const elapsedMins = Math.max(1, Math.floor((Date.now() - switchedMs) / 60000) + 1);
       const cycleTotal = minerStat.cycle_minutes || 60;
@@ -1149,7 +1154,7 @@
         if (progressPill) {
           progressPill.innerText = minerStat.progress_verified
             ? `Session: ${clampedMins}/${cycleTotal}m (Verified)`
-            : `Session: ${clampedMins}/${cycleTotal}m (Check: ${minerStat.minutes_without_progress || 0}/${minerStat.progress_check_minutes || 5}m)`;
+            : `Session: ${clampedMins}/${cycleTotal}m (Check: ${minerStat.minutes_without_progress || 0}/${minerStat.progress_check_minutes || 15}m)`;
         }
       }
     }

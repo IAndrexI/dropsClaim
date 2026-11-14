@@ -2618,39 +2618,27 @@ class TwitchClient:
         if isinstance(uid_val, str) and uid_val.isdigit():
             uid_val = int(uid_val)
 
+        now_iso = datetime.now(timezone.utc).isoformat()
+        if "+00:00" in now_iso:
+            now_iso = now_iso.replace("+00:00", "Z")
+        elif not now_iso.endswith("Z"):
+            now_iso += "Z"
+
         properties: Dict[str, Any] = {
-            "app_fullscreen": False,
-            "autoplayed": True,
-            "backend": "mediaplayer",
             "broadcast_id": str(stream_id),
-            "channel": str(channel_login) if channel_login else "",
             "channel_id": str(channel_id),
-            "chat_visible": True,
-            "chat_visibility_status": "visible",
-            "content_mode": "live",
+            "channel": str(channel_login) if channel_login else "",
+            "client_time": now_iso,
+            "game": str(game_name or ""),
+            "game_id": str(game_id or ""),
             "hidden": False,
-            "is_ad_playing": False,
             "is_live": True,
             "live": True,
-            "location": "channel",
-            "logged_in": True,
-            "login": str(self.user_login or ""),
+            "logged_in": bool(uid_val),
             "minutes_logged": max(1, int(minutes_logged or 1)),
-            "mse_support": True,
             "muted": False,
-            "partner": True,
-            "playback_gated": False,
-            "player": "site",
-            "player_size_mode": "default",
-            "time_spent_hidden": 0,
-            "turbo": False,
             "user_id": uid_val,
-            "volume": 0.5,
         }
-        if game_name:
-            properties["game"] = str(game_name)
-        if game_id:
-            properties["game_id"] = str(game_id)
 
         payload = [
             {
@@ -2687,22 +2675,36 @@ class TwitchClient:
 
         b64_data = base64.b64encode(raw_json.encode('utf-8')).decode('utf-8')
         body_form = f"data={urllib.parse.quote(b64_data)}".encode('utf-8')
+        json_body = json.dumps({"data": b64_data}).encode('utf-8')
 
-        headers = {
+        headers_form = {
             "Client-Id": self.client_id,
             "Authorization": f"OAuth {self.auth_token}",
             "User-Agent": self.user_agent,
             "Content-Type": "application/x-www-form-urlencoded",
         }
+        headers_json = {
+            "Client-Id": self.client_id,
+            "Authorization": f"OAuth {self.auth_token}",
+            "User-Agent": self.user_agent,
+            "Content-Type": "application/json",
+        }
         for track_url in ["https://spade.twitch.tv/track", SPADE_URL]:
             try:
-                req = urllib.request.Request(track_url, data=body_form, headers=headers, method="POST")
-                with urllib.request.urlopen(req, timeout=10) as resp:
+                req_json = urllib.request.Request(track_url, data=json_body, headers=headers_json, method="POST")
+                with urllib.request.urlopen(req_json, timeout=10) as resp:
                     if resp.status in (200, 204):
                         sent_ok = True
                         break
-            except Exception as err:
-                logger.debug("Heartbeat error on %s: %s", track_url, err)
+            except Exception:
+                try:
+                    req_form = urllib.request.Request(track_url, data=body_form, headers=headers_form, method="POST")
+                    with urllib.request.urlopen(req_form, timeout=10) as resp:
+                        if resp.status in (200, 204):
+                            sent_ok = True
+                            break
+                except Exception as err:
+                    logger.debug("Heartbeat error on %s: %s", track_url, err)
         return sent_ok
 
 

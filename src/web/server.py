@@ -1104,7 +1104,16 @@ def build_status_payload():
                 if miner_stat.get("active") and miner_stat.get("game"):
                     if miner_stat.get("switched_at"):
                         try:
-                            elapsed_m = max(1, int((time.time() - float(miner_stat["switched_at"])) // 60) + 1)
+                            sw_val = miner_stat["switched_at"]
+                            if isinstance(sw_val, (int, float)):
+                                sw_ts = float(sw_val)
+                            elif isinstance(sw_val, str) and sw_val.strip().replace(".", "", 1).isdigit():
+                                sw_ts = float(sw_val.strip())
+                            else:
+                                from datetime import datetime
+                                dt = datetime.fromisoformat(str(sw_val).replace("Z", "+00:00"))
+                                sw_ts = dt.timestamp()
+                            elapsed_m = max(1, int((time.time() - sw_ts) // 60) + 1)
                             cyc_m = int(miner_stat.get("cycle_minutes") or 60)
                             miner_stat["minutes_watched"] = min(cyc_m, max(int(miner_stat.get("minutes_watched") or 1), elapsed_m))
                         except Exception:

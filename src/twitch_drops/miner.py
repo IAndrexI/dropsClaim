@@ -167,7 +167,7 @@ class DropsMiner:
             env_check_mins = int(os.environ.get("TWITCH_PROGRESS_CHECK_MINS", "5"))
         except Exception:
             env_check_mins = 5
-        self.progress_check_minutes: int = max(2, min(10, env_check_mins))
+        self.progress_check_minutes: int = max(2, min(30, env_check_mins))
 
     def _refresh_auth_if_needed(self) -> bool:
         """Reload Twitch OAuth token from token store or .env if updated via Web UI while daemon is running."""
@@ -216,6 +216,7 @@ class DropsMiner:
             self.rotated_channels.pop(ch, None)
 
         user_excluded = set()
+        pref = ""
         try:
             cfg = load_mining_config()
             pref = str(cfg.get("preferred_channel") or "").lower().strip()
@@ -226,17 +227,36 @@ class DropsMiner:
         except Exception:
             pass
 
-        return set(self.unproductive_channels.keys()) | set(self.rotated_channels.keys()) | user_excluded
+        excluded = set(self.unproductive_channels.keys()) | set(self.rotated_channels.keys()) | user_excluded
+        if pref:
+            excluded.discard(pref)
+        return excluded
 
     def _mark_channel_rotated(self, channel_login: str):
         """Mark a channel as rotated after completing a 1-hour watch cycle so another channel is selected."""
         if channel_login and str(channel_login).strip():
-            self.rotated_channels[str(channel_login).strip().lower()] = time.time()
+            cl = str(channel_login).strip().lower()
+            try:
+                cfg = load_mining_config()
+                pref = str(cfg.get("preferred_channel") or "").lower().strip()
+                if pref and cl == pref:
+                    return
+            except Exception:
+                pass
+            self.rotated_channels[cl] = time.time()
 
     def _mark_channel_unproductive(self, channel_login: str):
-        """Temporarily blacklist a channel that failed to award drop progress within 2-5 minutes."""
+        """Temporarily blacklist a channel that failed to award drop progress."""
         if channel_login and str(channel_login).strip():
-            self.unproductive_channels[str(channel_login).strip().lower()] = time.time()
+            cl = str(channel_login).strip().lower()
+            try:
+                cfg = load_mining_config()
+                pref = str(cfg.get("preferred_channel") or "").lower().strip()
+                if pref and cl == pref:
+                    return
+            except Exception:
+                pass
+            self.unproductive_channels[cl] = time.time()
 
     def _get_campaign_total_watched(
         self,
@@ -872,8 +892,10 @@ class DropsMiner:
             logger.info("[MINER] Checking live streams with drops enabled for '%s' (%s)...", cand_game, cand_name)
             found_ch = None
             pref_ch = str(config.get("preferred_channel") or "").lower().strip()
-            if pref_ch and pref_ch not in self.unproductive_channels and pref_ch not in self.rotated_channels:
+            if pref_ch:
                 found_ch = self.client.resolve_specific_channel(pref_ch, cand_game)
+                if found_ch:
+                    logger.info("[MINER] Found user preferred channel %s (@%s) for '%s'", found_ch["channel_name"], found_ch["channel_login"], cand_game)
             if not found_ch:
                 found_ch = self.client.find_eligible_channel(
                     cand_game,
@@ -1122,7 +1144,17 @@ class DropsMiner:
                 )
             else:
                 mins_stalled = (minute + 1) - last_progress_minute
-                if mins_stalled >= self.progress_check_minutes:
+                pref_ch_cfg = str(config.get("preferred_channel") or "").lower().strip()
+                is_preferred = bool(pref_ch_cfg and str(channel.get("channel_login", "")).lower() == pref_ch_cfg)
+                stall_threshold = self.progress_check_minutes
+
+                if is_preferred:
+                    if mins_stalled >= 15 and mins_stalled % 10 == 0:
+                        logger.info(
+                            "[MINER] User-selected channel %s (@%s) is active; maintaining watch session despite delayed drop progress (+%dm watched).",
+                            channel["channel_name"], channel["channel_login"], current_watched
+                        )
+                elif mins_stalled >= stall_threshold:
                     logger.warning(
                         "[MINER] No drop progress increase after %d minutes on %s (@%s) for '%s' (watched remained at %dm). "
                         "Marking channel unproductive and switching to another Drops channel immediately!",
@@ -1131,7 +1163,7 @@ class DropsMiner:
                     self._mark_channel_unproductive(channel["channel_login"])
                     stall_cnt = self.campaign_stall_counts.get(game_name.lower(), 0) + 1
                     self.campaign_stall_counts[game_name.lower()] = stall_cnt
-                    if stall_cnt >= 2:
+                    if stall_cnt >= 4:
                         self.stalled_campaigns[game_name.lower()] = time.time()
                         logger.warning(
                             "[MINER] Campaign '%s' failed to gain progress across %d channels in a row; "
