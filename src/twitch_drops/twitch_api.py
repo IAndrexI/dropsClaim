@@ -735,6 +735,8 @@ class TwitchClient:
             "User-Agent": self.user_agent,
             "Content-Type": "application/json",
             "Accept": "*/*",
+            "Origin": "https://www.twitch.tv",
+            "Referer": "https://www.twitch.tv/",
         }
         if self.auth_token:
             headers["Authorization"] = f"OAuth {self.auth_token}"
@@ -796,6 +798,8 @@ class TwitchClient:
             "User-Agent": self.user_agent,
             "Content-Type": "application/json",
             "Accept": "*/*",
+            "Origin": "https://www.twitch.tv",
+            "Referer": "https://www.twitch.tv/",
         }
         if self.auth_token:
             headers["Authorization"] = f"OAuth {self.auth_token}"
@@ -932,6 +936,8 @@ class TwitchClient:
             "User-Agent": self.user_agent,
             "Content-Type": "application/json",
             "Accept": "*/*",
+            "Origin": "https://www.twitch.tv",
+            "Referer": "https://www.twitch.tv/",
         }
         if self.auth_token:
             headers["Authorization"] = f"OAuth {self.auth_token}"
@@ -2227,11 +2233,14 @@ class TwitchClient:
         }
         """
         try:
+            drops_filtered = False
             res = self.post_gql(query, variables={"name": game_name}, operation_name="DirectoryPage_Game")
             game_obj = res.get("data", {}).get("game") or {}
             game_id = str(game_obj.get("id") or "")
             edges = game_obj.get("streams", {}).get("edges", [])
-            if not edges:
+            if edges:
+                drops_filtered = True
+            else:
                 query_fallback = """
                 query DirectoryPage_GameFallback($name: String!) {
                     game(name: $name) {
@@ -2300,7 +2309,7 @@ class TwitchClient:
                         if any((d.get("requiredMinutesWatched") or 0) > 0 for d in t_drops):
                             has_watchable = True
                             break
-                    if has_watchable:
+                    if has_watchable or drops_filtered:
                         return {
                             "channel_id": b_id,
                             "channel_login": broadcaster.get("login"),
@@ -2359,7 +2368,7 @@ class TwitchClient:
                         "viewers": int(node.get("viewersCount") or 0),
                         "game_name": game_name,
                         "game_id": game_id,
-                        "verified_drops": False,
+                        "verified_drops": drops_filtered,
                         "has_drops_in_title": True,
                         "rank": len(results) + 1,
                     })
@@ -2677,19 +2686,24 @@ class TwitchClient:
         body_form = f"data={urllib.parse.quote(b64_data)}".encode('utf-8')
         json_body = json.dumps({"data": b64_data}).encode('utf-8')
 
+        ch_referer = f"https://www.twitch.tv/{channel_login}" if channel_login else "https://www.twitch.tv/"
         headers_form = {
             "Client-Id": self.client_id,
             "Authorization": f"OAuth {self.auth_token}",
             "User-Agent": self.user_agent,
             "Content-Type": "application/x-www-form-urlencoded",
+            "Origin": "https://www.twitch.tv",
+            "Referer": ch_referer,
         }
         headers_json = {
             "Client-Id": self.client_id,
             "Authorization": f"OAuth {self.auth_token}",
             "User-Agent": self.user_agent,
             "Content-Type": "application/json",
+            "Origin": "https://www.twitch.tv",
+            "Referer": ch_referer,
         }
-        for track_url in ["https://spade.twitch.tv/track", SPADE_URL]:
+        for track_url in ["https://spade.twitch.tv/track", "https://beacon.twitch.tv/track", SPADE_URL]:
             try:
                 req_json = urllib.request.Request(track_url, data=json_body, headers=headers_json, method="POST")
                 with urllib.request.urlopen(req_json, timeout=10) as resp:

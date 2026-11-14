@@ -1023,9 +1023,9 @@ class DropsMiner:
                 })
                 break
 
-            if not broadcast_id and channel.get("channel_login"):
+            if not broadcast_id or not sub_playlist_url or (minute > 0 and minute % 10 == 0):
                 playback_info = self.client.get_playback_stream_info(channel["channel_login"])
-                broadcast_id = playback_info.get("broadcast_id") or channel.get("stream_id", "")
+                broadcast_id = playback_info.get("broadcast_id") or broadcast_id or channel.get("stream_id", "")
                 sub_playlist_url = playback_info.get("sub_playlist_url") or sub_playlist_url
 
             success = self.client.send_minute_watched_heartbeat(
@@ -1038,11 +1038,18 @@ class DropsMiner:
                 minutes_logged=minute + 1,
             )
 
-            # Interruptible ~60s sleep BEFORE checking inventory/progress so a full minute of watch time elapses
-            # and Twitch's Spade/Drops backend credits the heartbeat! Wakes within 0.2s if user changes queue/mode.
-            if self._interruptible_sleep(random.uniform(58.0, 60.0), cycle_sig):
-                self._handle_mid_cycle_swap(channel["channel_name"], game_name)
-                return
+            # Interruptible ~60s watch interval: simulate active player presence by touching HLS video chunks
+            # every ~20s so Twitch CDN keeps the stream viewing session active and credits drop progress.
+            for _step in range(3):
+                if self._interruptible_sleep(random.uniform(19.0, 20.0), cycle_sig):
+                    self._handle_mid_cycle_swap(channel["channel_name"], game_name)
+                    return
+                if sub_playlist_url:
+                    if not self.client.touch_stream_chunk(sub_playlist_url):
+                        pb_new = self.client.get_playback_stream_info(channel["channel_login"])
+                        if pb_new.get("sub_playlist_url"):
+                            sub_playlist_url = pb_new["sub_playlist_url"]
+                            self.client.touch_stream_chunk(sub_playlist_url)
 
             # Claim any drops completed during this minute & refresh live inventory + DropCurrentSessionContext progress
             claimed_now = self.claim_pending_drops()
