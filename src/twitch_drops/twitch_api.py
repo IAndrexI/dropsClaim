@@ -1952,11 +1952,7 @@ class TwitchClient:
                 logger.info("No non-excluded live streams found for game '%s' (excluded=%d)", game_name, len(excluded_set))
                 return None
 
-            # Prioritize streams that explicitly include 'drops' / '!drops' in their title or tags
-            candidate_nodes.sort(
-                key=lambda n: (1 if self._node_has_drops_in_title_or_tags(n) else 0, int(n.get("viewersCount") or 0)),
-                reverse=True,
-            )
+            # Keep Twitch's directory order: the FIRST live participating channel in the list is chosen.
             target_game_low = game_name.lower().strip()
             campaign_low = (campaign_game or "").lower().strip()
 
@@ -2010,28 +2006,26 @@ class TwitchClient:
             executor = concurrent.futures.ThreadPoolExecutor(max_workers=6)
             try:
                 futures = [executor.submit(verify_channel, node) for node in pool_slice]
-                for fut in concurrent.futures.as_completed(futures, timeout=6):
+                deadline = time.time() + 8
+                # Walk results in directory order so the first listed verified channel wins
+                for fut in futures:
                     try:
-                        r = fut.result()
-                        if r:
-                            verified_channels.append(r)
-                            if fast_first and r.get("has_drops_in_title"):
-                                break
+                        r = fut.result(timeout=max(0.1, deadline - time.time()))
                     except Exception:
-                        pass
+                        r = None
+                    if r:
+                        verified_channels.append(r)
+                        break
             except Exception:
                 pass
             finally:
                 executor.shutdown(wait=False, cancel_futures=True)
 
             if verified_channels:
-                # Prefer channels that have BOTH verified GQL drops AND 'drops' in title/tags
-                both_verified = [ch for ch in verified_channels if ch.get("has_drops_in_title")]
-                pool_to_pick = both_verified if both_verified else verified_channels
-                chosen = pool_to_pick[0] if fast_first else random.choice(pool_to_pick)
+                chosen = verified_channels[0]
                 logger.info(
-                    "Found %d verified watch-drop channel(s) for '%s'. Selected: %s (@%s) [title_drops=%s] with %d viewers",
-                    len(verified_channels), game_name, chosen["channel_name"], chosen["channel_login"],
+                    "Selected first live participating channel for '%s': %s (@%s) [title_drops=%s] with %d viewers",
+                    game_name, chosen["channel_name"], chosen["channel_login"],
                     chosen.get("has_drops_in_title"), chosen["viewers"]
                 )
                 return chosen
