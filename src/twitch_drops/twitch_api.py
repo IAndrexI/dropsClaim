@@ -1829,6 +1829,7 @@ class TwitchClient:
         game_name: str,
         fast_first: bool = True,
         excluded_channels: Optional[Set[str]] = None,
+        campaign_game: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Find a live channel streaming the specified game with verified watch-time drops enabled
@@ -1860,7 +1861,7 @@ class TwitchClient:
                 or (GAME_CATEGORY_ALIASES["evolutions"] if "evolution" in gn_low else GAME_CATEGORY_ALIASES["pokemon"])
             )
             for alt_game in cand_list:
-                ch = self.find_eligible_channel(alt_game, fast_first=fast_first, excluded_channels=excluded_channels)
+                ch = self.find_eligible_channel(alt_game, fast_first=fast_first, excluded_channels=excluded_channels, campaign_game=game_name)
                 if ch:
                     ch["game_name"] = game_name
                     logger.info("Found eligible stream for '%s' in category '%s': @%s", game_name, alt_game, ch.get("channel_login"))
@@ -1957,6 +1958,7 @@ class TwitchClient:
                 reverse=True,
             )
             target_game_low = game_name.lower().strip()
+            campaign_low = (campaign_game or "").lower().strip()
 
             # Verify which channels actually have active watch-time drops enabled via DropsHighlightService_AvailableDrops
             def verify_channel(node: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -1975,7 +1977,11 @@ class TwitchClient:
                     for c in camps:
                         c_game = extract_game_name(c, "").lower()
                         # Ignore global 0-minute badge campaigns for other/null games
-                        if c_game and target_game_low not in c_game and c_game not in target_game_low:
+                        if (
+                            c_game
+                            and target_game_low not in c_game and c_game not in target_game_low
+                            and not (campaign_low and (campaign_low in c_game or c_game in campaign_low))
+                        ):
                             continue
                         t_drops = c.get("timeBasedDrops") or []
                         if any((d.get("requiredMinutesWatched") or 0) > 0 for d in t_drops):
@@ -2114,42 +2120,20 @@ class TwitchClient:
 
     def is_stream_and_drops_available(self, channel_id: str, channel_login: str, game_name: str) -> tuple:
         """
-        Check if a channel's stream is still live and still broadcasting drops for the target game.
+        Check that the channel is still live. Retries once to avoid false "offline" results from transient
+        network/Usher errors. Category/drops matching is intentionally NOT enforced here because special
+        campaigns (e.g. Evolutions) are mined from differently-named categories.
         Returns (is_available: bool, reason: str).
         """
         if not channel_login:
             return False, "Channel login missing"
-
-        # 1. Verify playback stream liveness (stream must not be offline or ended)
-        pb = self.get_playback_stream_info(channel_login)
-        if not pb or not pb.get("broadcast_id"):
-            return False, "Stream is offline or broadcast ended"
-
-        # 2. Verify drops are still active on channel
-        if channel_id and self.auth_token:
-            try:
-                drops_res = self.post_persisted_gql(
-                    operation_name="DropsHighlightService_AvailableDrops",
-                    sha256_hash="9a62a09bce5b53e26e64a671e530bc599cb6aab1e5ba3cbd5d85966d3940716f",
-                    variables={"channelID": str(channel_id)},
-                )
-                camps = (drops_res.get("data") or {}).get("channel", {}).get("viewerDropCampaigns") or []
-                if camps:
-                    target_low = game_name.strip().lower()
-                    has_game_drops = False
-                    for c in camps:
-                        c_game = extract_game_name(c, "").lower()
-                        if target_low in c_game or c_game in target_low:
-                            t_drops = c.get("timeBasedDrops") or []
-                            if any((d.get("requiredMinutesWatched") or 0) > 0 for d in t_drops):
-                                has_game_drops = True
-                                break
-                    if not has_game_drops and any(extract_game_name(c, "").strip() for c in camps):
-                        return False, f"Stream switched categories away from {game_name}"
-            except Exception as e:
-                logger.debug("DropsHighlightService check error for %s: %s", channel_id, e)
-
-        return True, "Stream and drops available"
+        for attempt in range(2):
+            pb = self.get_playback_stream_info(channel_login)
+            if pb and pb.get("broadcast_id"):
+                return True, "Stream available"
+            if attempt == 0:
+                time.sleep(3)
+        return False, "Stream is offline or broadcast ended"
 
     def touch_stream_chunk(self, sub_playlist_url: str) -> bool:
         """
