@@ -54,16 +54,33 @@ def load_mining_config() -> Dict[str, Any]:
                             if gs.lower() not in seen:
                                 seen.add(gs.lower())
                                 clean_queue.append(gs)
+                    raw_excluded = data.get("excluded_channels") or []
+                    clean_excluded = [
+                        str(ch).lower().strip()
+                        for ch in (raw_excluded if isinstance(raw_excluded, list) else [])
+                        if ch and str(ch).strip()
+                    ]
+                    pref_ch = str(data.get("preferred_channel") or "").lower().strip()
                     return {
                         "mode": data.get("mode", "default"),
                         "queue": clean_queue,
                         "activated_games": clean_queue,
                         "selected_game": clean_queue[0] if clean_queue else "",
+                        "excluded_channels": clean_excluded,
+                        "preferred_channel": pref_ch,
                         "updated_at": data.get("updated_at", 0),
                     }
         except Exception:
             pass
-    return {"mode": "default", "queue": [], "activated_games": [], "selected_game": "", "updated_at": 0}
+    return {
+        "mode": "default",
+        "queue": [],
+        "activated_games": [],
+        "selected_game": "",
+        "excluded_channels": [],
+        "preferred_channel": "",
+        "updated_at": 0,
+    }
 
 
 def remove_from_mining_queue(game_name: str) -> Dict[str, Any]:
@@ -198,7 +215,18 @@ class DropsMiner:
         for ch in expired_rot:
             self.rotated_channels.pop(ch, None)
 
-        return set(self.unproductive_channels.keys()) | set(self.rotated_channels.keys())
+        user_excluded = set()
+        try:
+            cfg = load_mining_config()
+            pref = str(cfg.get("preferred_channel") or "").lower().strip()
+            for ch in (cfg.get("excluded_channels") or []):
+                cl = str(ch).lower().strip()
+                if cl and cl != pref:
+                    user_excluded.add(cl)
+        except Exception:
+            pass
+
+        return set(self.unproductive_channels.keys()) | set(self.rotated_channels.keys()) | user_excluded
 
     def _mark_channel_rotated(self, channel_login: str):
         """Mark a channel as rotated after completing a 1-hour watch cycle so another channel is selected."""
@@ -842,11 +870,16 @@ class DropsMiner:
                 break
 
             logger.info("[MINER] Checking live streams with drops enabled for '%s' (%s)...", cand_game, cand_name)
-            found_ch = self.client.find_eligible_channel(
-                cand_game,
-                fast_first=True,
-                excluded_channels=excluded_channels,
-            )
+            found_ch = None
+            pref_ch = str(config.get("preferred_channel") or "").lower().strip()
+            if pref_ch and pref_ch not in self.unproductive_channels and pref_ch not in self.rotated_channels:
+                found_ch = self.client.resolve_specific_channel(pref_ch, cand_game)
+            if not found_ch:
+                found_ch = self.client.find_eligible_channel(
+                    cand_game,
+                    fast_first=True,
+                    excluded_channels=excluded_channels,
+                )
             if not found_ch and self.rotated_channels:
                 # If all live channels were excluded due to 1-hour rotation, retry excluding only unproductive channels
                 unprod_only = set(self.unproductive_channels.keys())

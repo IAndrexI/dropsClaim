@@ -800,6 +800,68 @@ class MiningQueueAndSwapTests(unittest.TestCase):
         self.assertEqual(props["game_id"], "743893402")
         self.assertTrue(mock_urlopen.called)
 
+    def test_switch_watched_channel_next_and_specific(self):
+        os.makedirs(os.path.join(self.tmp, "data"), exist_ok=True)
+        with open(os.path.join(self.tmp, "data", "mining_config.json"), "w", encoding="utf-8") as f:
+            json.dump({"mode": "default", "queue": ["WARDOGS"], "updated_at": 100}, f)
+        with open(os.path.join(self.tmp, "data", "miner_status.json"), "w", encoding="utf-8") as f:
+            json.dump({
+                "active": True,
+                "game": "WARDOGS",
+                "channel_login": "streamer_one",
+                "channel_name": "StreamerOne",
+            }, f)
+
+        def fake_find_eligible(game_name, fast_first=True, excluded_channels=None, campaign_game=None):
+            excl = {c.lower() for c in (excluded_channels or set())}
+            for login, name in [("streamer_one", "StreamerOne"), ("streamer_two", "StreamerTwo")]:
+                if login not in excl:
+                    return {
+                        "channel_id": f"id_{login}",
+                        "channel_login": login,
+                        "channel_name": name,
+                        "stream_id": f"s_{login}",
+                        "stream_title": "!drops",
+                        "viewers": 500,
+                        "game_name": game_name,
+                        "game_id": "743893402",
+                        "verified_drops": True,
+                        "has_drops_in_title": True,
+                    }
+            return None
+
+        def fake_resolve_specific(channel_input, game_name=""):
+            return {
+                "channel_id": "id_custom",
+                "channel_login": "dani_aetherwolf",
+                "channel_name": "Dani_Aetherwolf",
+                "stream_id": "s_custom",
+                "stream_title": "Drops enabled!",
+                "viewers": 900,
+                "game_name": game_name or "WARDOGS",
+                "game_id": "743893402",
+                "verified_drops": True,
+                "has_drops_in_title": True,
+            }
+
+        with mock.patch("src.web.server.APP_DIR", self.tmp), \
+             mock.patch("src.web.server.resolve_token", return_value="fake_token"), \
+             mock.patch("src.web.server._send_async_initial_heartbeat"), \
+             mock.patch("src.web.server.ensure_miner_daemon_running"), \
+             mock.patch.object(t_api.TwitchClient, "find_eligible_channel", side_effect=fake_find_eligible), \
+             mock.patch.object(t_api.TwitchClient, "resolve_specific_channel", side_effect=fake_resolve_specific):
+            # 1. Next channel: must skip streamer_one and switch to streamer_two
+            res_next = s.switch_watched_channel("WARDOGS")
+            self.assertTrue(res_next["success"])
+            self.assertEqual(res_next["miner_status"]["channel_login"], "streamer_two")
+            self.assertIn("streamer_one", res_next["mining_config"]["excluded_channels"])
+
+            # 2. Specific channel: must switch directly to dani_aetherwolf
+            res_spec = s.switch_watched_channel("WARDOGS", "https://www.twitch.tv/dani_aetherwolf")
+            self.assertTrue(res_spec["success"])
+            self.assertEqual(res_spec["miner_status"]["channel_login"], "dani_aetherwolf")
+            self.assertEqual(res_spec["mining_config"]["preferred_channel"], "dani_aetherwolf")
+
 
 if __name__ == "__main__":
     unittest.main()

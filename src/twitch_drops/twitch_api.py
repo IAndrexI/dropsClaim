@@ -2070,6 +2070,295 @@ class TwitchClient:
             logger.warning("Error finding channel for %s: %s", game_name, e)
             return None
 
+    def list_eligible_channels(
+        self,
+        game_name: str,
+        limit: int = 12,
+        campaign_game: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Return an ordered list of live participating channels for the specified game
+        in Twitch directory order, so the user can inspect or switch between channels.
+        """
+        gn_low = (game_name or "").lower().strip()
+        if not gn_low:
+            return []
+        alias_map = {
+            "evolutions": [
+                "Pokémon Community Game",
+                "Pokémon Trading Card Game Pocket",
+                "Pokémon Trading Card Game Live",
+                "Pokémon",
+                "Just Chatting",
+            ],
+            "pokemon": [
+                "Pokémon Community Game",
+                "Pokémon Trading Card Game Pocket",
+                "Pokémon Trading Card Game Live",
+                "Pokémon",
+            ],
+            "twitch global drop": [
+                "Just Chatting",
+            ],
+        }
+        if gn_low in alias_map or "evolution" in gn_low or "pokemon" in gn_low:
+            cand_list = (
+                alias_map.get(gn_low)
+                or (alias_map["evolutions"] if "evolution" in gn_low else alias_map["pokemon"])
+            )
+            combined: List[Dict[str, Any]] = []
+            seen_logins: Set[str] = set()
+            for alt_game in cand_list:
+                sub_chs = self.list_eligible_channels(alt_game, limit=limit, campaign_game=game_name)
+                for ch in sub_chs:
+                    lg = str(ch.get("channel_login") or "").lower()
+                    if lg and lg not in seen_logins:
+                        seen_logins.add(lg)
+                        ch["game_name"] = game_name
+                        ch["rank"] = len(combined) + 1
+                        combined.append(ch)
+                if len(combined) >= limit:
+                    break
+            return combined[:limit]
+
+        query = """
+        query DirectoryPage_Game($name: String!) {
+            game(name: $name) {
+                id
+                name
+                streams(first: 30, options: {sort: RELEVANCE, systemFilters: [DROPS_ENABLED], recommendationsContext: {platform: "web"}}) {
+                    edges {
+                        node {
+                            id
+                            title
+                            viewersCount
+                            freeformTags {
+                                name
+                            }
+                            broadcaster {
+                                id
+                                login
+                                displayName
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        """
+        try:
+            res = self.post_gql(query, variables={"name": game_name}, operation_name="DirectoryPage_Game")
+            game_obj = res.get("data", {}).get("game") or {}
+            game_id = str(game_obj.get("id") or "")
+            edges = game_obj.get("streams", {}).get("edges", [])
+            if not edges:
+                query_fallback = """
+                query DirectoryPage_GameFallback($name: String!) {
+                    game(name: $name) {
+                        id
+                        name
+                        streams(first: 30) {
+                            edges {
+                                node {
+                                    id
+                                    title
+                                    viewersCount
+                                    freeformTags {
+                                        name
+                                    }
+                                    broadcaster {
+                                        id
+                                        login
+                                        displayName
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                """
+                res_fb = self.post_gql(query_fallback, variables={"name": game_name}, operation_name="DirectoryPage_GameFallback")
+                game_obj = res_fb.get("data", {}).get("game") or {}
+                game_id = str(game_obj.get("id") or "")
+                edges = game_obj.get("streams", {}).get("edges", [])
+
+            raw_nodes = [e["node"] for e in edges if e.get("node")]
+            if not raw_nodes:
+                return []
+
+            target_game_low = game_name.lower().strip()
+            campaign_low = (campaign_game or "").lower().strip()
+            is_global_target = any(
+                kw in target_game_low or kw in campaign_low
+                for kw in ("evolutions", "pokemon", "twitch global drop")
+            )
+
+            def verify_node(node: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+                try:
+                    broadcaster = node.get("broadcaster") or {}
+                    b_id = str(broadcaster.get("id") or "")
+                    if not b_id:
+                        return None
+                    drops_res = self.post_persisted_gql(
+                        operation_name="DropsHighlightService_AvailableDrops",
+                        sha256_hash="9a62a09bce5b53e26e64a671e530bc599cb6aab1e5ba3cbd5d85966d3940716f",
+                        variables={"channelID": b_id},
+                    )
+                    camps = (drops_res.get("data") or {}).get("channel", {}).get("viewerDropCampaigns") or []
+                    has_watchable = False
+                    for c in camps:
+                        c_game = extract_game_name(c, "").lower()
+                        if not c_game:
+                            if not is_global_target:
+                                continue
+                        elif (
+                            target_game_low not in c_game and c_game not in target_game_low
+                            and not (campaign_low and (campaign_low in c_game or c_game in campaign_low))
+                        ):
+                            continue
+                        t_drops = c.get("timeBasedDrops") or []
+                        if any((d.get("requiredMinutesWatched") or 0) > 0 for d in t_drops):
+                            has_watchable = True
+                            break
+                    if has_watchable:
+                        return {
+                            "channel_id": b_id,
+                            "channel_login": broadcaster.get("login"),
+                            "channel_name": broadcaster.get("displayName") or broadcaster.get("login"),
+                            "stream_id": str(node.get("id") or ""),
+                            "stream_title": str(node.get("title") or ""),
+                            "viewers": int(node.get("viewersCount") or 0),
+                            "game_name": game_name,
+                            "game_id": game_id,
+                            "verified_drops": True,
+                            "has_drops_in_title": self._node_has_drops_in_title_or_tags(node),
+                        }
+                except Exception:
+                    pass
+                return None
+
+            pool_slice = raw_nodes[:max(limit, 12)]
+            results: List[Dict[str, Any]] = []
+            seen_logins: Set[str] = set()
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=6)
+            try:
+                futures = [executor.submit(verify_node, node) for node in pool_slice]
+                deadline = time.time() + 8
+                for fut in futures:
+                    try:
+                        r = fut.result(timeout=max(0.1, deadline - time.time()))
+                    except Exception:
+                        r = None
+                    if r and r.get("channel_login"):
+                        lg = str(r["channel_login"]).lower()
+                        if lg not in seen_logins:
+                            seen_logins.add(lg)
+                            r["rank"] = len(results) + 1
+                            results.append(r)
+            except Exception:
+                pass
+            finally:
+                executor.shutdown(wait=False, cancel_futures=True)
+
+            # Append any remaining title/tag drop channels if below limit
+            for node in raw_nodes:
+                if len(results) >= limit:
+                    break
+                b = node.get("broadcaster") or {}
+                lg = str(b.get("login") or "").lower().strip()
+                if not lg or lg in seen_logins:
+                    continue
+                if self._node_has_drops_in_title_or_tags(node):
+                    seen_logins.add(lg)
+                    results.append({
+                        "channel_id": str(b.get("id") or ""),
+                        "channel_login": b.get("login"),
+                        "channel_name": b.get("displayName") or b.get("login"),
+                        "stream_id": str(node.get("id") or ""),
+                        "stream_title": str(node.get("title") or ""),
+                        "viewers": int(node.get("viewersCount") or 0),
+                        "game_name": game_name,
+                        "game_id": game_id,
+                        "verified_drops": False,
+                        "has_drops_in_title": True,
+                        "rank": len(results) + 1,
+                    })
+
+            return results[:limit]
+        except Exception as e:
+            logger.debug("Error listing eligible channels for %s: %s", game_name, e)
+            return []
+
+    def resolve_specific_channel(self, channel_input: str, game_name: str = "") -> Optional[Dict[str, Any]]:
+        """
+        Resolve a user-specified Twitch channel login or URL (e.g. 'dani_aetherwolf' or
+        'https://www.twitch.tv/dani_aetherwolf') into a live channel dictionary.
+        """
+        raw = str(channel_input or "").strip()
+        if not raw:
+            return None
+        if "twitch.tv/" in raw.lower():
+            raw = raw.lower().split("twitch.tv/", 1)[1]
+        clean_login = raw.split("?")[0].split("#")[0].strip().strip("/").lstrip("@").lower()
+        if not clean_login or "/" in clean_login:
+            clean_login = clean_login.split("/")[0].strip()
+        if not clean_login:
+            return None
+
+        query = """
+        query ResolveSpecificChannel($login: String!) {
+            user(login: $login) {
+                id
+                login
+                displayName
+                stream {
+                    id
+                    title
+                    viewersCount
+                    game {
+                        id
+                        name
+                        displayName
+                    }
+                }
+            }
+        }
+        """
+        try:
+            res = self.post_gql(query, variables={"login": clean_login}, operation_name="ResolveSpecificChannel")
+            user_obj = (res.get("data") or {}).get("user") or {}
+            if not user_obj or not user_obj.get("id"):
+                return None
+            stream_obj = user_obj.get("stream")
+            if not stream_obj or not stream_obj.get("id"):
+                # Fallback check via Usher PlaybackAccessToken in case GQL stream object lagged
+                pb = self.get_playback_stream_info(clean_login)
+                if not pb or not pb.get("broadcast_id"):
+                    return None
+                stream_obj = {"id": pb["broadcast_id"], "title": "", "viewersCount": 0, "game": {}}
+
+            g_obj = stream_obj.get("game") or {}
+            resolved_game = (
+                game_name
+                or clean_text(g_obj.get("displayName") or g_obj.get("name") or "")
+                or "Twitch Game"
+            )
+            return {
+                "channel_id": str(user_obj.get("id") or ""),
+                "channel_login": user_obj.get("login") or clean_login,
+                "channel_name": user_obj.get("displayName") or user_obj.get("login") or clean_login,
+                "stream_id": str(stream_obj.get("id") or ""),
+                "stream_title": str(stream_obj.get("title") or ""),
+                "viewers": int(stream_obj.get("viewersCount") or 0),
+                "game_name": resolved_game,
+                "game_id": str(g_obj.get("id") or ""),
+                "verified_drops": True,
+                "has_drops_in_title": True,
+            }
+        except Exception as e:
+            logger.debug("Error resolving specific channel %s: %s", clean_login, e)
+            return None
+
     def get_playback_stream_info(self, channel_login: str) -> Dict[str, Any]:
         """
         Fetch PlaybackAccessToken and Usher m3u8 playlist to obtain authentic broadcast_id and chunk playlist URL.

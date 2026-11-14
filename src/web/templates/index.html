@@ -556,6 +556,8 @@
           <span class="miner-stat-pill" id="miner-drop-live-progress" style="display: none; border-color: #3b82f6; color: #93c5fd;">Drop: --</span>
           <span class="miner-stat-pill" id="miner-stream-progress">Session: 0/60 mins (1h rotation)</span>
           <span class="miner-stat-pill" id="miner-stream-viewers">0 Viewers</span>
+          <button class="btn btn-sm" id="btn-switch-channel" onclick="switchWatchedChannel()" style="border-color: #38bdf8; color: #7dd3fc; background: rgba(56, 189, 248, 0.12); font-weight: 600;" title="Skip current channel and switch to the next live Drops-enabled channel">&#8644; Next Channel</button>
+          <button class="btn btn-sm" id="btn-pick-channel" onclick="openChannelSwitcherModal()" style="border-color: #6366f1; color: #a5b4fc; background: rgba(99, 102, 241, 0.12); font-weight: 600;" title="Choose a specific live Drops channel or enter a streamer username">&#9776; Pick Channel</button>
           <button class="btn btn-sm" id="btn-restart-mining" onclick="restartSelectedMining()" style="border-color: #f59e0b; color: #fbbf24; background: rgba(245, 158, 11, 0.12); font-weight: 600;" title="Fully restart mining for the selected game (reconnects to live stream and resets watchdog)">&#8635; Restart Mining</button>
           <button class="btn btn-sm" id="btn-toggle-miniviewer" onclick="toggleMiniViewer()" style="border-color: #8b5cf6; color: #c084fc; display: none;">&#128065; Show Mini-Viewer</button>
           <a href="#" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-primary" id="miner-stream-link" style="display: none;">Open Watched Stream</a>
@@ -954,6 +956,51 @@
           <button class="btn btn-primary" id="btn-modal-run-update" onclick="executeDirectModalUpdate()" style="display: inline-flex; align-items: center; gap: 6px;">
             &#8635; Run Update Now
           </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Switch Watched Channel Modal -->
+  <div id="channel-switcher-modal" class="update-modal-backdrop" onclick="if(event.target === this) closeChannelSwitcherModal()">
+    <div class="update-modal-content" style="max-width: 600px;">
+      <div class="update-modal-header">
+        <h3><span>&#8644;</span> Switch Watched Channel</h3>
+        <button class="btn btn-sm" onclick="closeChannelSwitcherModal()" style="padding: 2px 8px; font-size: 0.8rem;">&#10006;</button>
+      </div>
+      <div class="update-modal-body">
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; background: rgba(15, 23, 42, 0.8); border: 1px solid #1e293b; border-radius: 8px; padding: 10px 12px; font-size: 0.84rem;">
+          <div>
+            <div><strong>Active Game:</strong> <span id="modal-channel-game" style="color: #a855f7; font-weight: 700;">--</span></div>
+            <div><strong>Currently Watching:</strong> <span id="modal-channel-current" style="color: #38bdf8;">--</span></div>
+          </div>
+          <button class="btn btn-sm" style="border-color: #38bdf8; color: #7dd3fc; background: rgba(56, 189, 248, 0.14); font-weight: 600;" onclick="switchWatchedChannel(currentModalChannelGame)">
+            &#8644; Rotate to Next Channel
+          </button>
+        </div>
+
+        <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid #334155; border-radius: 8px; padding: 10px 12px;">
+          <label for="custom-channel-input" style="display: block; font-size: 0.78rem; color: #94a3b8; margin-bottom: 6px;">
+            Watch Specific Streamer (enter Twitch username or URL, e.g. <code>dani_aetherwolf</code>):
+          </label>
+          <div style="display: flex; gap: 8px;">
+            <input type="text" id="custom-channel-input" class="form-input" placeholder="e.g. dani_aetherwolf or https://www.twitch.tv/dani_aetherwolf" style="flex: 1; padding: 6px 10px; font-size: 0.84rem;" onkeydown="if(event.key==='Enter') submitCustomChannelSwitch()">
+            <button class="btn btn-sm btn-primary" onclick="submitCustomChannelSwitch()">Watch Streamer</button>
+          </div>
+        </div>
+
+        <div>
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+            <strong style="font-size: 0.84rem; color: #e2e8f0;">Live Participating Drops Channels:</strong>
+            <button class="btn btn-sm" style="padding: 2px 8px; font-size: 0.74rem;" onclick="loadModalEligibleChannels(currentModalChannelGame)">&#8635; Refresh List</button>
+          </div>
+          <div id="modal-channels-list" style="max-height: 290px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; padding-right: 2px;">
+            <div style="padding: 14px; text-align: center; color: #94a3b8; font-size: 0.84rem;">Loading live Drops-enabled channels...</div>
+          </div>
+        </div>
+
+        <div style="display: flex; justify-content: flex-end; margin-top: 4px;">
+          <button class="btn" onclick="closeChannelSwitcherModal()">Close</button>
         </div>
       </div>
     </div>
@@ -1564,6 +1611,8 @@
       }
 
       const restartBtn = document.getElementById("btn-restart-mining");
+      const switchChBtn = document.getElementById("btn-switch-channel");
+      const pickChBtn = document.getElementById("btn-pick-channel");
       if (restartBtn) {
         if (minerStat.active && minerStat.game) {
           restartBtn.style.display = "inline-flex";
@@ -1582,6 +1631,14 @@
           restartBtn.innerHTML = topG ? `&#8635; Restart Mining (${escapeHtml(topG)})` : `&#8635; Restart Mining`;
           restartBtn.title = topG ? `Start or restart mining ${escapeHtml(topG)}` : "Start or restart mining selected game";
         }
+      }
+      if (switchChBtn) {
+        switchChBtn.style.display = isStopped ? "none" : "inline-flex";
+        switchChBtn.disabled = Boolean(minerStat.switching);
+      }
+      if (pickChBtn) {
+        pickChBtn.style.display = isStopped ? "none" : "inline-flex";
+        pickChBtn.disabled = Boolean(minerStat.switching);
       }
 
       // Mini-Viewer Controls & Protection (Enforce single viewing at all times)
@@ -1940,6 +1997,156 @@
       }
     }
 
+    let currentModalChannelGame = "";
+
+    async function switchWatchedChannel(gameName, channelLogin) {
+      const g = gameName || (lastTwitchData && lastTwitchData.miner_status ? (lastTwitchData.miner_status.game || lastTwitchData.miner_status.selected_game) : "") || (selectedPriorityGames && selectedPriorityGames[0]) || "";
+      const btn = document.getElementById("btn-switch-channel");
+      const prevText = btn ? btn.innerHTML : "";
+      if (btn) {
+        btn.innerHTML = "&#8644; Switching...";
+        btn.disabled = true;
+      }
+      const targetDesc = channelLogin ? `@${channelLogin}` : `next live channel for '${g || 'active game'}'`;
+      applyImmediateMinerStatus(
+        {
+          active: false,
+          switching: true,
+          game: g || "Selected Game",
+          selected_game: g || "",
+          queue: selectedPriorityGames,
+          message: `Switching watched stream to ${targetDesc}...`
+        },
+        currentMiningMode,
+        selectedPriorityGames
+      );
+      showToast(`Switching watched stream to ${targetDesc}...`);
+
+      try {
+        const res = await fetch("/api/twitch/switch-channel", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: jsonStringify({ game: g, channel_login: channelLogin || "" })
+        });
+        const data = await res.json();
+        if (data.success) {
+          const returnedQueue = data.queue || selectedPriorityGames;
+          const returnedMode = data.mode || currentMiningMode;
+          applyImmediateMinerStatus(data.miner_status, returnedMode, returnedQueue);
+          showToast(data.message || "Switched watched channel!");
+          const modal = document.getElementById("channel-switcher-modal");
+          if (modal && modal.style.display === "flex") {
+            closeChannelSwitcherModal();
+          }
+          fetchData(true);
+          broadcastSyncEvent("switch_channel");
+        } else {
+          showToast(data.error || "Could not switch channel.");
+          fetchData(true);
+        }
+      } catch (err) {
+        showToast("Error switching channel: " + err.message);
+      } finally {
+        if (btn) {
+          btn.innerHTML = prevText || "&#8644; Next Channel";
+          btn.disabled = false;
+        }
+      }
+    }
+
+    function openChannelSwitcherModal(gameName) {
+      const g = gameName || (lastTwitchData && lastTwitchData.miner_status ? (lastTwitchData.miner_status.game || lastTwitchData.miner_status.selected_game) : "") || (selectedPriorityGames && selectedPriorityGames[0]) || "";
+      currentModalChannelGame = g;
+      const modal = document.getElementById("channel-switcher-modal");
+      const gameEl = document.getElementById("modal-channel-game");
+      const currEl = document.getElementById("modal-channel-current");
+      const inputEl = document.getElementById("custom-channel-input");
+      const ms = (lastTwitchData && lastTwitchData.miner_status) || {};
+      if (gameEl) gameEl.innerText = g || ms.game || "Auto-Selected Game";
+      if (currEl) {
+        currEl.innerText = ms.channel_name
+          ? `${ms.channel_name} (@${ms.channel_login || ""})`
+          : (ms.channel_login ? `@${ms.channel_login}` : "None");
+      }
+      if (inputEl) inputEl.value = "";
+      if (modal) modal.style.display = "flex";
+      loadModalEligibleChannels(g);
+    }
+
+    function closeChannelSwitcherModal() {
+      const modal = document.getElementById("channel-switcher-modal");
+      if (modal) modal.style.display = "none";
+    }
+
+    function submitCustomChannelSwitch() {
+      const inputEl = document.getElementById("custom-channel-input");
+      const val = inputEl ? inputEl.value.trim() : "";
+      if (!val) {
+        showToast("Enter a Twitch streamer username or URL first.");
+        return;
+      }
+      switchWatchedChannel(currentModalChannelGame, val);
+    }
+
+    async function loadModalEligibleChannels(gameName) {
+      const listEl = document.getElementById("modal-channels-list");
+      const gameEl = document.getElementById("modal-channel-game");
+      const currEl = document.getElementById("modal-channel-current");
+      if (!listEl) return;
+      listEl.innerHTML = `<div style="padding: 14px; text-align: center; color: #94a3b8; font-size: 0.84rem;">Fetching live Drops-enabled channels from Twitch...</div>`;
+      try {
+        const q = gameName ? `?game=${encodeURIComponent(gameName)}` : "";
+        const res = await fetch(`/api/twitch/channels${q}`);
+        const data = await res.json();
+        const chs = data.channels || [];
+        const activeLogin = String(data.current_channel || "").toLowerCase();
+        if (data.game) {
+          currentModalChannelGame = data.game;
+          if (gameEl) gameEl.innerText = data.game;
+        }
+        if (currEl && data.current_channel) {
+          currEl.innerText = `${data.current_channel_name || data.current_channel} (@${data.current_channel})`;
+        }
+        if (chs.length === 0) {
+          listEl.innerHTML = `<div style="padding: 14px; text-align: center; color: #94a3b8; font-size: 0.84rem;">No live participating channels found right now. You can still enter a streamer username above.</div>`;
+          return;
+        }
+        listEl.innerHTML = chs.map((ch, idx) => {
+          const isCurrent = activeLogin && String(ch.channel_login || "").toLowerCase() === activeLogin;
+          const rankLabel = idx === 0 ? "#1 Top-Left" : `#${idx + 1}`;
+          const badgeHtml = isCurrent
+            ? `<span class="badge" style="background: rgba(34, 197, 94, 0.2); color: #4ade80; font-size: 0.7rem;">WATCHING NOW</span>`
+            : (ch.verified_drops
+                ? `<span class="badge" style="background: rgba(59, 130, 246, 0.18); color: #93c5fd; font-size: 0.7rem;">DROPS VERIFIED</span>`
+                : `<span class="badge" style="background: rgba(148, 163, 184, 0.18); color: #cbd5e1; font-size: 0.7rem;">DROPS TAG</span>`);
+          return `
+            <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 6px; background: ${isCurrent ? 'rgba(34, 197, 94, 0.08)' : 'rgba(15, 23, 42, 0.75)'}; border: 1px solid ${isCurrent ? '#22c55e' : '#1e293b'};">
+              <div style="min-width: 0; flex: 1;">
+                <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+                  <span style="font-size: 0.72rem; font-weight: 700; color: #facc15;">[${rankLabel}]</span>
+                  <strong style="font-size: 0.88rem; color: #f8fafc;">${escapeHtml(ch.channel_name || ch.channel_login)}</strong>
+                  <span style="font-size: 0.76rem; color: #94a3b8;">@${escapeHtml(ch.channel_login)}</span>
+                  <span style="font-size: 0.75rem; color: #38bdf8;">&bull; ${(ch.viewers || 0).toLocaleString()} viewers</span>
+                  ${badgeHtml}
+                </div>
+                <div style="font-size: 0.76rem; color: #94a3b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px;" title="${escapeHtml(ch.stream_title || '')}">
+                  ${escapeHtml(ch.stream_title || "Live stream")}
+                </div>
+              </div>
+              <div>
+                ${isCurrent
+                  ? `<button class="btn btn-sm" disabled style="opacity: 0.65; font-size: 0.75rem;">Active</button>`
+                  : `<button class="btn btn-sm btn-primary" style="font-size: 0.76rem;" onclick="switchWatchedChannel('${escapeJsAttr(currentModalChannelGame)}', '${escapeJsAttr(ch.channel_login)}')">Watch Channel</button>`
+                }
+              </div>
+            </div>
+          `;
+        }).join("");
+      } catch (err) {
+        listEl.innerHTML = `<div style="padding: 14px; text-align: center; color: #f87171; font-size: 0.84rem;">Failed to load channels: ${escapeHtml(err.message)}</div>`;
+      }
+    }
+
     function renderCollectedItemsSection(twitch, searchQuery) {
       const items = twitch.collected_items || [];
       const filteredItems = searchQuery
@@ -2210,6 +2417,12 @@
                   <div class="camp-actions">
                     ${(!camp.is_expired && camp.status !== "UNAVAILABLE" && camp.status !== "COMPLETED") ? `
                       ${isTarget ? `
+                        <button class="btn btn-sm" style="border-color: #38bdf8; color: #7dd3fc; background: rgba(56, 189, 248, 0.12); font-weight: 600;" onclick="switchWatchedChannel('${escapeJsAttr(camp.game)}')" title="Switch to the next live Drops channel for ${escapeJsAttr(camp.game)}">
+                          &#8644; Next Channel
+                        </button>
+                        <button class="btn btn-sm" style="border-color: #6366f1; color: #a5b4fc; background: rgba(99, 102, 241, 0.12); font-weight: 600;" onclick="openChannelSwitcherModal('${escapeJsAttr(camp.game)}')" title="Pick which live channel to watch for ${escapeJsAttr(camp.game)}">
+                          &#9776; Pick Channel
+                        </button>
                         <button class="btn btn-sm" style="border-color: #f59e0b; color: #fbbf24; background: rgba(245, 158, 11, 0.12); font-weight: 600;" onclick="restartSelectedMining('${escapeJsAttr(camp.game)}')" title="Fully restart mining for ${escapeJsAttr(camp.game)}">
                           &#8635; Restart Mining
                         </button>

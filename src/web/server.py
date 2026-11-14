@@ -215,11 +215,20 @@ def get_mining_config():
                             if gs.lower() not in seen:
                                 seen.add(gs.lower())
                                 clean_queue.append(gs)
+                    raw_excl = data.get("excluded_channels") or []
+                    clean_excl = [
+                        str(ch).lower().strip()
+                        for ch in (raw_excl if isinstance(raw_excl, list) else [])
+                        if ch and str(ch).strip()
+                    ]
+                    pref_ch = str(data.get("preferred_channel") or "").lower().strip()
                     return {
                         "mode": data.get("mode", "default"),
                         "queue": clean_queue,
                         "activated_games": clean_queue,
                         "selected_game": clean_queue[0] if clean_queue else "",
+                        "excluded_channels": clean_excl,
+                        "preferred_channel": pref_ch,
                         "updated_at": data.get("updated_at", 0),
                     }
         except Exception:
@@ -237,6 +246,8 @@ def get_mining_config():
         "queue": default_priority,
         "activated_games": default_priority,
         "selected_game": default_priority[0] if default_priority else "",
+        "excluded_channels": [],
+        "preferred_channel": "",
         "updated_at": 0,
     }
 
@@ -609,6 +620,204 @@ def restart_mining(target_game: Optional[str] = None) -> Dict[str, Any]:
         "mining_config": cfg,
         "miner_status": mstat,
         "message": f"Successfully restarted mining for '{game_lbl}'! Reconnecting to live stream...",
+    }
+
+
+def switch_watched_channel(
+    target_game: Optional[str] = None,
+    channel_login: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Switch the currently watched Twitch channel for the active/selected game.
+    - If channel_login is provided, switches directly to that streamer.
+    - If channel_login is omitted, skips the currently watched channel and rotates to the next
+      live Drops-enabled channel in Twitch's directory order (wrapping around if all channels were visited).
+    """
+    env = load_env_file()
+    token = resolve_token(env.get("TWITCH_AUTH_TOKEN", "").strip())
+    current_cfg = get_mining_config()
+    current_stat = get_miner_status()
+    current_queue = list(current_cfg.get("queue") or current_cfg.get("activated_games") or [])
+
+    req_game = (target_game or "").strip()
+    selected_game = (
+        req_game
+        or str(current_stat.get("game") or "").strip()
+        or (current_queue[0] if current_queue else "")
+        or str(current_stat.get("selected_game") or "").strip()
+    )
+    mode = current_cfg.get("mode", "default")
+    if mode == "stopped":
+        mode = "selective" if current_queue else "default"
+
+    if selected_game and current_queue:
+        new_queue = [selected_game] + [g for g in current_queue if g.lower() != selected_game.lower()]
+    else:
+        new_queue = current_queue
+
+    prev_login = str(current_stat.get("channel_login") or "").lower().strip()
+    prev_name = str(current_stat.get("channel_name") or prev_login or "").strip()
+    excluded_list: List[str] = [
+        str(ch).lower().strip()
+        for ch in (current_cfg.get("excluded_channels") or [])
+        if ch and str(ch).strip()
+    ]
+
+    requested_login = str(channel_login or "").strip()
+    if "twitch.tv/" in requested_login.lower():
+        requested_login = requested_login.lower().split("twitch.tv/", 1)[1]
+    requested_login = requested_login.split("?")[0].split("#")[0].strip().strip("/").lstrip("@").lower()
+
+    client = TwitchClient(token) if token else TwitchClient("")
+    chosen_channel: Optional[Dict[str, Any]] = None
+    preferred_channel = ""
+
+    if requested_login:
+        preferred_channel = requested_login
+        excluded_list = [ch for ch in excluded_list if ch != requested_login]
+        chosen_channel = client.resolve_specific_channel(requested_login, selected_game)
+        if not chosen_channel and selected_game:
+            # Check directory list in case resolve_specific_channel couldn't find stream metadata
+            for ch in client.list_eligible_channels(selected_game, limit=20):
+                if str(ch.get("channel_login") or "").lower() == requested_login:
+                    chosen_channel = ch
+                    break
+        if not chosen_channel:
+            return {
+                "success": False,
+                "error": f"Channel '@{requested_login}' is not currently live on Twitch or could not be found.",
+                "game": selected_game,
+            }
+        if not selected_game and chosen_channel.get("game_name"):
+            selected_game = chosen_channel["game_name"]
+    else:
+        if prev_login and prev_login not in excluded_list:
+            excluded_list.append(prev_login)
+        if selected_game:
+            chosen_channel = client.find_eligible_channel(
+                selected_game,
+                fast_first=True,
+                excluded_channels=set(excluded_list),
+            )
+            if not chosen_channel and excluded_list:
+                # Wrapped through all available channels: reset exclusions (still trying to skip prev_login first)
+                only_prev = {prev_login} if prev_login else set()
+                chosen_channel = client.find_eligible_channel(
+                    selected_game,
+                    fast_first=True,
+                    excluded_channels=only_prev,
+                )
+                if chosen_channel:
+                    excluded_list = [prev_login] if prev_login else []
+                else:
+                    # Only 1 live channel exists for this game
+                    excluded_list = []
+                    chosen_channel = client.find_eligible_channel(
+                        selected_game,
+                        fast_first=True,
+                        excluded_channels=None,
+                    )
+
+    now_ts = time.time()
+    data_dir = os.path.join(APP_DIR, "data")
+    os.makedirs(data_dir, exist_ok=True)
+    config_file = os.path.join(data_dir, "mining_config.json")
+    status_file = os.path.join(data_dir, "miner_status.json")
+
+    cfg = {
+        "mode": mode,
+        "queue": new_queue,
+        "activated_games": new_queue,
+        "selected_game": new_queue[0] if new_queue else selected_game,
+        "excluded_channels": excluded_list,
+        "preferred_channel": preferred_channel,
+        "updated_at": now_ts,
+    }
+    try:
+        with open(config_file, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2)
+    except Exception:
+        pass
+
+    if not chosen_channel or not chosen_channel.get("channel_login"):
+        return {
+            "success": False,
+            "error": f"No alternative live Drops-enabled channels found for '{selected_game or 'active game'}' right now.",
+            "game": selected_game,
+            "mining_config": cfg,
+            "miner_status": current_stat,
+        }
+
+    stream_url = f"https://www.twitch.tv/{chosen_channel['channel_login']}"
+    new_status = {
+        "active": True,
+        "switching": False,
+        "paused": False,
+        "user_active": False,
+        "game": selected_game or chosen_channel.get("game_name", ""),
+        "game_cover_url": current_stat.get("game_cover_url") or "",
+        "selected_game": (new_queue[0] if new_queue else selected_game) or chosen_channel.get("game_name", ""),
+        "queue": new_queue,
+        "mode": mode,
+        "campaign": current_stat.get("campaign") or selected_game,
+        "channel_id": str(chosen_channel.get("channel_id") or ""),
+        "channel_name": chosen_channel.get("channel_name") or chosen_channel["channel_login"],
+        "channel_login": chosen_channel["channel_login"],
+        "stream_id": str(chosen_channel.get("stream_id") or ""),
+        "stream_title": str(chosen_channel.get("stream_title") or ""),
+        "verified_drops": bool(chosen_channel.get("verified_drops", True)),
+        "has_drops_in_title": bool(chosen_channel.get("has_drops_in_title", False)),
+        "progress_verified": False,
+        "minutes_without_progress": 0,
+        "progress_check_minutes": 5,
+        "game_id": str(chosen_channel.get("game_id") or ""),
+        "stream_url": stream_url,
+        "viewers": int(chosen_channel.get("viewers") or 0),
+        "minutes_watched": 1,
+        "cycle_minutes": int(current_stat.get("cycle_minutes") or 60),
+        "channel_rotation_minutes": int(current_stat.get("channel_rotation_minutes") or 60),
+        "availability_status": "Stream & drops active",
+        "user_login": current_stat.get("user_login") or "",
+        "user_id": current_stat.get("user_id") or "",
+        "switched_at": now_ts,
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    for k in ("current_drop_name", "current_drop_watched", "current_drop_required", "current_drop_percent", "current_drop_remaining"):
+        if k in current_stat:
+            new_status[k] = current_stat[k]
+
+    try:
+        with open(status_file, "w", encoding="utf-8") as f:
+            json.dump(new_status, f, indent=2)
+    except Exception:
+        pass
+
+    if token:
+        threading.Thread(
+            target=_send_async_initial_heartbeat,
+            args=(token, chosen_channel, selected_game or chosen_channel.get("game_name", "")),
+            daemon=True,
+        ).start()
+        ensure_miner_daemon_running(token)
+
+    new_ch_display = chosen_channel.get("channel_name") or chosen_channel["channel_login"]
+    if prev_login and prev_login == str(chosen_channel["channel_login"]).lower() and not requested_login:
+        msg = f"Only 1 live Drops channel (@{chosen_channel['channel_login']}) is currently online for '{selected_game}'."
+    elif prev_name and prev_login != str(chosen_channel["channel_login"]).lower():
+        msg = f"Switched channel from {prev_name} to {new_ch_display} (@{chosen_channel['channel_login']}) for '{selected_game}'!"
+    else:
+        msg = f"Now watching {new_ch_display} (@{chosen_channel['channel_login']}) for '{selected_game}'!"
+
+    cfg["miner_status"] = new_status
+    return {
+        "success": True,
+        "game": selected_game,
+        "channel": chosen_channel,
+        "mode": mode,
+        "queue": new_queue,
+        "mining_config": cfg,
+        "miner_status": new_status,
+        "message": msg,
     }
  
  
@@ -1195,6 +1404,40 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.wfile.write(json.dumps(get_autostart_status()).encode("utf-8"))
             return
 
+        elif self.path.startswith("/api/twitch/channels"):
+            parsed_url = urllib.parse.urlparse(self.path)
+            qs = urllib.parse.parse_qs(parsed_url.query)
+            req_game = (qs.get("game", [""])[0] or "").strip()
+            current_stat = get_miner_status()
+            current_cfg = get_mining_config()
+            q_list = current_cfg.get("queue") or []
+            target_game = (
+                req_game
+                or str(current_stat.get("game") or "").strip()
+                or (q_list[0] if q_list else "")
+                or str(current_stat.get("selected_game") or "").strip()
+            )
+            env = load_env_file()
+            token = resolve_token(env.get("TWITCH_AUTH_TOKEN", "").strip())
+            channels = []
+            if target_game:
+                try:
+                    client = TwitchClient(token)
+                    channels = client.list_eligible_channels(target_game, limit=15)
+                except Exception:
+                    channels = []
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                "success": True,
+                "game": target_game,
+                "current_channel": current_stat.get("channel_login") or "",
+                "current_channel_name": current_stat.get("channel_name") or "",
+                "channels": channels,
+            }).encode("utf-8"))
+            return
+
         self.send_error(404, "Not Found")
 
     def do_POST(self):
@@ -1494,6 +1737,22 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 payload = {}
             target_g = str(payload.get("game") or "").strip()
             res_data = restart_mining(target_g)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(res_data).encode("utf-8"))
+            return
+
+        elif self.path == "/api/twitch/switch-channel":
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length) if content_length > 0 else b"{}"
+            try:
+                payload = json.loads(body.decode("utf-8")) if body else {}
+            except Exception:
+                payload = {}
+            target_g = str(payload.get("game") or "").strip()
+            target_ch = str(payload.get("channel_login") or payload.get("channel") or "").strip()
+            res_data = switch_watched_channel(target_g, target_ch)
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
