@@ -1063,6 +1063,9 @@ def build_status_payload():
         "available_count": 0,
         "needs_collection_count": 0,
         "unavailable_count": 0,
+        "token_configured": bool(twitch_token or env.get("TWITCH_AUTH_TOKEN", "").strip() or load_stored_token()),
+        "token_valid": False,
+        "token_error": "",
     }
 
     if twitch_token:
@@ -1072,6 +1075,7 @@ def build_status_payload():
                 twitch_info["username"] = client.user_login
                 twitch_info["user_id"] = client.user_id
                 twitch_info["connected"] = True
+                twitch_info["token_valid"] = True
 
                 overview = client.get_drops_overview(priority_games=queue_list)
                 camps = overview.get("campaigns", [])
@@ -1163,12 +1167,16 @@ def build_status_payload():
                                 "drop_instance_id": d.get("drop_instance_id"),
                                 "status": d.get("status"),
                             })
+            else:
+                twitch_info["token_error"] = "Twitch token is invalid or expired. Please re-link in Accounts & Logins."
         except Exception as err:
             twitch_info["error"] = str(err)
+    elif twitch_info["token_configured"]:
+        twitch_info["token_error"] = "Stored Twitch token expired or invalid. Please re-link in Accounts & Logins."
 
     if not twitch_info["campaigns"]:
         try:
-            fallback_client = TwitchClient(twitch_token or "")
+            fallback_client = TwitchClient("")
             overview = fallback_client.get_drops_overview(priority_games=queue_list)
             camps = overview.get("campaigns", [])
             _mark_queued_and_active_campaigns(camps, active_target_game, queue_list)
@@ -1260,8 +1268,9 @@ def build_status_payload():
 
 class DashboardHandler(SimpleHTTPRequestHandler):
     def do_GET(self):
+        route_path = self.path.split("?", 1)[0]
         # 1. Public PWA & Static Asset Handlers (Do not require authentication)
-        if self.path == "/manifest.json":
+        if route_path == "/manifest.json":
             manifest_path = os.path.join(os.path.dirname(__file__), "static", "manifest.json")
             if os.path.exists(manifest_path):
                 self.send_response(200)
@@ -1274,7 +1283,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 self.send_error(404, "Manifest not found")
             return
 
-        if self.path == "/sw.js":
+        if route_path == "/sw.js":
             sw_path = os.path.join(os.path.dirname(__file__), "static", "sw.js")
             if os.path.exists(sw_path):
                 self.send_response(200)
@@ -1288,8 +1297,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 self.send_error(404, "Service Worker not found")
             return
 
-        if self.path.startswith("/static/"):
-            clean_path = self.path.split("?")[0].lstrip("/")
+        if route_path.startswith("/static/"):
+            clean_path = route_path.lstrip("/")
             full_path = os.path.join(os.path.dirname(__file__), clean_path)
             if os.path.exists(full_path) and os.path.isfile(full_path):
                 ext = os.path.splitext(full_path)[1].lower()
@@ -1312,7 +1321,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 self.send_error(404, "Static asset not found")
             return
 
-        if self.path == "/favicon.ico":
+        if route_path == "/favicon.ico":
             ico_path = os.path.join(os.path.dirname(__file__), "static", "icons", "favicon.ico")
             if os.path.exists(ico_path):
                 self.send_response(200)
@@ -1325,7 +1334,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return
 
         # 2. Login Page
-        if self.path == "/login":
+        if route_path == "/login":
             if is_authenticated(self.headers):
                 self.send_response(302)
                 self.send_header("Location", "/")
@@ -1345,7 +1354,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
         # 2. Enforce Authentication on All Other Routes
         if not is_authenticated(self.headers):
-            if self.path.startswith("/api/"):
+            if route_path.startswith("/api/"):
                 self.send_response(401)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
@@ -1357,7 +1366,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return
 
         # 3. Main Dashboard
-        if self.path == "/" or self.path == "/index.html":
+        if route_path == "/" or route_path == "/index.html":
             template_path = os.path.join(os.path.dirname(__file__), "templates", "index.html")
             if os.path.exists(template_path):
                 self.send_response(200)
@@ -1369,15 +1378,16 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 self.send_error(404, "Template not found")
             return
 
-        elif self.path == "/api/status":
+        elif route_path == "/api/status":
             data = build_status_payload()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
             self.end_headers()
             self.wfile.write(json.dumps(data).encode("utf-8"))
             return
 
-        elif self.path == "/api/accounts":
+        elif route_path == "/api/accounts":
             env = load_env_file()
             data = {
                 "dashboard_username": env.get("DASHBOARD_USERNAME", "andrex"),
@@ -1401,7 +1411,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.wfile.write(json.dumps(data).encode("utf-8"))
             return
 
-        elif self.path == "/api/logs":
+        elif route_path == "/api/logs":
             log_paths = ["/var/log/twitch-drops.log", "/var/log/free-games.log", "/var/log/auto-loot-web.log"]
             combined = ""
             for lp in log_paths:
@@ -1421,14 +1431,14 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.wfile.write(json.dumps({"logs": combined}).encode("utf-8"))
             return
 
-        elif self.path == "/api/system/git-status":
+        elif route_path == "/api/system/git-status":
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps(get_git_status(check_remote=True)).encode("utf-8"))
             return
 
-        elif self.path == "/api/system/bots":
+        elif route_path == "/api/system/bots":
             bots = get_running_bot_processes()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -1436,14 +1446,14 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.wfile.write(json.dumps({"bots": bots, "count": len(bots)}).encode("utf-8"))
             return
 
-        elif self.path == "/api/system/autostart":
+        elif route_path == "/api/system/autostart":
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps(get_autostart_status()).encode("utf-8"))
             return
 
-        elif self.path.startswith("/api/twitch/channels"):
+        elif route_path.startswith("/api/twitch/channels"):
             parsed_url = urllib.parse.urlparse(self.path)
             qs = urllib.parse.parse_qs(parsed_url.query)
             req_game = (qs.get("game", [""])[0] or "").strip()

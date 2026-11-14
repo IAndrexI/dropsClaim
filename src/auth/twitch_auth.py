@@ -63,6 +63,23 @@ VALIDATE_URL = "https://id.twitch.tv/oauth2/validate"
 
 # In-memory pending logins keyed by device_code
 _PENDING: Dict[str, Dict[str, Any]] = {}
+_VALIDATED_TOKEN_CACHE: Dict[str, Dict[str, Any]] = {}
+
+
+def clean_auth_token(raw_token: str) -> str:
+    """Normalize a user-provided or stored Twitch auth token (strip OAuth/Bearer/cookie prefixes & quotes)."""
+    tok = (raw_token or "").strip().strip("'\"")
+    if tok.lower().startswith("oauth "):
+        tok = tok[6:].strip()
+    elif tok.lower().startswith("bearer "):
+        tok = tok[7:].strip()
+    if "auth-token=" in tok:
+        for part in tok.split(";"):
+            part = part.strip()
+            if part.startswith("auth-token="):
+                tok = part.split("=", 1)[1].strip().strip("'\"")
+                break
+    return tok.strip()
 
 
 def _post_form(url: str, fields: Dict[str, str], timeout: int = 15) -> Tuple[int, Dict[str, Any]]:
@@ -103,6 +120,7 @@ def save_token(data: Dict[str, Any]) -> None:
 
 
 def clear_token() -> None:
+    _VALIDATED_TOKEN_CACHE.clear()
     try:
         os.remove(TOKEN_FILE)
     except OSError:
@@ -111,14 +129,25 @@ def clear_token() -> None:
 
 def validate_access_token(access_token: str) -> Optional[Dict[str, Any]]:
     """Returns id.twitch.tv validation info (login, user_id, expires_in) or None if invalid."""
+    clean_tok = clean_auth_token(access_token)
+    if not clean_tok:
+        return None
+    cached = _VALIDATED_TOKEN_CACHE.get(clean_tok)
+    now = time.time()
+    if cached and (now - float(cached.get("_cached_at", 0))) < 300:
+        return dict(cached["info"])
     req = urllib.request.Request(
-        VALIDATE_URL, headers={"Authorization": f"OAuth {access_token}", "User-Agent": DEVICE_USER_AGENT}
+        VALIDATE_URL, headers={"Authorization": f"OAuth {clean_tok}", "User-Agent": DEVICE_USER_AGENT}
     )
     try:
         with urllib.request.urlopen(req, timeout=15) as r:
-            return json.loads(r.read().decode())
+            info = json.loads(r.read().decode())
+            if isinstance(info, dict) and info.get("user_id"):
+                _VALIDATED_TOKEN_CACHE[clean_tok] = {"_cached_at": now, "info": dict(info)}
+            return info
     except urllib.error.HTTPError as e:
         if e.code == 401:
+            _VALIDATED_TOKEN_CACHE.pop(clean_tok, None)
             return None
         raise
     except Exception as e:  # network trouble: do not treat as invalid
@@ -197,8 +226,11 @@ def get_credentials(env_token: str = "") -> Tuple[str, str]:
                         except Exception:
                             pass
         if tok:
-            return tok["access_token"], tok.get("client_id") or device_client_id()
-    return (env_token or "").strip(), WEB_CLIENT_ID
+            return clean_auth_token(tok["access_token"]), tok.get("client_id") or device_client_id()
+    clean_env = clean_auth_token(env_token)
+    if clean_env:
+        return clean_env, client_id_for(clean_env)
+    return "", WEB_CLIENT_ID
 
 
 def resolve_token(env_token: str = "") -> str:
@@ -206,12 +238,20 @@ def resolve_token(env_token: str = "") -> str:
 
 
 def client_id_for(token: str) -> str:
+    clean_tok = clean_auth_token(token)
+    if not clean_tok:
+        return WEB_CLIENT_ID
     tok = load_token()
-    if tok and tok.get("access_token") == token:
+    if tok and clean_auth_token(tok.get("access_token", "")) == clean_tok:
         cid = str(tok.get("client_id") or "")
         if len(cid) >= 20 and cid not in VALID_GQL_CLIENT_IDS:
             return WEB_CLIENT_ID
         return cid or device_client_id()
+    cached = _VALIDATED_TOKEN_CACHE.get(clean_tok)
+    if cached and isinstance(cached.get("info"), dict):
+        val_cid = str(cached["info"].get("client_id") or "")
+        if val_cid in VALID_GQL_CLIENT_IDS:
+            return val_cid
     return WEB_CLIENT_ID
 
 

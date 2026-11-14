@@ -1166,9 +1166,16 @@
       if (installBtn && isApp) installBtn.style.display = "none";
 
       // 1. Stats bar
-      document.getElementById("stat-twitch-user").innerHTML = twitch.username 
-        ? `<span style="color: #a855f7;">@${escapeHtml(twitch.username)}</span>`
-        : `<span style="color: #ef4444;">Not Connected</span>`;
+      const twitchUserEl = document.getElementById("stat-twitch-user");
+      if (twitchUserEl) {
+        if (twitch.username) {
+          twitchUserEl.innerHTML = `<span style="color: #a855f7;">@${escapeHtml(twitch.username)}</span> <span style="font-size: 0.72rem; color: #34d399; font-weight: 600;">[TOKEN OK]</span>`;
+        } else if (twitch.token_error) {
+          twitchUserEl.innerHTML = `<span style="color: #f59e0b; cursor: pointer;" onclick="switchTab('accounts')" title="${escapeHtml(twitch.token_error)}">Token Expired (Re-link)</span>`;
+        } else {
+          twitchUserEl.innerHTML = `<span style="color: #ef4444; cursor: pointer;" onclick="switchTab('accounts')">Not Connected</span>`;
+        }
+      }
       const statTwitchSub = document.getElementById("stat-twitch-sub");
       if (statTwitchSub) {
         statTwitchSub.innerText = `${twitch.active_campaigns_count || 0} Active Campaigns (${twitch.total_campaigns || (twitch.campaigns || []).length} Total)`;
