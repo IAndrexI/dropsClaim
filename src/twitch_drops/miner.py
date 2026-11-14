@@ -230,7 +230,14 @@ class DropsMiner:
                 continue
             igame = extract_game_name(ic, "").lower()
             icname = str(ic.get("name") or "").lower()
-            if igame == game_name.lower() or (camp_name and icname == camp_name.lower()):
+            gl = game_name.lower()
+            cid_match = bool(fallback_camp and fallback_camp.get("id") and ic.get("id") == fallback_camp.get("id"))
+            if (
+                cid_match
+                or igame == gl
+                or (gl and igame and (gl in igame or igame in gl))
+                or (camp_name and icname == camp_name.lower())
+            ):
                 matched = True
                 for d in ic.get("timeBasedDrops") or []:
                     s = d.get("self") or {}
@@ -248,6 +255,30 @@ class DropsMiner:
             if not sess_game or sess_game == game_name.lower() or game_name.lower() in sess_game:
                 total_watched = max(total_watched, int(session_ctx.get("currentMinutesWatched") or 0))
         return total_watched
+
+    def _get_global_watched_total(self, session_ctx: Optional[dict] = None) -> int:
+        """
+        Game-agnostic progress signal: total watched minutes across ALL in-progress drop campaigns in the
+        inventory (+ claimed-drop count + live session minutes). Increases whenever ANY drop (WARDOGS, Rust,
+        Evolutions, ...) is credited, so progress checks never depend on fragile game-name matching.
+        """
+        inv = self.last_inventory or {}
+        inv_camps = inv.get("dropCampaignsInProgress") or inv.get("dropCampaignInProgress") or []
+        if isinstance(inv_camps, dict):
+            inv_camps = [inv_camps]
+        total = 0
+        for ic in inv_camps:
+            if not isinstance(ic, dict):
+                continue
+            for d in ic.get("timeBasedDrops") or []:
+                s = d.get("self") or {}
+                total += int(s.get("currentMinutesWatched") or 0)
+                if s.get("isClaimed"):
+                    total += 1000000
+        total += len(inv.get("gameEventDrops") or []) * 1000000
+        if isinstance(session_ctx, dict):
+            total += int(session_ctx.get("currentMinutesWatched") or 0)
+        return total
 
     def _get_config_signature(self) -> tuple:
         """Return a comparable signature of the current mining config to detect user changes immediately."""
@@ -840,6 +871,7 @@ class DropsMiner:
         )
         last_progress_minute = 0
         progress_verified = False
+        baseline_global = self._get_global_watched_total()
 
         immediate_status = {
             "active": True,
@@ -1007,9 +1039,12 @@ class DropsMiner:
                 live_drop_info=live_drop_info,
                 session_ctx=session_ctx,
             )
-            if current_watched > baseline_watched or claimed_now > 0:
+            global_now = self._get_global_watched_total(session_ctx)
+            global_progress = global_now > baseline_global
+            baseline_global = max(baseline_global, global_now)
+            if current_watched > baseline_watched or claimed_now > 0 or global_progress:
                 gained = max(1, current_watched - baseline_watched)
-                baseline_watched = current_watched
+                baseline_watched = max(baseline_watched, current_watched)
                 last_progress_minute = minute + 1
                 progress_verified = True
                 logger.info(
