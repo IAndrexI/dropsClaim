@@ -821,7 +821,15 @@ def switch_watched_channel(
     }
  
  
-def get_git_status():
+_GIT_STATUS_CACHE: Dict[str, Any] = {"ts": 0.0, "data": None}
+_AUTOSTART_STATUS_CACHE: Dict[str, Any] = {"ts": 0.0, "data": None}
+
+
+def get_git_status(check_remote: bool = False):
+    now = time.time()
+    if not check_remote and _GIT_STATUS_CACHE["data"] and (now - _GIT_STATUS_CACHE["ts"]) < 300.0:
+        return dict(_GIT_STATUS_CACHE["data"])
+
     status = {
         "is_git": False,
         "commit_hash": "",
@@ -862,19 +870,25 @@ def get_git_status():
     except Exception:
         pass
 
-    try:
-        remote_ls = subprocess.check_output(
-            ["git", "ls-remote", "origin", "refs/heads/main"],
-            cwd=APP_DIR, text=True, stderr=subprocess.DEVNULL, timeout=8
-        ).strip()
-        if remote_ls:
-            remote_hash = remote_ls.split()[0]
-            status["remote_commit"] = remote_hash[:7]
-            if remote_hash and remote_hash != status["commit_hash"]:
-                status["updates_available"] = True
-    except Exception:
-        pass
+    if check_remote:
+        try:
+            remote_ls = subprocess.check_output(
+                ["git", "ls-remote", "origin", "refs/heads/main"],
+                cwd=APP_DIR, text=True, stderr=subprocess.DEVNULL, timeout=8
+            ).strip()
+            if remote_ls:
+                remote_hash = remote_ls.split()[0]
+                status["remote_commit"] = remote_hash[:7]
+                if remote_hash and remote_hash != status["commit_hash"]:
+                    status["updates_available"] = True
+        except Exception:
+            pass
+    elif _GIT_STATUS_CACHE["data"]:
+        status["remote_commit"] = _GIT_STATUS_CACHE["data"].get("remote_commit", "")
+        status["updates_available"] = bool(_GIT_STATUS_CACHE["data"].get("updates_available", False))
 
+    _GIT_STATUS_CACHE["ts"] = now
+    _GIT_STATUS_CACHE["data"] = dict(status)
     return status
 
 
@@ -917,7 +931,10 @@ def perform_git_update():
             return {"success": False, "output": f"Update failed: {e}"}
 
 
-def get_autostart_status():
+def get_autostart_status(use_cache: bool = False):
+    now = time.time()
+    if use_cache and _AUTOSTART_STATUS_CACHE["data"] and (now - _AUTOSTART_STATUS_CACHE["ts"]) < 60.0:
+        return dict(_AUTOSTART_STATUS_CACHE["data"])
     status = {
         "init_system": "unknown",
         "enabled": False,
@@ -950,6 +967,8 @@ def get_autostart_status():
             status["enabled"] = bool(status["services"]["twitch-drops"] and status["services"]["auto-loot-web"])
         except Exception as e:
             status["error"] = str(e)
+    _AUTOSTART_STATUS_CACHE["ts"] = now
+    _AUTOSTART_STATUS_CACHE["data"] = dict(status)
     return status
 
 
@@ -1077,10 +1096,30 @@ def build_status_payload():
                 twitch_info["unavailable_count"] = overview.get("unavailable_count", 0)
                 twitch_info["last_refreshed_at"] = overview.get("last_refreshed_at")
 
-                # Enrich miner_status with live drop progress if currently watching a game
+                # Enrich miner_status with live drop progress & elapsed session minutes if currently watching a game
                 if miner_stat.get("active") and miner_stat.get("game"):
+                    if miner_stat.get("switched_at"):
+                        try:
+                            elapsed_m = max(1, int((time.time() - float(miner_stat["switched_at"])) // 60) + 1)
+                            cyc_m = int(miner_stat.get("cycle_minutes") or 60)
+                            miner_stat["minutes_watched"] = min(cyc_m, max(int(miner_stat.get("minutes_watched") or 1), elapsed_m))
+                        except Exception:
+                            pass
+
+                    live_sess_watched = 0
+                    if miner_stat.get("channel_id"):
+                        try:
+                            sess_ctx = client.get_drop_current_session(
+                                str(miner_stat["channel_id"]),
+                                str(miner_stat.get("channel_login") or ""),
+                            )
+                            if isinstance(sess_ctx, dict):
+                                live_sess_watched = int(sess_ctx.get("currentMinutesWatched") or 0)
+                        except Exception:
+                            pass
+
                     watched_game_low = str(miner_stat.get("game") or "").lower()
-                    stat_watched = int(miner_stat.get("current_drop_watched") or 0)
+                    stat_watched = max(int(miner_stat.get("current_drop_watched") or 0), live_sess_watched)
                     found_active_drop = False
                     for c in camps:
                         if c.get("is_expired"):
@@ -1200,7 +1239,7 @@ def build_status_payload():
     if not miner_running and miner_stat.get("active"):
         miner_running = ensure_miner_daemon_running(twitch_token) or True
 
-    git_info = get_git_status()
+    git_info = get_git_status(check_remote=False)
     running_bots = get_running_bot_processes()
 
     return {
@@ -1213,7 +1252,7 @@ def build_status_payload():
             "git": git_info,
             "bots": running_bots,
             "bot_count": len(running_bots),
-            "autostart": get_autostart_status(),
+            "autostart": get_autostart_status(use_cache=True),
         }
     }
 
@@ -1386,7 +1425,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(json.dumps(get_git_status()).encode("utf-8"))
+            self.wfile.write(json.dumps(get_git_status(check_remote=True)).encode("utf-8"))
             return
 
         elif self.path == "/api/system/bots":

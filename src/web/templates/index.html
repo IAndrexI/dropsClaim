@@ -451,12 +451,12 @@
           <span class="sync-dot"></span>
           <span id="sync-text">LIVE SYNCED</span>
         </span>
-        <button id="btn-header-direct-update" class="btn btn-sm" onclick="openDirectUpdateModal()" style="border-color: #38bdf8; color: #38bdf8; font-weight: 600; display: inline-flex; align-items: center; gap: 5px;" title="Directly update app from GitHub on the page">&#8635; Update App</button>
+        <button id="btn-header-direct-update" class="btn btn-sm" onclick="openDirectUpdateModal()" style="border-color: #38bdf8; color: #38bdf8; font-weight: 600; display: inline-flex; align-items: center; gap: 5px;" title="Check GitHub for app updates (manual only)">&#8635; Update App</button>
         <button id="btn-install-app" class="btn btn-sm" onclick="installAppPrompt()" style="display: none; border-color: #8b5cf6; color: #c084fc;" title="Install as desktop or mobile app">Install App</button>
         <span id="app-mode-badge" class="badge" style="display: none; background: rgba(99, 102, 241, 0.15); color: #818cf8;">[APP MODE]</span>
         <button class="btn btn-primary" onclick="claimDropsNow()">Claim Ready Drops</button>
         <button class="btn btn-success" onclick="triggerGamesCheck()">Check All Stores</button>
-        <button class="btn" onclick="fetchData()">Refresh</button>
+        <button id="btn-header-refresh-progress" class="btn" onclick="refreshMiningProgress()" title="Refresh live mining progress and drop bars on the page">&#8635; Refresh Progress</button>
         <button class="btn" style="border-color: #ef4444; color: #f87171;" onclick="signOut()">Sign Out</button>
       </div>
     </header>
@@ -556,6 +556,7 @@
           <span class="miner-stat-pill" id="miner-drop-live-progress" style="display: none; border-color: #3b82f6; color: #93c5fd;">Drop: --</span>
           <span class="miner-stat-pill" id="miner-stream-progress">Session: 0/60 mins (1h rotation)</span>
           <span class="miner-stat-pill" id="miner-stream-viewers">0 Viewers</span>
+          <button class="btn btn-sm" id="btn-refresh-progress" onclick="refreshMiningProgress()" style="border-color: #10b981; color: #34d399; background: rgba(16, 185, 129, 0.12); font-weight: 600;" title="Refresh live Twitch drop progress and session minutes on this page">&#8635; Refresh Progress</button>
           <button class="btn btn-sm" id="btn-switch-channel" onclick="switchWatchedChannel()" style="border-color: #38bdf8; color: #7dd3fc; background: rgba(56, 189, 248, 0.12); font-weight: 600;" title="Skip current channel and switch to the next live Drops-enabled channel">&#8644; Next Channel</button>
           <button class="btn btn-sm" id="btn-pick-channel" onclick="openChannelSwitcherModal()" style="border-color: #6366f1; color: #a5b4fc; background: rgba(99, 102, 241, 0.12); font-weight: 600;" title="Choose a specific live Drops channel or enter a streamer username">&#9776; Pick Channel</button>
           <button class="btn btn-sm" id="btn-restart-mining" onclick="restartSelectedMining()" style="border-color: #f59e0b; color: #fbbf24; background: rgba(245, 158, 11, 0.12); font-weight: 600;" title="Fully restart mining for the selected game (reconnects to live stream and resets watchdog)">&#8635; Restart Mining</button>
@@ -1085,7 +1086,7 @@
 
     async function fetchData(silent = false) {
       try {
-        const res = await fetch("/api/status");
+        const res = await fetch("/api/status?t=" + Date.now(), { cache: "no-store" });
         if (res.status === 401) {
           window.location.href = "/login";
           return;
@@ -1096,6 +1097,59 @@
       } catch (err) {
         if (!silent) {
           showToast("Error connecting to server API: " + err.message);
+        }
+      }
+    }
+
+    async function refreshMiningProgress() {
+      const btnBanner = document.getElementById("btn-refresh-progress");
+      const btnHeader = document.getElementById("btn-header-refresh-progress");
+      if (btnBanner) {
+        btnBanner.disabled = true;
+        btnBanner.innerHTML = "&#8635; Refreshing...";
+      }
+      if (btnHeader) {
+        btnHeader.disabled = true;
+        btnHeader.innerHTML = "&#8635; Refreshing...";
+      }
+      try {
+        await fetchData(false);
+        const ms = (currentData && currentData.twitch && currentData.twitch.miner_status) || {};
+        if (ms.active && ms.current_drop_name && ms.current_drop_required > 0) {
+          showToast(`Mining progress refreshed: ${ms.current_drop_name} (${ms.current_drop_watched || 0}/${ms.current_drop_required}m — ${ms.current_drop_percent || 0}%)`);
+        } else if (ms.active) {
+          showToast(`Mining progress refreshed: watching ${ms.channel_name || ms.channel_login || 'stream'} (Session: ${ms.minutes_watched || 1}/${ms.cycle_minutes || 60}m)`);
+        } else {
+          showToast("Page mining status and drop progress refreshed.");
+        }
+      } finally {
+        if (btnBanner) {
+          btnBanner.disabled = false;
+          btnBanner.innerHTML = "&#8635; Refresh Progress";
+        }
+        if (btnHeader) {
+          btnHeader.disabled = false;
+          btnHeader.innerHTML = "&#8635; Refresh Progress";
+        }
+      }
+    }
+
+    function tickLocalSessionTimer() {
+      if (!currentData || !currentData.twitch || !currentData.twitch.miner_status) return;
+      const minerStat = currentData.twitch.miner_status;
+      if (!minerStat.active || !minerStat.switched_at) return;
+      const switchedMs = Date.parse(minerStat.switched_at);
+      if (!Number.isFinite(switchedMs)) return;
+      const elapsedMins = Math.max(1, Math.floor((Date.now() - switchedMs) / 60000) + 1);
+      const cycleTotal = minerStat.cycle_minutes || 60;
+      const clampedMins = Math.min(cycleTotal, Math.max(minerStat.minutes_watched || 1, elapsedMins));
+      if (clampedMins !== minerStat.minutes_watched) {
+        minerStat.minutes_watched = clampedMins;
+        const progressPill = document.getElementById("miner-stream-progress");
+        if (progressPill) {
+          progressPill.innerText = minerStat.progress_verified
+            ? `Session: ${clampedMins}/${cycleTotal}m (Verified)`
+            : `Session: ${clampedMins}/${cycleTotal}m (Check: ${minerStat.minutes_without_progress || 0}/${minerStat.progress_check_minutes || 5}m)`;
         }
       }
     }
@@ -3258,6 +3312,7 @@
     // Initial load & continuous 10s synchronization heartbeat
     fetchData();
     setInterval(() => fetchData(true), 10000);
+    setInterval(tickLocalSessionTimer, 5000);
   </script>
 </body>
 </html>
