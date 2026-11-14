@@ -1,3 +1,5 @@
+import base64
+import gzip
 import json
 import os
 import tempfile
@@ -177,12 +179,19 @@ class MiningQueueAndSwapTests(unittest.TestCase):
                 return directory
             return _fake
 
-        # Twitch's own Drops-enabled directory filter: the first (top-left) channel is chosen as-is
-        with mock.patch.object(client, "post_gql", return_value=gql_directory_response):
+        # Must always verify DropsHighlightService_AvailableDrops even when DROPS_ENABLED directory returns results,
+        # skipping nodrops_guy and picking the first (top-left) verified channel in directory order.
+        with mock.patch.object(client, "post_gql", return_value=gql_directory_response), \
+             mock.patch.object(client, "post_persisted_gql", side_effect=fake_persisted_gql):
             top = client.find_eligible_channel("Rust", fast_first=True)
-            self.assertEqual(top["channel_login"], "nodrops_guy")
-            top2 = client.find_eligible_channel("Rust", fast_first=True, excluded_channels={"nodrops_guy"})
-            self.assertEqual(top2["channel_login"], "stalled_streamer")
+            self.assertIsNotNone(top)
+            self.assertEqual(top["channel_login"], "stalled_streamer")
+            self.assertTrue(top["verified_drops"])
+
+            top2 = client.find_eligible_channel("Rust", fast_first=True, excluded_channels={"stalled_streamer"})
+            self.assertIsNotNone(top2)
+            self.assertEqual(top2["channel_login"], "good_streamer")
+            self.assertTrue(top2["verified_drops"])
 
         with mock.patch.object(client, "post_gql", side_effect=only_fallback(gql_directory_response)), \
              mock.patch.object(client, "post_persisted_gql", side_effect=fake_persisted_gql):
@@ -739,6 +748,57 @@ class MiningQueueAndSwapTests(unittest.TestCase):
         sig_after = dm._get_config_signature()
         self.assertEqual(sig_before, sig_after)
         self.assertFalse(dm._has_config_changed(sig_before))
+
+    def test_send_minute_watched_heartbeat_sends_gql_spade_and_http_spade(self):
+        client = t_api.TwitchClient("fake_token")
+        client.user_id = "123456"
+        client.user_login = "viewer_user"
+
+        gql_calls = []
+
+        def fake_post_gql(query, variables=None, operation_name=None):
+            gql_calls.append({"query": query, "variables": variables, "operation_name": operation_name})
+            return {"data": {"sendSpadeEvents": {"statusCode": 204}}}
+
+        fake_resp = mock.MagicMock()
+        fake_resp.status = 204
+        fake_urlopen_cm = mock.MagicMock()
+        fake_urlopen_cm.__enter__.return_value = fake_resp
+        fake_urlopen_cm.__exit__.return_value = False
+
+        with mock.patch.object(client, "post_gql", side_effect=fake_post_gql), \
+             mock.patch.object(client, "post_persisted_gql", return_value={}), \
+             mock.patch("urllib.request.urlopen", return_value=fake_urlopen_cm) as mock_urlopen:
+            ok = client.send_minute_watched_heartbeat(
+                channel_id="56395702",
+                stream_id="987654321",
+                channel_login="coconutb",
+                game_name="WARDOGS",
+                game_id="743893402",
+                sub_playlist_url=None,
+                minutes_logged=7,
+            )
+
+        self.assertTrue(ok)
+        self.assertEqual(len(gql_calls), 1)
+        call = gql_calls[0]
+        self.assertEqual(call["operation_name"], "SendEvents")
+        inp = (call["variables"] or {}).get("input") or {}
+        self.assertEqual(inp.get("repository"), "twilight")
+        self.assertEqual(inp.get("encoding"), "GZIP_B64")
+
+        decompressed = gzip.decompress(base64.b64decode(inp["data"])).decode("utf-8")
+        events = json.loads(decompressed)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["event"], "minute-watched")
+        props = events[0]["properties"]
+        self.assertEqual(props["minutes_logged"], 7)
+        self.assertIsInstance(props["user_id"], int)
+        self.assertEqual(props["user_id"], 123456)
+        self.assertEqual(props["channel"], "coconutb")
+        self.assertEqual(props["game"], "WARDOGS")
+        self.assertEqual(props["game_id"], "743893402")
+        self.assertTrue(mock_urlopen.called)
 
 
 if __name__ == "__main__":

@@ -137,6 +137,10 @@ class DropsMiner:
         # Channels that completed a full 1-hour cycle (rotated to watch different live streamers)
         self.rotated_channels: Dict[str, float] = {}
         self.rotated_cooldown_secs: float = 300.0  # 5 minutes rotation cooldown before repeating same channel
+        # Campaigns that failed to gain progress across multiple channels in a row (e.g., badge-gated Evolutions)
+        self.campaign_stall_counts: Dict[str, int] = {}
+        self.stalled_campaigns: Dict[str, float] = {}
+        self.stalled_campaign_cooldown_secs: float = 1800.0
         try:
             env_cycle_mins = int(os.environ.get("TWITCH_STREAM_CYCLE_MINS", "60"))
         except Exception:
@@ -580,6 +584,35 @@ class DropsMiner:
             logger.info("All watch-time drops in currently active campaigns have already been claimed! You are all caught up.")
             return []
 
+        # Prune expired campaign stall cooldowns
+        expired_stalls = [
+            g for g, ts in self.stalled_campaigns.items()
+            if (now - ts) >= self.stalled_campaign_cooldown_secs
+        ]
+        for g in expired_stalls:
+            self.stalled_campaigns.pop(g, None)
+
+        queue_low_set = {g.lower() for g in queue_games}
+
+        def _deprioritize_stalled(camps: List[dict]) -> List[dict]:
+            if len(camps) <= 1:
+                return camps
+            active_camps = []
+            stalled_or_badge_camps = []
+            for camp in camps:
+                gname = extract_game_name(camp, "").lower()
+                is_stalled = gname in self.stalled_campaigns
+                is_unrequested_badge = (
+                    mode == "default"
+                    and gname in ("evolutions", "twitch global drop")
+                    and not any(qg == gname or qg in gname for qg in queue_low_set)
+                )
+                if is_stalled or is_unrequested_badge:
+                    stalled_or_badge_camps.append(camp)
+                else:
+                    active_camps.append(camp)
+            return active_camps + stalled_or_badge_camps
+
         # Order eligible campaigns strictly by queue order first
         if mode == "selective":
             if not queue_games:
@@ -603,7 +636,7 @@ class DropsMiner:
             if not ordered_selective:
                 logger.info("[SELECTIVE MODE] No active watch-time drops match your queued games (%s) right now.", ", ".join(queue_games))
                 return []
-            return ordered_selective
+            return _deprioritize_stalled(ordered_selective)
 
         # 'default' mode: Mine queued games in exact queue order first, then auto-mine remaining eligible campaigns
         if queue_games:
@@ -626,9 +659,9 @@ class DropsMiner:
                 if cid not in seen_ids:
                     others.append(camp)
                     seen_ids.add(cid)
-            return prioritized + others
+            return _deprioritize_stalled(prioritized + others)
 
-        return eligible
+        return _deprioritize_stalled(eligible)
 
     def select_active_campaign(self) -> Optional[dict]:
         """Select the highest priority single campaign that still has unclaimed watch-time drops."""
@@ -947,6 +980,7 @@ class DropsMiner:
                 game_name=game_name,
                 game_id=channel.get("game_id"),
                 sub_playlist_url=sub_playlist_url,
+                minutes_logged=minute + 1,
             )
 
             # Interruptible ~60s sleep BEFORE checking inventory/progress so a full minute of watch time elapses
@@ -1047,6 +1081,8 @@ class DropsMiner:
                 baseline_watched = max(baseline_watched, current_watched)
                 last_progress_minute = minute + 1
                 progress_verified = True
+                self.campaign_stall_counts[game_name.lower()] = 0
+                self.stalled_campaigns.pop(game_name.lower(), None)
                 logger.info(
                     "[MINER] Drop progress verified on %s (@%s) for '%s' (+%dm watched, now %dm total).",
                     channel["channel_name"], channel["channel_login"], game_name, gained, current_watched
@@ -1060,6 +1096,15 @@ class DropsMiner:
                         mins_stalled, channel["channel_name"], channel["channel_login"], game_name, current_watched
                     )
                     self._mark_channel_unproductive(channel["channel_login"])
+                    stall_cnt = self.campaign_stall_counts.get(game_name.lower(), 0) + 1
+                    self.campaign_stall_counts[game_name.lower()] = stall_cnt
+                    if stall_cnt >= 2:
+                        self.stalled_campaigns[game_name.lower()] = time.time()
+                        logger.warning(
+                            "[MINER] Campaign '%s' failed to gain progress across %d channels in a row; "
+                            "placing on 30-minute cooldown so other eligible campaigns can be mined.",
+                            game_name, stall_cnt
+                        )
                     self.current_stream = None
                     save_miner_status({
                         "active": False,

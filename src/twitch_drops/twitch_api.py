@@ -15,6 +15,7 @@ No third-party analytics, tracking, or proxy endpoints are contacted.
 import base64
 import concurrent.futures
 from datetime import datetime, timezone
+import gzip
 import html
 import json
 import logging
@@ -1875,7 +1876,7 @@ class TwitchClient:
             game(name: $name) {
                 id
                 name
-                streams(first: 30, options: {tags: ["DropsEnabled", "Drops"]}) {
+                streams(first: 30, options: {sort: RELEVANCE, systemFilters: [DROPS_ENABLED], recommendationsContext: {platform: "web"}}) {
                     edges {
                         node {
                             id
@@ -1953,31 +1954,13 @@ class TwitchClient:
                 logger.info("No non-excluded live streams found for game '%s' (excluded=%d)", game_name, len(excluded_set))
                 return None
 
-            # Twitch's own "Drops enabled" directory filter (same list the website shows):
-            # choose the FIRST channel (top-left) directly.
-            if used_drops_filter:
-                n0 = candidate_nodes[0]
-                b0 = n0.get("broadcaster") or {}
-                logger.info(
-                    "Selected top-left Drops-enabled channel for '%s': %s (@%s) with %d viewers",
-                    game_name, b0.get("displayName"), b0.get("login"), int(n0.get("viewersCount") or 0)
-                )
-                return {
-                    "channel_id": str(b0.get("id") or ""),
-                    "channel_login": b0.get("login"),
-                    "channel_name": b0.get("displayName"),
-                    "stream_id": str(n0.get("id") or ""),
-                    "stream_title": str(n0.get("title") or ""),
-                    "viewers": n0.get("viewersCount", 0),
-                    "game_name": game_name,
-                    "game_id": game_id,
-                    "verified_drops": True,
-                    "has_drops_in_title": self._node_has_drops_in_title_or_tags(n0),
-                }
-
             # Keep Twitch's directory order: the FIRST live participating channel in the list is chosen.
             target_game_low = game_name.lower().strip()
             campaign_low = (campaign_game or "").lower().strip()
+            is_global_target = any(
+                kw in target_game_low or kw in campaign_low
+                for kw in ("evolutions", "pokemon", "twitch global drop")
+            )
 
             # Verify which channels actually have active watch-time drops enabled via DropsHighlightService_AvailableDrops
             def verify_channel(node: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -1995,10 +1978,12 @@ class TwitchClient:
                     has_watchable = False
                     for c in camps:
                         c_game = extract_game_name(c, "").lower()
-                        # Ignore global 0-minute badge campaigns for other/null games
-                        if (
-                            c_game
-                            and target_game_low not in c_game and c_game not in target_game_low
+                        # Ignore global badge campaigns when targeting a specific game
+                        if not c_game:
+                            if not is_global_target:
+                                continue
+                        elif (
+                            target_game_low not in c_game and c_game not in target_game_low
                             and not (campaign_low and (campaign_low in c_game or c_game in campaign_low))
                         ):
                             continue
@@ -2189,12 +2174,20 @@ class TwitchClient:
         if not self.auth_token or not channel_id:
             return {}
         try:
+            login_str = str(channel_login or "").strip()
             res = self.post_persisted_gql(
                 operation_name="DropCurrentSessionContext",
                 sha256_hash="4d06b702d25d652afb9ef835d2a550031f1cf762b193523a92166f40ea3d142b",
-                variables={"channelID": str(channel_id), "channelLogin": ""},
+                variables={"channelID": str(channel_id), "channelLogin": login_str},
             )
             session = ((res.get("data") or {}).get("currentUser") or {}).get("dropCurrentSession")
+            if not session and login_str:
+                res_fallback = self.post_persisted_gql(
+                    operation_name="DropCurrentSessionContext",
+                    sha256_hash="4d06b702d25d652afb9ef835d2a550031f1cf762b193523a92166f40ea3d142b",
+                    variables={"channelID": str(channel_id), "channelLogin": ""},
+                )
+                session = ((res_fallback.get("data") or {}).get("currentUser") or {}).get("dropCurrentSession")
             if isinstance(session, dict):
                 self.last_drop_session = session
                 return session
@@ -2210,9 +2203,11 @@ class TwitchClient:
         game_name: Optional[str] = None,
         game_id: Optional[str] = None,
         sub_playlist_url: Optional[str] = None,
+        minutes_logged: int = 1,
     ) -> bool:
         """
-        Send a stream-viewing progress heartbeat to Twitch's tracking endpoint (https://spade.twitch.tv/track).
+        Send a stream-viewing progress heartbeat to Twitch via both the authenticated GraphQL
+        SendEvents (sendSpadeEvents GZIP_B64) mutation and https://spade.twitch.tv/track.
         Simulates watching the stream under the user's account without video bandwidth.
         Also refreshes DropsHighlightService_AvailableDrops and DropCurrentSessionContext for the
         watched channel so Twitch's drop progress session remains bound to this channel.
@@ -2255,17 +2250,38 @@ class TwitchClient:
             uid_val = int(uid_val)
 
         properties: Dict[str, Any] = {
+            "app_fullscreen": False,
+            "autoplayed": True,
+            "backend": "mediaplayer",
             "broadcast_id": str(stream_id),
-            "channel_id": str(channel_id),
             "channel": str(channel_login) if channel_login else "",
+            "channel_id": str(channel_id),
+            "chat_visible": True,
+            "chat_visibility_status": "visible",
+            "content_mode": "live",
             "hidden": False,
+            "is_ad_playing": False,
+            "is_live": True,
             "live": True,
             "location": "channel",
             "logged_in": True,
+            "login": str(self.user_login or ""),
+            "minutes_logged": max(1, int(minutes_logged or 1)),
+            "mse_support": True,
             "muted": False,
+            "partner": True,
+            "playback_gated": False,
             "player": "site",
+            "player_size_mode": "default",
+            "time_spent_hidden": 0,
+            "turbo": False,
             "user_id": uid_val,
+            "volume": 0.5,
         }
+        if game_name:
+            properties["game"] = str(game_name)
+        if game_id:
+            properties["game_id"] = str(game_id)
 
         payload = [
             {
@@ -2274,6 +2290,32 @@ class TwitchClient:
             }
         ]
         raw_json = json.dumps(payload, separators=(',', ':'))
+
+        sent_ok = False
+        try:
+            gz_bytes = gzip.compress(raw_json.encode("utf-8"), compresslevel=1)
+            gz_b64 = base64.b64encode(gz_bytes).decode("utf-8")
+            gql_spade_query = (
+                "mutation SendEvents($input: SendSpadeEventsInput!) { "
+                "sendSpadeEvents(input: $input) { statusCode } }"
+            )
+            gql_res = self.post_gql(
+                gql_spade_query,
+                variables={
+                    "input": {
+                        "data": gz_b64,
+                        "repository": "twilight",
+                        "encoding": "GZIP_B64",
+                    }
+                },
+                operation_name="SendEvents",
+            )
+            status_code = (((gql_res or {}).get("data") or {}).get("sendSpadeEvents") or {}).get("statusCode")
+            if status_code in (200, 204):
+                sent_ok = True
+        except Exception as err:
+            logger.debug("GQL SendEvents heartbeat error: %s", err)
+
         b64_data = base64.b64encode(raw_json.encode('utf-8')).decode('utf-8')
         body_form = f"data={urllib.parse.quote(b64_data)}".encode('utf-8')
 
@@ -2288,10 +2330,11 @@ class TwitchClient:
                 req = urllib.request.Request(track_url, data=body_form, headers=headers, method="POST")
                 with urllib.request.urlopen(req, timeout=10) as resp:
                     if resp.status in (200, 204):
-                        return True
+                        sent_ok = True
+                        break
             except Exception as err:
                 logger.debug("Heartbeat error on %s: %s", track_url, err)
-        return False
+        return sent_ok
 
 
     def claim_drop(self, drop_instance_id: str) -> bool:
