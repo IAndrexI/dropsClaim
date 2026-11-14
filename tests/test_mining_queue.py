@@ -589,6 +589,142 @@ class MiningQueueAndSwapTests(unittest.TestCase):
             self.assertEqual(stat["minutes_without_progress"], 0)
             self.assertEqual(stat.get("channel_login"), "fresh_streamer")
 
+    def test_one_hour_channel_rotation_switches_channel_after_60_mins(self):
+        dm = m.DropsMiner("test_token")
+        dm.stream_cycle_minutes = 60
+        fake_camp = {
+            "id": "c_rot",
+            "name": "Rust Drops",
+            "game": {"name": "Rust"},
+            "timeBasedDrops": [
+                {
+                    "id": "d_600",
+                    "name": "Rust Jacket",
+                    "requiredMinutesWatched": 600,
+                    "benefitEdges": [{"benefit": {"imageAssetURL": "https://static-cdn.jtvnw.net/rust.png"}}],
+                    "self": {"currentMinutesWatched": 10, "isClaimed": False},
+                }
+            ],
+        }
+        fake_channel = {
+            "channel_id": "b_rot",
+            "channel_login": "rot_channel",
+            "channel_name": "RotChannel",
+            "stream_id": "s_rot",
+            "stream_title": "Rust !drops",
+            "viewers": 1000,
+            "game_name": "Rust",
+            "game_id": "999",
+            "verified_drops": True,
+            "has_drops_in_title": True,
+        }
+
+        progress_counter = [10]
+        heartbeats_sent = []
+
+        def fake_heartbeat(**kwargs):
+            heartbeats_sent.append(kwargs["channel_login"])
+            progress_counter[0] += 1
+            return True
+
+        def fake_inv():
+            fake_camp["timeBasedDrops"][0]["self"]["currentMinutesWatched"] = progress_counter[0]
+            return {"dropCampaignsInProgress": [fake_camp]}
+
+        with mock.patch.object(dm.client, "get_inventory", side_effect=fake_inv), \
+             mock.patch.object(dm.client, "is_user_actively_using_twitch", return_value=False), \
+             mock.patch.object(dm.client, "get_all_active_campaigns", return_value=[fake_camp]), \
+             mock.patch.object(dm.client, "find_eligible_channel", return_value=fake_channel), \
+             mock.patch.object(dm.client, "get_playback_stream_info", return_value={"broadcast_id": "s_rot", "sub_playlist_url": None}), \
+             mock.patch.object(dm.client, "send_minute_watched_heartbeat", side_effect=fake_heartbeat), \
+             mock.patch.object(dm.client, "is_stream_and_drops_available", return_value=(True, "Stream and drops available")), \
+             mock.patch.object(dm, "_interruptible_sleep", return_value=False):
+            dm.run_cycle()
+
+            self.assertEqual(len(heartbeats_sent), 60)
+            self.assertIn("rot_channel", dm._get_excluded_channels())
+
+            with open(self.stat_file, "r", encoding="utf-8") as f:
+                stat = json.load(f)
+            self.assertTrue(stat.get("switching"))
+            self.assertIn("Completed 1-hour cycle", stat.get("message", ""))
+
+    def test_stream_availability_check_detects_offline_and_swaps_immediately(self):
+        dm = m.DropsMiner("test_token")
+        fake_camp = {
+            "id": "c_avail",
+            "name": "Rust Drops",
+            "game": {"name": "Rust"},
+            "timeBasedDrops": [
+                {
+                    "id": "d_300",
+                    "name": "Rust Mask",
+                    "requiredMinutesWatched": 300,
+                    "benefitEdges": [{"benefit": {"imageAssetURL": "https://static-cdn.jtvnw.net/mask.png"}}],
+                    "self": {"currentMinutesWatched": 5, "isClaimed": False},
+                }
+            ],
+        }
+        fake_channel = {
+            "channel_id": "b_avail",
+            "channel_login": "offline_soon",
+            "channel_name": "OfflineSoon",
+            "stream_id": "s_off",
+            "stream_title": "Rust !drops",
+            "viewers": 500,
+            "game_name": "Rust",
+            "game_id": "999",
+            "verified_drops": True,
+            "has_drops_in_title": True,
+        }
+
+        # Stream dies at minute 5 availability check
+        def fake_avail_check(channel_id, channel_login, game_name):
+            if len(heartbeats_sent) >= 5:
+                return False, "Stream is offline or broadcast ended"
+            return True, "Stream and drops available"
+
+        heartbeats_sent = []
+        def fake_heartbeat(**kwargs):
+            heartbeats_sent.append(kwargs["channel_login"])
+            return True
+
+        with mock.patch.object(dm.client, "get_inventory", return_value={"dropCampaignsInProgress": [fake_camp]}), \
+             mock.patch.object(dm.client, "is_user_actively_using_twitch", return_value=False), \
+             mock.patch.object(dm.client, "get_all_active_campaigns", return_value=[fake_camp]), \
+             mock.patch.object(dm.client, "find_eligible_channel", return_value=fake_channel), \
+             mock.patch.object(dm.client, "get_playback_stream_info", return_value={"broadcast_id": "s_off", "sub_playlist_url": None}), \
+             mock.patch.object(dm.client, "send_minute_watched_heartbeat", side_effect=fake_heartbeat), \
+             mock.patch.object(dm.client, "is_stream_and_drops_available", side_effect=fake_avail_check), \
+             mock.patch.object(dm, "_interruptible_sleep", return_value=False):
+            dm.run_cycle()
+
+            self.assertEqual(len(heartbeats_sent), 5)
+            self.assertIn("offline_soon", dm._get_excluded_channels())
+            with open(self.stat_file, "r", encoding="utf-8") as f:
+                stat = json.load(f)
+            self.assertTrue(stat.get("switching"))
+            self.assertIn("no longer available", stat.get("message", ""))
+
+    def test_status_polling_does_not_mutate_config_signature_or_reset_miner(self):
+        with open(self.cfg_file, "w", encoding="utf-8") as f:
+            json.dump({"mode": "default", "queue": ["Rust"], "updated_at": 123456.0}, f)
+
+        # Check initial signature
+        dm = m.DropsMiner("test_token")
+        sig_before = dm._get_config_signature()
+
+        with mock.patch("src.web.server.APP_DIR", self.tmp), \
+             mock.patch("src.web.server.resolve_token", return_value="fake_token"), \
+             mock.patch.object(t_api.TwitchClient, "get_drops_overview", return_value={"campaigns": []}):
+            # Simulate page refresh / status polling
+            payload = s.build_status_payload()
+            self.assertIsInstance(payload, dict)
+
+        sig_after = dm._get_config_signature()
+        self.assertEqual(sig_before, sig_after)
+        self.assertFalse(dm._has_config_changed(sig_before))
+
 
 if __name__ == "__main__":
     unittest.main()

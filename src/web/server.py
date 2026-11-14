@@ -783,8 +783,6 @@ def build_status_payload():
         queue_low = [q.strip().lower() for q in current_queue if q.strip()]
         already_marked_active = False
 
-        # Auto-prune completed campaigns from the saved queue so mining swaps automatically even on status refresh!
-        completed_games_in_queue = set()
         for c in camps_list:
             c_game = str(c.get("game") or "").strip()
             c_game_low = c_game.lower()
@@ -811,56 +809,6 @@ def build_status_payload():
             else:
                 c["is_activated"] = False
                 c["is_watching"] = False
-
-        # Check if any queued game has ONLY completed/expired/unavailable campaigns (0 needs_collection_count across all its campaigns)
-        for qg in current_queue:
-            qg_low = qg.strip().lower()
-            matching_camps = [
-                c for c in camps_list
-                if qg_low == str(c.get("game") or "").strip().lower()
-                or qg_low in str(c.get("game") or "").strip().lower()
-                or qg_low in str(c.get("name") or "").strip().lower()
-            ]
-            if matching_camps and all(
-                c.get("status") in ("COMPLETED", "EXPIRED", "UNAVAILABLE") or int(c.get("needs_collection_count") or 0) == 0
-                for c in matching_camps
-            ):
-                completed_games_in_queue.add(qg_low)
-
-        if completed_games_in_queue:
-            new_q = [q for q in current_queue if q.strip().lower() not in completed_games_in_queue]
-            if len(new_q) != len(current_queue):
-                updated_cfg = save_mining_config(mode=mining_cfg.get("mode", "default"), activated_games=new_q, resolve_stream=True)
-                mining_cfg.update(updated_cfg)
-                miner_stat.update(updated_cfg.get("miner_status") or {})
-                queue_list[:] = new_q
-                new_target = new_q[0] if new_q else str(miner_stat.get("game") or "").strip()
-                # Re-mark with updated queue
-                new_q_low = [q.strip().lower() for q in new_q if q.strip()]
-                already_marked_active = False
-                for c in camps_list:
-                    c_game_low = str(c.get("game") or "").strip().lower()
-                    c_name_low = str(c.get("name") or "").strip().lower()
-                    q_pos = None
-                    for idx, ql in enumerate(new_q_low):
-                        if ql == c_game_low or ql in c_game_low or ql in c_name_low:
-                            q_pos = idx + 1
-                            break
-                    c["queue_position"] = q_pos
-                    c["is_queued"] = q_pos is not None
-                    if (
-                        not already_marked_active
-                        and new_target
-                        and not c.get("is_expired")
-                        and c.get("status") not in ("UNAVAILABLE", "COMPLETED")
-                        and (c_game_low == new_target.lower() or new_target.lower() in c_game_low or new_target.lower() in c_name_low)
-                    ):
-                        c["is_activated"] = True
-                        c["is_watching"] = bool(miner_stat.get("active") and str(miner_stat.get("game") or "").lower() == c_game_low)
-                        already_marked_active = True
-                    else:
-                        c["is_activated"] = False
-                        c["is_watching"] = False
 
     # 1. Twitch Status & Personal Inventory
     twitch_info = {

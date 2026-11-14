@@ -134,6 +134,14 @@ class DropsMiner:
         # Track channels that failed to increase drop progress within 5 mins (login.lower() -> timestamp)
         self.unproductive_channels: Dict[str, float] = {}
         self.unproductive_cooldown_secs: float = 1800.0  # 30 minutes cooldown before retrying a stalled channel
+        # Channels that completed a full 1-hour cycle (rotated to watch different live streamers)
+        self.rotated_channels: Dict[str, float] = {}
+        self.rotated_cooldown_secs: float = 300.0  # 5 minutes rotation cooldown before repeating same channel
+        try:
+            env_cycle_mins = int(os.environ.get("TWITCH_STREAM_CYCLE_MINS", "60"))
+        except Exception:
+            env_cycle_mins = 60
+        self.stream_cycle_minutes: int = max(5, min(180, env_cycle_mins))
         try:
             env_check_mins = int(os.environ.get("TWITCH_PROGRESS_CHECK_MINS", "5"))
         except Exception:
@@ -170,15 +178,28 @@ class DropsMiner:
         return bool(self.client.auth_token)
 
     def _get_excluded_channels(self) -> Set[str]:
-        """Return currently blacklisted/unproductive channel logins, pruning expired cooldowns."""
+        """Return currently blacklisted/unproductive or rotated channel logins, pruning expired cooldowns."""
         now = time.time()
-        expired = [
+        expired_unprod = [
             ch for ch, ts in self.unproductive_channels.items()
             if (now - ts) >= self.unproductive_cooldown_secs
         ]
-        for ch in expired:
+        for ch in expired_unprod:
             self.unproductive_channels.pop(ch, None)
-        return set(self.unproductive_channels.keys())
+
+        expired_rot = [
+            ch for ch, ts in self.rotated_channels.items()
+            if (now - ts) >= self.rotated_cooldown_secs
+        ]
+        for ch in expired_rot:
+            self.rotated_channels.pop(ch, None)
+
+        return set(self.unproductive_channels.keys()) | set(self.rotated_channels.keys())
+
+    def _mark_channel_rotated(self, channel_login: str):
+        """Mark a channel as rotated after completing a 1-hour watch cycle so another channel is selected."""
+        if channel_login and str(channel_login).strip():
+            self.rotated_channels[str(channel_login).strip().lower()] = time.time()
 
     def _mark_channel_unproductive(self, channel_login: str):
         """Temporarily blacklist a channel that failed to award drop progress within 2-5 minutes."""
@@ -762,6 +783,14 @@ class DropsMiner:
                 fast_first=True,
                 excluded_channels=excluded_channels,
             )
+            if not found_ch and self.rotated_channels:
+                # If all live channels were excluded due to 1-hour rotation, retry excluding only unproductive channels
+                unprod_only = set(self.unproductive_channels.keys())
+                found_ch = self.client.find_eligible_channel(
+                    cand_game,
+                    fast_first=True,
+                    excluded_channels=unprod_only,
+                )
             if not found_ch and excluded_channels:
                 # If all live channels for this game were on cooldown, retry without exclusions rather than sitting idle
                 found_ch = self.client.find_eligible_channel(
@@ -771,6 +800,7 @@ class DropsMiner:
                 )
                 if found_ch and found_ch.get("channel_login"):
                     self.unproductive_channels.pop(str(found_ch["channel_login"]).strip().lower(), None)
+                    self.rotated_channels.pop(str(found_ch["channel_login"]).strip().lower(), None)
             if found_ch:
                 chosen_campaign = candidate_camp
                 channel = found_ch
@@ -836,6 +866,9 @@ class DropsMiner:
             "stream_url": stream_url,
             "viewers": channel["viewers"],
             "minutes_watched": 1,
+            "cycle_minutes": self.stream_cycle_minutes,
+            "channel_rotation_minutes": self.stream_cycle_minutes,
+            "availability_status": "Stream & drops active",
             "user_login": self.client.user_login,
             "user_id": self.client.user_id,
             "switched_at": pre_switched_stat.get("switched_at") or time.time(),
@@ -850,8 +883,8 @@ class DropsMiner:
         sub_playlist_url = playback_info.get("sub_playlist_url")
 
         # 5. Streamless watch loop under user account (sending heartbeat every ~60s)
-        # Strictly watches ONLY this single stream, verifies progress every 2-5 mins, and immediately swaps when completed or stalled!
-        for minute in range(15):
+        # Watches ONLY this single stream, verifies progress & availability every 5 mins, and rotates channels after 1 hour (60 mins)!
+        for minute in range(self.stream_cycle_minutes):
             if self._has_config_changed(cycle_sig):
                 self._handle_mid_cycle_swap(channel["channel_name"], game_name)
                 return
@@ -921,6 +954,39 @@ class DropsMiner:
                     "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 })
                 return
+
+            # Stream & Drops Availability Check every 5 minutes: verify stream is still live and still broadcasting drops
+            if (minute + 1) % 5 == 0 or (minute + 1) % self.progress_check_minutes == 0 or not success:
+                is_avail, avail_reason = self.client.is_stream_and_drops_available(
+                    channel_id=channel["channel_id"],
+                    channel_login=channel["channel_login"],
+                    game_name=game_name,
+                )
+                if not is_avail:
+                    logger.warning(
+                        "[MINER] Mining check: stream or drops no longer available on %s (@%s) for '%s' (%s). "
+                        "Switching immediately to another drops-enabled channel...",
+                        channel["channel_name"], channel["channel_login"], game_name, avail_reason
+                    )
+                    self._mark_channel_unproductive(channel["channel_login"])
+                    self.current_stream = None
+                    save_miner_status({
+                        "active": False,
+                        "switching": True,
+                        "game": game_name,
+                        "selected_game": selected_game_cfg or game_name,
+                        "channel_name": "",
+                        "channel_login": "",
+                        "channel_id": "",
+                        "stream_id": "",
+                        "stream_url": "",
+                        "viewers": 0,
+                        "queue": queue_cfg,
+                        "mode": mode_cfg,
+                        "message": f"{channel['channel_name']} is no longer available ({avail_reason}). Switching channels...",
+                        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    })
+                    return
 
             # 5-Minute Progress Watchdog & Status Refresh: verify drop progress is actively increasing on this channel
             if (minute + 1) % 5 == 0 or (minute + 1) % self.progress_check_minutes == 0:
@@ -1014,6 +1080,9 @@ class DropsMiner:
                 "stream_url": stream_url,
                 "viewers": channel["viewers"],
                 "minutes_watched": minute + 1,
+                "cycle_minutes": self.stream_cycle_minutes,
+                "channel_rotation_minutes": self.stream_cycle_minutes,
+                "availability_status": "Stream & drops active",
                 "user_login": self.client.user_login,
                 "user_id": self.client.user_id,
                 "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -1030,25 +1099,33 @@ class DropsMiner:
                         f"({live_drop_info.get('current_drop_percent', 0)}%)]"
                     )
                 logger.info(
-                    "[MINER] Heartbeat minute %d/15 completed for %s on channel %s%s",
-                    minute + 1, game_name, channel["channel_name"], drop_prog_str
+                    "[MINER] Heartbeat minute %d/%d completed for %s on channel %s%s",
+                    minute + 1, self.stream_cycle_minutes, game_name, channel["channel_name"], drop_prog_str
                 )
             else:
                 logger.warning("[MINER] Heartbeat returned non-204, verifying stream status...")
 
-        # Reset active status when switching streams at end of 15-min cycle
+        # Completed full 1-hour (60-minute) cycle on this streamer: rotate to another drops-enabled channel!
+        logger.info(
+            "[MINER] Completed 1-hour watch cycle (%d/%d minutes) on %s (@%s) for '%s'. Rotating to next channel to keep drops active and fresh...",
+            self.stream_cycle_minutes, self.stream_cycle_minutes, channel["channel_name"], channel["channel_login"], game_name
+        )
+        self._mark_channel_rotated(channel["channel_login"])
         self.current_stream = None
         save_miner_status({
             "active": False,
             "switching": True,
+            "game": game_name,
+            "selected_game": selected_game_cfg or game_name,
             "queue": queue_cfg,
+            "mode": mode_cfg,
             "channel_name": "",
             "channel_login": "",
             "channel_id": "",
             "stream_id": "",
             "stream_url": "",
             "viewers": 0,
-            "message": "Refreshing stream & checking queue.",
+            "message": f"Completed 1-hour cycle on {channel['channel_name']}. Switching to next channel for {game_name}...",
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         })
 

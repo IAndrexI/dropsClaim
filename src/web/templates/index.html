@@ -554,7 +554,7 @@
         <div class="miner-telemetry-stats" id="miner-telemetry-stats">
           <span class="miner-stat-pill" id="miner-stream-channel">Channel: Searching...</span>
           <span class="miner-stat-pill" id="miner-drop-live-progress" style="display: none; border-color: #3b82f6; color: #93c5fd;">Drop: --</span>
-          <span class="miner-stat-pill" id="miner-stream-progress">Session: 0/15 mins</span>
+          <span class="miner-stat-pill" id="miner-stream-progress">Session: 0/60 mins (1h rotation)</span>
           <span class="miner-stat-pill" id="miner-stream-viewers">0 Viewers</span>
           <button class="btn btn-sm" id="btn-restart-mining" onclick="restartSelectedMining()" style="border-color: #f59e0b; color: #fbbf24; background: rgba(245, 158, 11, 0.12); font-weight: 600;" title="Fully restart mining for the selected game (reconnects to live stream and resets watchdog)">&#8635; Restart Mining</button>
           <button class="btn btn-sm" id="btn-toggle-miniviewer" onclick="toggleMiniViewer()" style="border-color: #8b5cf6; color: #c084fc; display: none;">&#128065; Show Mini-Viewer</button>
@@ -1510,7 +1510,8 @@
         const progCheckInfo = minerStat.progress_verified
           ? "Progress Confirmed (+1m)"
           : `Progress Watchdog (${minerStat.minutes_without_progress || 0}/${minerStat.progress_check_minutes || 5}m check)`;
-        minerSub.innerText = `Watching under @${ulogin} — strictly 1 stream at a time [${dropTagInfo} | ${progCheckInfo}]. Automatically refreshes status and verifies stream progress every 5 mins.`;
+        const cycleTotal = minerStat.cycle_minutes || 60;
+        minerSub.innerText = `Watching under @${ulogin} — strictly 1 stream at a time [${dropTagInfo} | ${progCheckInfo}]. Automatically switches channels after 1 hour and checks drops availability every 5 mins.`;
 
         channelPill.innerText = `Channel: ${cname} (Drops Enabled)`;
         if (dropLivePill) {
@@ -1522,8 +1523,8 @@
           }
         }
         progressPill.innerText = minerStat.progress_verified
-          ? `Progress: Verified (${minerStat.minutes_watched || 1}/15m)`
-          : `Progress Check: ${minerStat.minutes_without_progress || 0}/${minerStat.progress_check_minutes || 5}m`;
+          ? `Session: ${minerStat.minutes_watched || 1}/${cycleTotal}m (Verified)`
+          : `Session: ${minerStat.minutes_watched || 1}/${cycleTotal}m (Check: ${minerStat.minutes_without_progress || 0}/${minerStat.progress_check_minutes || 5}m)`;
         viewersPill.innerText = `${(minerStat.viewers || 0).toLocaleString()} Viewers`;
         
         const targetUrl = minerStat.stream_url || `https://www.twitch.tv/${minerStat.channel_login || ''}`;

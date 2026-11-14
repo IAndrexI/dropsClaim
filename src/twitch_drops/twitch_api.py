@@ -2112,6 +2112,45 @@ class TwitchClient:
             logger.debug("Playback stream info error for %s: %s", channel_login, e)
         return info
 
+    def is_stream_and_drops_available(self, channel_id: str, channel_login: str, game_name: str) -> tuple:
+        """
+        Check if a channel's stream is still live and still broadcasting drops for the target game.
+        Returns (is_available: bool, reason: str).
+        """
+        if not channel_login:
+            return False, "Channel login missing"
+
+        # 1. Verify playback stream liveness (stream must not be offline or ended)
+        pb = self.get_playback_stream_info(channel_login)
+        if not pb or not pb.get("broadcast_id"):
+            return False, "Stream is offline or broadcast ended"
+
+        # 2. Verify drops are still active on channel
+        if channel_id and self.auth_token:
+            try:
+                drops_res = self.post_persisted_gql(
+                    operation_name="DropsHighlightService_AvailableDrops",
+                    sha256_hash="9a62a09bce5b53e26e64a671e530bc599cb6aab1e5ba3cbd5d85966d3940716f",
+                    variables={"channelID": str(channel_id)},
+                )
+                camps = (drops_res.get("data") or {}).get("channel", {}).get("viewerDropCampaigns") or []
+                if camps:
+                    target_low = game_name.strip().lower()
+                    has_game_drops = False
+                    for c in camps:
+                        c_game = extract_game_name(c, "").lower()
+                        if target_low in c_game or c_game in target_low:
+                            t_drops = c.get("timeBasedDrops") or []
+                            if any((d.get("requiredMinutesWatched") or 0) > 0 for d in t_drops):
+                                has_game_drops = True
+                                break
+                    if not has_game_drops and any(extract_game_name(c, "").strip() for c in camps):
+                        return False, f"Stream switched categories away from {game_name}"
+            except Exception as e:
+                logger.debug("DropsHighlightService check error for %s: %s", channel_id, e)
+
+        return True, "Stream and drops available"
+
     def touch_stream_chunk(self, sub_playlist_url: str) -> bool:
         """
         Perform a lightweight HEAD request against the latest stream video segment.
