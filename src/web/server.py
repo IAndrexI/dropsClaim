@@ -754,6 +754,8 @@ def switch_watched_channel(
         "switching": False,
         "paused": False,
         "user_active": False,
+        "presence_conflict": False,
+        "conflict_warning": "",
         "game": selected_game or chosen_channel.get("game_name", ""),
         "game_cover_url": current_stat.get("game_cover_url") or "",
         "selected_game": (new_queue[0] if new_queue else selected_game) or chosen_channel.get("game_name", ""),

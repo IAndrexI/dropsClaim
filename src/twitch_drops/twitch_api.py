@@ -699,6 +699,9 @@ class TwitchClient:
         self.user_id: Optional[str] = None
         self.user_login: Optional[str] = None
         self.last_drop_session: Dict[str, Any] = {}
+        import uuid
+        self.session_id: str = uuid.uuid4().hex[:16]
+        self.device_id: str = uuid.uuid4().hex[:32]
         try:
             stored = load_token()
             if stored and clean_auth_token(stored.get("access_token", "")) == self.auth_token:
@@ -714,6 +717,12 @@ class TwitchClient:
                     self.user_login = str(v_info["login"])
         except Exception:
             pass
+
+    def new_session_id(self) -> str:
+        """Rotate client session ID to establish a distinct, fresh stream viewing session with Twitch."""
+        import uuid
+        self.session_id = uuid.uuid4().hex[:16]
+        return self.session_id
 
     def _make_request(self, url: str, data: bytes, headers: Dict[str, str], timeout: int = 15) -> bytes:
         """Make an HTTP POST request using Python standard library."""
@@ -737,6 +746,8 @@ class TwitchClient:
             "Accept": "*/*",
             "Origin": "https://www.twitch.tv",
             "Referer": "https://www.twitch.tv/",
+            "Client-Session-Id": getattr(self, "session_id", "1234567890abcdef"),
+            "X-Device-Id": getattr(self, "device_id", "1234567890abcdef1234567890abcdef"),
         }
         if self.auth_token:
             headers["Authorization"] = f"OAuth {self.auth_token}"
@@ -800,6 +811,8 @@ class TwitchClient:
             "Accept": "*/*",
             "Origin": "https://www.twitch.tv",
             "Referer": "https://www.twitch.tv/",
+            "Client-Session-Id": getattr(self, "session_id", "1234567890abcdef"),
+            "X-Device-Id": getattr(self, "device_id", "1234567890abcdef1234567890abcdef"),
         }
         if self.auth_token:
             headers["Authorization"] = f"OAuth {self.auth_token}"
@@ -878,12 +891,13 @@ class TwitchClient:
         logger.error("Authentication failed: currentUser is null. Check your auth-token.")
         return False
 
-    def is_user_actively_using_twitch(self) -> bool:
+    def get_user_presence_info(self) -> Dict[str, Any]:
         """
-        Detect if the user is currently using Twitch on any browser, mobile app, or device.
+        Detect detailed active user presence and external viewing activity on Twitch.
         Queries Twitch currentUser presence, availability, and activity.
-        Returns True if user status indicates an active session (ONLINE, AWAY, IDLE, or active activity).
         """
+        if not self.auth_token:
+            return {"is_active": False, "availability": "", "activity_type": ""}
         query = """
         query CheckUserPresence {
             currentUser {
@@ -900,16 +914,32 @@ class TwitchClient:
             res = self.post_gql(query, operation_name="CheckUserPresence")
             user = (res.get("data") or {}).get("currentUser")
             if user:
-                availability = user.get("availability")
-                activity = user.get("activity")
-                if availability in ("ONLINE", "AWAY", "IDLE") or activity is not None:
-                    logger.info(
-                        "Detected active user presence on Twitch: availability=%s, activity=%s",
-                        availability, activity
-                    )
-                    return True
+                availability = str(user.get("availability") or "")
+                activity = user.get("activity") or {}
+                act_type = str(activity.get("type") or "")
+                is_active = bool(availability in ("ONLINE", "AWAY", "IDLE") or act_type)
+                return {
+                    "is_active": is_active,
+                    "availability": availability,
+                    "activity_type": act_type,
+                }
         except Exception as e:
             logger.debug("Error checking user active presence: %s", e)
+        return {"is_active": False, "availability": "", "activity_type": ""}
+
+    def is_user_actively_using_twitch(self) -> bool:
+        """
+        Detect if the user is currently using Twitch on any browser, mobile app, or device.
+        Queries Twitch currentUser presence, availability, and activity.
+        Returns True if user status indicates an active session (ONLINE, AWAY, IDLE, or active activity).
+        """
+        info = self.get_user_presence_info()
+        if info.get("is_active"):
+            logger.info(
+                "Detected active user presence on Twitch: availability=%s, activity=%s",
+                info.get("availability"), info.get("activity_type")
+            )
+            return True
         return False
 
     def get_inventory(self) -> Dict[str, Any]:
@@ -938,6 +968,8 @@ class TwitchClient:
             "Accept": "*/*",
             "Origin": "https://www.twitch.tv",
             "Referer": "https://www.twitch.tv/",
+            "Client-Session-Id": getattr(self, "session_id", "1234567890abcdef"),
+            "X-Device-Id": getattr(self, "device_id", "1234567890abcdef1234567890abcdef"),
         }
         if self.auth_token:
             headers["Authorization"] = f"OAuth {self.auth_token}"
@@ -2637,15 +2669,22 @@ class TwitchClient:
             "broadcast_id": str(stream_id),
             "channel_id": str(channel_id),
             "channel": str(channel_login) if channel_login else "",
+            "chat_visible": True,
+            "chat_visibility_status": "visible",
             "client_time": now_iso,
+            "content_mode": "live",
             "game": str(game_name or ""),
             "game_id": str(game_id or ""),
             "hidden": False,
             "is_live": True,
             "live": True,
+            "location": "channel",
             "logged_in": bool(uid_val),
             "minutes_logged": max(1, int(minutes_logged or 1)),
             "muted": False,
+            "player": "site",
+            "player_size_mode": "default",
+            "time_spent_hidden": 0,
             "user_id": uid_val,
         }
 

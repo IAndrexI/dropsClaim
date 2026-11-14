@@ -790,6 +790,8 @@ class DropsMiner:
                     "active": False,
                     "paused": True,
                     "user_active": True,
+                    "presence_conflict": True,
+                    "conflict_warning": "Miner paused: You are currently using Twitch. Mining will resume automatically when you finish.",
                     "selected_game": selected_game_cfg,
                     "queue": queue_cfg,
                     "mode": mode_cfg,
@@ -945,12 +947,33 @@ class DropsMiner:
             self._interruptible_sleep(300, cycle_sig)
             return
 
+        # Rotate client session identity to establish a distinct, dedicated stream viewing session with Twitch
+        self.client.new_session_id()
+
         stream_url = f"https://www.twitch.tv/{channel['channel_login']}"
         logger.info(
             "[MINER] Watching 1 stream: %s (@%s) for '%s' with %d viewers | Queue size: %d | URL: %s",
             channel["channel_name"], channel["channel_login"], game_name, channel["viewers"],
             len(queue_cfg), stream_url
         )
+
+        presence_info = self.client.get_user_presence_info()
+        user_active = bool(presence_info.get("is_active"))
+        conflict_msg = ""
+        if user_active:
+            avail = presence_info.get("availability") or "ONLINE"
+            act = presence_info.get("activity_type") or "Active"
+            conflict_msg = (
+                f"Twitch detected active viewing on another device/browser ({avail}). "
+                "Twitch only credits drops to 1 stream at a time across your account. "
+                "If drop progress stalls, close other Twitch tabs or mobile apps."
+            )
+            logger.warning(
+                "[MINER] Notice: Twitch detected active user presence/viewing on another session (availability=%s, activity=%s). "
+                "Twitch only credits watch time to 1 stream at a time across your account. "
+                "Close other Twitch tabs or mobile apps to avoid drop progress stalls.",
+                avail, act
+            )
 
         # Immediately write active stream status BEFORE fetching playback info or sending heartbeat so UI updates with 0 lag
         initial_drop_info = self._get_live_drop_progress(game_name, camp_name, fallback_camp=chosen_campaign)
@@ -965,7 +988,9 @@ class DropsMiner:
             "active": True,
             "switching": False,
             "paused": False,
-            "user_active": False,
+            "user_active": user_active,
+            "presence_conflict": user_active,
+            "conflict_warning": conflict_msg,
             "game": game_name,
             "game_cover_url": chosen_campaign.get("cover_url") or "",
             "selected_game": selected_game_cfg or game_name,
@@ -1009,12 +1034,26 @@ class DropsMiner:
                 self._handle_mid_cycle_swap(channel["channel_name"], game_name)
                 return
 
-            if pause_when_user_active and self.client.is_user_actively_using_twitch():
+            presence_info = self.client.get_user_presence_info()
+            user_active = bool(presence_info.get("is_active"))
+            conflict_msg = ""
+            if user_active:
+                avail = presence_info.get("availability") or "ONLINE"
+                act = presence_info.get("activity_type") or "Active"
+                conflict_msg = (
+                    f"Twitch detected active viewing on another device/browser ({avail}). "
+                    "Twitch only credits drops to 1 stream at a time across your account. "
+                    "If drop progress stalls, close other Twitch tabs or mobile apps."
+                )
+
+            if pause_when_user_active and user_active:
                 logger.info("[MINER] User started using Twitch. Stopping stream viewing immediately to ensure ONLY 1 viewing.")
                 save_miner_status({
                     "active": False,
                     "paused": True,
                     "user_active": True,
+                    "presence_conflict": True,
+                    "conflict_warning": "Miner paused: You started using Twitch. Mining will resume automatically when you finish.",
                     "selected_game": selected_game_cfg or game_name,
                     "queue": queue_cfg,
                     "mode": mode_cfg,
@@ -1162,6 +1201,12 @@ class DropsMiner:
                             channel["channel_name"], channel["channel_login"], current_watched
                         )
                 elif mins_stalled >= stall_threshold:
+                    if user_active:
+                        logger.warning(
+                            "[MINER] Drop progress stalled after %d minutes while an external Twitch session was active (%s). "
+                            "Twitch likely routed drop watch credit to the external browser/app instead of this miner.",
+                            mins_stalled, presence_info.get("availability", "ONLINE")
+                        )
                     logger.warning(
                         "[MINER] No drop progress increase after %d minutes on %s (@%s) for '%s' (watched remained at %dm). "
                         "Marking channel unproductive and switching to another Drops channel immediately!",
@@ -1210,7 +1255,9 @@ class DropsMiner:
                 "active": True,
                 "switching": False,
                 "paused": False,
-                "user_active": False,
+                "user_active": user_active,
+                "presence_conflict": user_active,
+                "conflict_warning": conflict_msg,
                 "game": game_name,
                 "selected_game": selected_game_cfg or game_name,
                 "queue": queue_cfg,

@@ -532,6 +532,19 @@
         </div>
       </div>
 
+      <!-- Concurrent Viewing / Active User Warning Banner -->
+      <div id="miner-conflict-banner" style="display: none; background: rgba(234, 179, 8, 0.12); border: 1px solid rgba(234, 179, 8, 0.4); border-radius: 8px; padding: 12px 16px; margin-bottom: 14px; align-items: flex-start; gap: 12px;">
+        <span style="font-size: 1.3rem; line-height: 1;">&#9888;</span>
+        <div style="flex: 1;">
+          <div style="font-weight: 700; color: #fde047; font-size: 0.9rem; margin-bottom: 3px;">
+            Concurrent Twitch Stream Detected (Drop Progression Warning)
+          </div>
+          <div id="miner-conflict-text" style="font-size: 0.82rem; color: #fef08a; line-height: 1.45;">
+            Twitch detected active viewing on another device or browser. Twitch strictly limits drop watch-time credit to <strong>only 1 stream at a time</strong> across your entire account. If your drop progress is not advancing, please close other Twitch tabs, mobile apps, or TV streams.
+          </div>
+        </div>
+      </div>
+
       <!-- Live Miner Telemetry Banner (Pretending to watch stream under account - strictly 1 stream at a time) -->
       <div class="live-miner-banner" id="live-miner-banner">
         <div class="miner-banner-main">
@@ -1674,6 +1687,20 @@
         progressPill.innerText = "Session: Idle";
         viewersPill.innerText = "0 Viewers";
         streamLink.style.display = "none";
+      }
+
+      // Concurrent viewing / user active conflict warning banner
+      const conflictBanner = document.getElementById("miner-conflict-banner");
+      const conflictText = document.getElementById("miner-conflict-text");
+      if (conflictBanner) {
+        if (!isStopped && (minerStat.user_active || minerStat.presence_conflict)) {
+          conflictBanner.style.display = "flex";
+          if (conflictText && minerStat.conflict_warning) {
+            conflictText.innerText = minerStat.conflict_warning;
+          }
+        } else {
+          conflictBanner.style.display = "none";
+        }
       }
 
       const restartBtn = document.getElementById("btn-restart-mining");
