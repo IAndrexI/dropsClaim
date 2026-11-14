@@ -1084,11 +1084,11 @@ class DropsMiner:
                     self._handle_mid_cycle_swap(channel["channel_name"], game_name)
                     return
                 if sub_playlist_url:
-                    if not self.client.touch_stream_chunk(sub_playlist_url):
+                    if not self.client.touch_stream_chunk(sub_playlist_url, channel_login=channel["channel_login"]):
                         pb_new = self.client.get_playback_stream_info(channel["channel_login"])
                         if pb_new.get("sub_playlist_url"):
                             sub_playlist_url = pb_new["sub_playlist_url"]
-                            self.client.touch_stream_chunk(sub_playlist_url)
+                            self.client.touch_stream_chunk(sub_playlist_url, channel_login=channel["channel_login"])
 
             # Claim any drops completed during this minute & refresh live inventory + DropCurrentSessionContext progress
             claimed_now = self.claim_pending_drops()

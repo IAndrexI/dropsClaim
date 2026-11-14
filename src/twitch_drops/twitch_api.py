@@ -699,6 +699,8 @@ class TwitchClient:
         self.user_id: Optional[str] = None
         self.user_login: Optional[str] = None
         self.last_drop_session: Dict[str, Any] = {}
+        self._integrity_token: str = ""
+        self._integrity_expiration: int = 0
         import uuid
         self.session_id: str = uuid.uuid4().hex[:16]
         self.device_id: str = uuid.uuid4().hex[:32]
@@ -718,10 +720,58 @@ class TwitchClient:
         except Exception:
             pass
 
+    def get_client_integrity_token(self, force_refresh: bool = False) -> str:
+        """
+        Fetch or return a cached Client-Integrity token from https://gql.twitch.tv/integrity.
+        Twitch requires this cryptographic token on GQL queries/mutations and telemetry heartbeats
+        to verify legitimate client integrity and grant drop watch-time progression.
+        """
+        now_ms = int(time.time() * 1000)
+        cached_tok = getattr(self, "_integrity_token", "")
+        cached_exp = getattr(self, "_integrity_expiration", 0)
+        if cached_tok and not force_refresh and (cached_exp - now_ms) > 60000:
+            return cached_tok
+
+        try:
+            headers = {
+                "Client-Id": self.client_id,
+                "Client-Session-Id": getattr(self, "session_id", "1234567890abcdef"),
+                "X-Device-Id": getattr(self, "device_id", "1234567890abcdef1234567890abcdef"),
+                "User-Agent": self.user_agent,
+                "Origin": "https://www.twitch.tv",
+                "Referer": "https://www.twitch.tv/",
+                "Content-Type": "application/json",
+            }
+            if self.auth_token:
+                headers["Authorization"] = f"OAuth {self.auth_token}"
+
+            req = urllib.request.Request(
+                "https://gql.twitch.tv/integrity",
+                headers=headers,
+                data=b"",
+                method="POST"
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                tok = str(data.get("token") or "")
+                exp = int(data.get("expiration") or (now_ms + 14400000))
+                if tok:
+                    self._integrity_token = tok
+                    self._integrity_expiration = exp
+                    logger.debug("Acquired fresh Twitch Client-Integrity token (valid for %ds)", int((exp - now_ms) / 1000))
+                    return tok
+        except Exception as e:
+            logger.debug("Could not fetch Client-Integrity token: %s", e)
+        return getattr(self, "_integrity_token", "")
+
     def new_session_id(self) -> str:
         """Rotate client session ID to establish a distinct, fresh stream viewing session with Twitch."""
         import uuid
         self.session_id = uuid.uuid4().hex[:16]
+        try:
+            self.get_client_integrity_token(force_refresh=True)
+        except Exception:
+            pass
         return self.session_id
 
     def _make_request(self, url: str, data: bytes, headers: Dict[str, str], timeout: int = 15) -> bytes:
@@ -749,6 +799,9 @@ class TwitchClient:
             "Client-Session-Id": getattr(self, "session_id", "1234567890abcdef"),
             "X-Device-Id": getattr(self, "device_id", "1234567890abcdef1234567890abcdef"),
         }
+        integrity_tok = self.get_client_integrity_token()
+        if integrity_tok:
+            headers["Client-Integrity"] = integrity_tok
         if self.auth_token:
             headers["Authorization"] = f"OAuth {self.auth_token}"
 
@@ -790,7 +843,7 @@ class TwitchClient:
         return data
 
     def post_persisted_gql(self, operation_name: str, sha256_hash: str, variables: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Send an official persisted query to Twitch GraphQL without triggering integrity challenges."""
+        """Send an official persisted query to Twitch GraphQL with valid client integrity verification."""
         payload: Dict[str, Any] = {
             "operationName": operation_name,
             "extensions": {
@@ -814,6 +867,9 @@ class TwitchClient:
             "Client-Session-Id": getattr(self, "session_id", "1234567890abcdef"),
             "X-Device-Id": getattr(self, "device_id", "1234567890abcdef1234567890abcdef"),
         }
+        integrity_tok = self.get_client_integrity_token()
+        if integrity_tok:
+            headers["Client-Integrity"] = integrity_tok
         if self.auth_token:
             headers["Authorization"] = f"OAuth {self.auth_token}"
 
@@ -971,6 +1027,9 @@ class TwitchClient:
             "Client-Session-Id": getattr(self, "session_id", "1234567890abcdef"),
             "X-Device-Id": getattr(self, "device_id", "1234567890abcdef1234567890abcdef"),
         }
+        integrity_tok = self.get_client_integrity_token()
+        if integrity_tok:
+            headers["Client-Integrity"] = integrity_tok
         if self.auth_token:
             headers["Authorization"] = f"OAuth {self.auth_token}"
         body = json.dumps(operations).encode("utf-8")
@@ -2547,10 +2606,10 @@ class TwitchClient:
                 time.sleep(3)
         return False, "Stream is offline or broadcast ended"
 
-    def touch_stream_chunk(self, sub_playlist_url: str) -> bool:
+    def touch_stream_chunk(self, sub_playlist_url: str, channel_login: str = "") -> bool:
         """
-        Perform a lightweight HEAD request against the latest stream video segment.
-        Verifies client playback presence without downloading video data.
+        Perform an authentic lightweight Range GET request against the latest stream video segment.
+        Downloads a tiny 1KB slice so Twitch's CDN and video edge log active media streaming without bandwidth.
         """
         if not sub_playlist_url:
             return False
@@ -2561,16 +2620,23 @@ class TwitchClient:
             )
             with urllib.request.urlopen(req, timeout=8) as resp:
                 data = resp.read().decode("utf-8", errors="ignore")
-            chunks = [c for c in data.splitlines() if c.startswith("https://")]
+            chunks = [line.strip() for line in data.splitlines() if line.strip().startswith("https://")]
             if chunks:
                 latest_chunk = chunks[-1]
-                h_req = urllib.request.Request(
+                ch_ref = f"https://www.twitch.tv/{channel_login}" if channel_login else "https://www.twitch.tv/"
+                r_req = urllib.request.Request(
                     latest_chunk,
-                    headers={"User-Agent": self.user_agent, "Connection": "close"},
-                    method="HEAD"
+                    headers={
+                        "User-Agent": self.user_agent,
+                        "Range": "bytes=0-1023",
+                        "Connection": "close",
+                        "Referer": ch_ref,
+                        "Origin": "https://www.twitch.tv",
+                    }
                 )
-                with urllib.request.urlopen(h_req, timeout=6) as h_resp:
-                    return h_resp.status in (200, 204, 206)
+                with urllib.request.urlopen(r_req, timeout=6) as r_resp:
+                    r_resp.read(1024)
+                    return r_resp.status in (200, 204, 206)
         except Exception as e:
             logger.debug("Stream chunk touch error: %s", e)
         return False
@@ -2653,7 +2719,7 @@ class TwitchClient:
             pass
 
         if sub_playlist_url:
-            self.touch_stream_chunk(sub_playlist_url)
+            self.touch_stream_chunk(sub_playlist_url, channel_login=str(channel_login or ""))
 
         uid_val: Any = str(self.user_id) if self.user_id else 0
         if isinstance(uid_val, str) and uid_val.isdigit():
@@ -2665,14 +2731,19 @@ class TwitchClient:
         elif not now_iso.endswith("Z"):
             now_iso += "Z"
 
+        session_id_val = getattr(self, "session_id", "1234567890abcdef")
+        device_id_val = getattr(self, "device_id", "1234567890abcdef1234567890abcdef")
+
         properties: Dict[str, Any] = {
             "broadcast_id": str(stream_id),
             "channel_id": str(channel_id),
             "channel": str(channel_login) if channel_login else "",
             "chat_visible": True,
             "chat_visibility_status": "visible",
+            "client_session_id": session_id_val,
             "client_time": now_iso,
             "content_mode": "live",
+            "device_id": device_id_val,
             "game": str(game_name or ""),
             "game_id": str(game_id or ""),
             "hidden": False,
@@ -2725,10 +2796,12 @@ class TwitchClient:
         body_form = f"data={urllib.parse.quote(b64_data)}".encode('utf-8')
         json_body = json.dumps({"data": b64_data}).encode('utf-8')
 
+        integrity_tok = self.get_client_integrity_token()
         ch_referer = f"https://www.twitch.tv/{channel_login}" if channel_login else "https://www.twitch.tv/"
         headers_form = {
             "Client-Id": self.client_id,
-            "Authorization": f"OAuth {self.auth_token}",
+            "Client-Session-Id": session_id_val,
+            "X-Device-Id": device_id_val,
             "User-Agent": self.user_agent,
             "Content-Type": "application/x-www-form-urlencoded",
             "Origin": "https://www.twitch.tv",
@@ -2736,12 +2809,19 @@ class TwitchClient:
         }
         headers_json = {
             "Client-Id": self.client_id,
-            "Authorization": f"OAuth {self.auth_token}",
+            "Client-Session-Id": session_id_val,
+            "X-Device-Id": device_id_val,
             "User-Agent": self.user_agent,
             "Content-Type": "application/json",
             "Origin": "https://www.twitch.tv",
             "Referer": ch_referer,
         }
+        if integrity_tok:
+            headers_form["Client-Integrity"] = integrity_tok
+            headers_json["Client-Integrity"] = integrity_tok
+        if self.auth_token:
+            headers_form["Authorization"] = f"OAuth {self.auth_token}"
+            headers_json["Authorization"] = f"OAuth {self.auth_token}"
         for track_url in ["https://spade.twitch.tv/track", "https://beacon.twitch.tv/track", SPADE_URL]:
             try:
                 req_json = urllib.request.Request(track_url, data=json_body, headers=headers_json, method="POST")
