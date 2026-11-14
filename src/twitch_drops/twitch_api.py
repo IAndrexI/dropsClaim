@@ -2671,6 +2671,47 @@ class TwitchClient:
             logger.debug("DropCurrentSessionContext error for %s: %s", channel_id, e)
         return {}
 
+    def send_spade_watch(self, channel_id: str, broadcast_id: str) -> bool:
+        """
+        Minimal watch ping modelled on the proven TwitchDropsMiner payload: a single
+        minute-watched object (channel_id, broadcast_id, player, user_id), minified JSON,
+        base64-encoded and POSTed form-encoded to the Spade URL. Meant to be sent every ~20s.
+        """
+        uid: Any = str(self.user_id) if self.user_id else 0
+        if isinstance(uid, str) and uid.isdigit():
+            uid = int(uid)
+        payload = {
+            "event": "minute-watched",
+            "properties": {
+                "channel_id": str(channel_id),
+                "broadcast_id": str(broadcast_id),
+                "player": "site",
+                "user_id": uid,
+            },
+        }
+        raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        body = urllib.parse.urlencode({"data": base64.b64encode(raw).decode("utf-8")}).encode("utf-8")
+        headers = {
+            "User-Agent": self.user_agent,
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Client-Id": self.client_id,
+            "Origin": "https://www.twitch.tv",
+            "Referer": "https://www.twitch.tv/",
+        }
+        if self.auth_token:
+            headers["Authorization"] = f"OAuth {self.auth_token}"
+        ok = False
+        for url in ("https://spade.twitch.tv/track", "https://beacon.twitch.tv/track"):
+            try:
+                req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    if resp.status in (200, 204):
+                        ok = True
+                        break
+            except Exception as err:
+                logger.debug("send_spade_watch error on %s: %s", url, err)
+        return ok
+
     def send_minute_watched_heartbeat(
         self,
         channel_id: str,

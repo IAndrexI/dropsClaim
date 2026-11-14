@@ -1023,6 +1023,10 @@ class DropsMiner:
         save_miner_status(immediate_status)
 
         # Pre-fetch authentic playback stream info (Usher m3u8 playlist and sub-playlist url)
+        if not self.client.user_id:
+            self.client.validate_session()
+        if not self.client.user_id:
+            logger.warning("[MINER] Twitch user_id is unknown; watch pings cannot be credited to your account. Re-link Twitch in the Accounts tab.")
         playback_info = self.client.get_playback_stream_info(channel["channel_login"])
         broadcast_id = playback_info.get("broadcast_id") or channel.get("stream_id", "")
         sub_playlist_url = playback_info.get("sub_playlist_url")
@@ -1083,6 +1087,10 @@ class DropsMiner:
                 if self._interruptible_sleep(random.uniform(19.0, 20.0), cycle_sig):
                     self._handle_mid_cycle_swap(channel["channel_name"], game_name)
                     return
+                try:
+                    self.client.send_spade_watch(channel["channel_id"], broadcast_id)
+                except Exception as sp_err:
+                    logger.debug("Spade watch ping error: %s", sp_err)
                 if sub_playlist_url:
                     if not self.client.touch_stream_chunk(sub_playlist_url, channel_login=channel["channel_login"]):
                         pb_new = self.client.get_playback_stream_info(channel["channel_login"])
