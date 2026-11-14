@@ -701,6 +701,7 @@ class TwitchClient:
         self.last_drop_session: Dict[str, Any] = {}
         self._integrity_token: str = ""
         self._integrity_expiration: int = 0
+        self._spade_url_cache: Dict[str, str] = {}
         import uuid
         self.session_id: str = uuid.uuid4().hex[:16]
         self.device_id: str = uuid.uuid4().hex[:32]
@@ -768,10 +769,6 @@ class TwitchClient:
         """Rotate client session ID to establish a distinct, fresh stream viewing session with Twitch."""
         import uuid
         self.session_id = uuid.uuid4().hex[:16]
-        try:
-            self.get_client_integrity_token(force_refresh=True)
-        except Exception:
-            pass
         return self.session_id
 
     def _make_request(self, url: str, data: bytes, headers: Dict[str, str], timeout: int = 15) -> bytes:
@@ -799,9 +796,6 @@ class TwitchClient:
             "Client-Session-Id": getattr(self, "session_id", "1234567890abcdef"),
             "X-Device-Id": getattr(self, "device_id", "1234567890abcdef1234567890abcdef"),
         }
-        integrity_tok = self.get_client_integrity_token()
-        if integrity_tok:
-            headers["Client-Integrity"] = integrity_tok
         if self.auth_token:
             headers["Authorization"] = f"OAuth {self.auth_token}"
 
@@ -843,7 +837,7 @@ class TwitchClient:
         return data
 
     def post_persisted_gql(self, operation_name: str, sha256_hash: str, variables: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Send an official persisted query to Twitch GraphQL with valid client integrity verification."""
+        """Send an official persisted query to Twitch GraphQL."""
         payload: Dict[str, Any] = {
             "operationName": operation_name,
             "extensions": {
@@ -867,9 +861,6 @@ class TwitchClient:
             "Client-Session-Id": getattr(self, "session_id", "1234567890abcdef"),
             "X-Device-Id": getattr(self, "device_id", "1234567890abcdef1234567890abcdef"),
         }
-        integrity_tok = self.get_client_integrity_token()
-        if integrity_tok:
-            headers["Client-Integrity"] = integrity_tok
         if self.auth_token:
             headers["Authorization"] = f"OAuth {self.auth_token}"
 
@@ -1027,9 +1018,6 @@ class TwitchClient:
             "Client-Session-Id": getattr(self, "session_id", "1234567890abcdef"),
             "X-Device-Id": getattr(self, "device_id", "1234567890abcdef1234567890abcdef"),
         }
-        integrity_tok = self.get_client_integrity_token()
-        if integrity_tok:
-            headers["Client-Integrity"] = integrity_tok
         if self.auth_token:
             headers["Authorization"] = f"OAuth {self.auth_token}"
         body = json.dumps(operations).encode("utf-8")
@@ -2567,23 +2555,32 @@ class TwitchClient:
 
             usher_url = (
                 f"https://usher.ttvnw.net/api/channel/hls/{channel_login}.m3u8?"
-                f"sig={sig}&token={urllib.parse.quote(tok)}&allow_source=true&p={int(time.time())}"
+                f"sig={sig}&token={urllib.parse.quote(tok)}"
+                f"&allow_source=true&allow_audio_only=true&fast_bread=true&player=twitchweb"
+                f"&playlist_include_framerate=true&reassignments_supported=true&supported_codecs=avc1"
+                f"&type=any&p={random.randint(100000, 9999999)}"
             )
             req = urllib.request.Request(
                 usher_url,
                 headers={
                     "User-Agent": self.user_agent,
                     "Client-Id": self.client_id,
+                    "Origin": "https://www.twitch.tv",
+                    "Referer": f"https://www.twitch.tv/{channel_login}",
                 }
             )
             with urllib.request.urlopen(req, timeout=10) as resp:
                 playlist = resp.read().decode("utf-8", errors="ignore")
 
+            variant_urls = []
             for line in playlist.splitlines():
                 if 'BROADCAST-ID="' in line:
                     info["broadcast_id"] = line.split('BROADCAST-ID="')[1].split('"')[0]
-                if line.startswith("https://") and not info["sub_playlist_url"]:
-                    info["sub_playlist_url"] = line
+                if line.startswith("https://"):
+                    variant_urls.append(line.strip())
+            if variant_urls:
+                # A lightweight (lowest-quality) variant is what bandwidth-saving players request
+                info["sub_playlist_url"] = variant_urls[-1]
 
         except Exception as e:
             logger.debug("Playback stream info error for %s: %s", channel_login, e)
@@ -2654,14 +2651,14 @@ class TwitchClient:
             res = self.post_persisted_gql(
                 operation_name="DropCurrentSessionContext",
                 sha256_hash="4d06b702d25d652afb9ef835d2a550031f1cf762b193523a92166f40ea3d142b",
-                variables={"channelID": str(channel_id), "channelLogin": login_str},
+                variables={"channelID": str(channel_id), "channelLogin": ""},
             )
             session = ((res.get("data") or {}).get("currentUser") or {}).get("dropCurrentSession")
             if not session and login_str:
                 res_fallback = self.post_persisted_gql(
                     operation_name="DropCurrentSessionContext",
                     sha256_hash="4d06b702d25d652afb9ef835d2a550031f1cf762b193523a92166f40ea3d142b",
-                    variables={"channelID": str(channel_id), "channelLogin": ""},
+                    variables={"channelID": str(channel_id), "channelLogin": login_str},
                 )
                 session = ((res_fallback.get("data") or {}).get("currentUser") or {}).get("dropCurrentSession")
             if isinstance(session, dict):
@@ -2671,37 +2668,118 @@ class TwitchClient:
             logger.debug("DropCurrentSessionContext error for %s: %s", channel_id, e)
         return {}
 
-    def send_spade_watch(self, channel_id: str, broadcast_id: str) -> bool:
+    def get_spade_url(self, channel_login: str = "") -> str:
         """
-        Minimal watch ping modelled on the proven TwitchDropsMiner payload: a single
-        minute-watched object (channel_id, broadcast_id, player, user_id), minified JSON,
-        base64-encoded and POSTed form-encoded to the Spade URL. Meant to be sent every ~20s.
+        Resolve and cache Twitch's active Spade tracking URL from the channel page
+        or Twitch settings bundle, falling back to https://spade.twitch.tv/track.
+        """
+        cache = getattr(self, "_spade_url_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            self._spade_url_cache = cache
+
+        clean_login = str(channel_login or "").strip().lower()
+        cache_key = clean_login or "__default__"
+        if cache_key in cache:
+            return cache[cache_key]
+
+        spade_pattern = re.compile(r'["\']?(?:spade_url|beacon_url)["\']?\s*:\s*["\'](https://[^"\']+)["\']')
+        settings_pattern = re.compile(r'src=["\'](https://[^"\']+/config/settings\.[0-9a-f]+\.js)["\']')
+
+        def _is_valid_twitch_spade_url(candidate: str) -> bool:
+            try:
+                parsed = urllib.parse.urlparse(candidate)
+                host = (parsed.hostname or "").lower()
+                path = (parsed.path or "").rstrip("/")
+                return (
+                    parsed.scheme == "https"
+                    and (host == "twitch.tv" or host.endswith(".twitch.tv"))
+                    and (path.endswith("/track") or path == "" or path.endswith("/batched"))
+                )
+            except Exception:
+                return False
+
+        resolved = SPADE_URL
+        if clean_login:
+            try:
+                ch_url = f"https://www.twitch.tv/{clean_login}"
+                req = urllib.request.Request(ch_url, headers={"User-Agent": self.user_agent})
+                with urllib.request.urlopen(req, timeout=6) as resp:
+                    raw_bytes = resp.read()
+                if isinstance(raw_bytes, bytes):
+                    page_html = raw_bytes.decode("utf-8", errors="ignore")
+                    m = spade_pattern.search(page_html)
+                    if m and _is_valid_twitch_spade_url(m.group(1)):
+                        resolved = m.group(1)
+                    else:
+                        sm = settings_pattern.search(page_html)
+                        if sm:
+                            settings_url = sm.group(1)
+                            s_parsed = urllib.parse.urlparse(settings_url)
+                            s_host = (s_parsed.hostname or "").lower()
+                            if s_parsed.scheme == "https" and (
+                                s_host.endswith(".twitch.tv")
+                                or s_host.endswith(".jtvnw.net")
+                                or s_host.endswith(".ttvnw.net")
+                            ):
+                                s_req = urllib.request.Request(
+                                    settings_url,
+                                    headers={"User-Agent": self.user_agent},
+                                )
+                                with urllib.request.urlopen(s_req, timeout=6) as s_resp:
+                                    s_bytes = s_resp.read()
+                                if isinstance(s_bytes, bytes):
+                                    s_js = s_bytes.decode("utf-8", errors="ignore")
+                                    jm = spade_pattern.search(s_js)
+                                    if jm and _is_valid_twitch_spade_url(jm.group(1)):
+                                        resolved = jm.group(1)
+            except Exception as err:
+                logger.debug("get_spade_url fallback for %s: %s", clean_login, err)
+
+        cache[cache_key] = resolved
+        return resolved
+
+    def send_spade_watch(self, channel_id: str, broadcast_id: str, channel_login: str = "") -> bool:
+        """
+        Minimal watch ping modelled on the proven TwitchDropsMiner payload: a JSON array
+        containing the minute-watched object (channel_id, broadcast_id, player, user_id),
+        minified JSON, base64-encoded and POSTed form-encoded to the Spade URL.
         """
         uid: Any = str(self.user_id) if self.user_id else 0
         if isinstance(uid, str) and uid.isdigit():
             uid = int(uid)
-        payload = {
-            "event": "minute-watched",
-            "properties": {
-                "channel_id": str(channel_id),
-                "broadcast_id": str(broadcast_id),
-                "player": "site",
-                "user_id": uid,
-            },
-        }
+        payload = [
+            {
+                "event": "minute-watched",
+                "properties": {
+                    "channel_id": str(channel_id),
+                    "broadcast_id": str(broadcast_id),
+                    "player": "site",
+                    "user_id": uid,
+                },
+            }
+        ]
         raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-        body = urllib.parse.urlencode({"data": base64.b64encode(raw).decode("utf-8")}).encode("utf-8")
+        b64_payload = base64.b64encode(raw).decode("utf-8")
+        body = urllib.parse.urlencode({"data": b64_payload}).encode("utf-8")
+        ch_referer = f"https://www.twitch.tv/{channel_login}" if channel_login else "https://www.twitch.tv/"
         headers = {
             "User-Agent": self.user_agent,
             "Content-Type": "application/x-www-form-urlencoded",
             "Client-Id": self.client_id,
             "Origin": "https://www.twitch.tv",
-            "Referer": "https://www.twitch.tv/",
+            "Referer": ch_referer,
         }
         if self.auth_token:
             headers["Authorization"] = f"OAuth {self.auth_token}"
+
+        spade_url = self.get_spade_url(channel_login)
+        candidate_urls = [spade_url]
+        if SPADE_URL not in candidate_urls:
+            candidate_urls.append(SPADE_URL)
+
         ok = False
-        for url in ("https://spade.twitch.tv/track", "https://beacon.twitch.tv/track"):
+        for url in candidate_urls:
             try:
                 req = urllib.request.Request(url, data=body, headers=headers, method="POST")
                 with urllib.request.urlopen(req, timeout=10) as resp:
@@ -2833,11 +2911,12 @@ class TwitchClient:
         except Exception as err:
             logger.debug("GQL SendEvents heartbeat error: %s", err)
 
-        b64_data = base64.b64encode(raw_json.encode('utf-8')).decode('utf-8')
-        body_form = f"data={urllib.parse.quote(b64_data)}".encode('utf-8')
-        json_body = json.dumps({"data": b64_data}).encode('utf-8')
+        if self.send_spade_watch(str(channel_id), str(stream_id), channel_login=str(channel_login or "")):
+            sent_ok = True
 
-        integrity_tok = self.get_client_integrity_token()
+        b64_data = base64.b64encode(raw_json.encode("utf-8")).decode("utf-8")
+        body_form = urllib.parse.urlencode({"data": b64_data}).encode("utf-8")
+
         ch_referer = f"https://www.twitch.tv/{channel_login}" if channel_login else "https://www.twitch.tv/"
         headers_form = {
             "Client-Id": self.client_id,
@@ -2848,37 +2927,24 @@ class TwitchClient:
             "Origin": "https://www.twitch.tv",
             "Referer": ch_referer,
         }
-        headers_json = {
-            "Client-Id": self.client_id,
-            "Client-Session-Id": session_id_val,
-            "X-Device-Id": device_id_val,
-            "User-Agent": self.user_agent,
-            "Content-Type": "application/json",
-            "Origin": "https://www.twitch.tv",
-            "Referer": ch_referer,
-        }
-        if integrity_tok:
-            headers_form["Client-Integrity"] = integrity_tok
-            headers_json["Client-Integrity"] = integrity_tok
         if self.auth_token:
             headers_form["Authorization"] = f"OAuth {self.auth_token}"
-            headers_json["Authorization"] = f"OAuth {self.auth_token}"
-        for track_url in ["https://spade.twitch.tv/track", "https://beacon.twitch.tv/track", SPADE_URL]:
+
+        spade_target = self.get_spade_url(str(channel_login or ""))
+        track_urls: List[str] = []
+        for u in [spade_target, SPADE_URL]:
+            if u and u not in track_urls:
+                track_urls.append(u)
+
+        for track_url in track_urls:
             try:
-                req_json = urllib.request.Request(track_url, data=json_body, headers=headers_json, method="POST")
-                with urllib.request.urlopen(req_json, timeout=10) as resp:
+                req_form = urllib.request.Request(track_url, data=body_form, headers=headers_form, method="POST")
+                with urllib.request.urlopen(req_form, timeout=10) as resp:
                     if resp.status in (200, 204):
                         sent_ok = True
                         break
-            except Exception:
-                try:
-                    req_form = urllib.request.Request(track_url, data=body_form, headers=headers_form, method="POST")
-                    with urllib.request.urlopen(req_form, timeout=10) as resp:
-                        if resp.status in (200, 204):
-                            sent_ok = True
-                            break
-                except Exception as err:
-                    logger.debug("Heartbeat error on %s: %s", track_url, err)
+            except Exception as err:
+                logger.debug("Heartbeat form error on %s: %s", track_url, err)
         return sent_ok
 
 

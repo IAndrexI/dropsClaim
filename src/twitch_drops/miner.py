@@ -311,25 +311,33 @@ class DropsMiner:
     def _get_global_watched_total(self, session_ctx: Optional[dict] = None) -> int:
         """
         Game-agnostic progress signal: total watched minutes across ALL in-progress drop campaigns in the
-        inventory (+ claimed-drop count + live session minutes). Increases whenever ANY drop (WARDOGS, Rust,
-        Evolutions, ...) is credited, so progress checks never depend on fragile game-name matching.
+        inventory (+ claimed-drop count), incorporating live DropCurrentSessionContext per matching drop
+        without double-counting it against inventory minutes.
         """
         inv = self.last_inventory or {}
         inv_camps = inv.get("dropCampaignsInProgress") or inv.get("dropCampaignInProgress") or []
         if isinstance(inv_camps, dict):
             inv_camps = [inv_camps]
+
+        sess_drop_id = ""
+        sess_watched = 0
+        if isinstance(session_ctx, dict):
+            sess_drop_id = str(session_ctx.get("dropID") or "").lower()
+            sess_watched = int(session_ctx.get("currentMinutesWatched") or 0)
+
         total = 0
         for ic in inv_camps:
             if not isinstance(ic, dict):
                 continue
             for d in ic.get("timeBasedDrops") or []:
                 s = d.get("self") or {}
-                total += int(s.get("currentMinutesWatched") or 0)
+                watched = int(s.get("currentMinutesWatched") or 0)
+                if sess_drop_id and str(d.get("id") or "").lower() == sess_drop_id:
+                    watched = max(watched, sess_watched)
+                total += watched
                 if s.get("isClaimed"):
                     total += 1000000
         total += len(inv.get("gameEventDrops") or []) * 1000000
-        if isinstance(session_ctx, dict):
-            total += int(session_ctx.get("currentMinutesWatched") or 0)
         return total
 
     def _get_config_signature(self) -> tuple:
@@ -1087,11 +1095,15 @@ class DropsMiner:
                 if self._interruptible_sleep(random.uniform(19.0, 20.0), cycle_sig):
                     self._handle_mid_cycle_swap(channel["channel_name"], game_name)
                     return
-                try:
-                    self.client.send_spade_watch(channel["channel_id"], broadcast_id)
-                except Exception as sp_err:
-                    logger.debug("Spade watch ping error: %s", sp_err)
                 if sub_playlist_url:
+                    try:
+                        self.client.send_spade_watch(
+                            channel["channel_id"],
+                            broadcast_id,
+                            channel_login=channel["channel_login"],
+                        )
+                    except Exception as sp_err:
+                        logger.debug("Spade watch ping error: %s", sp_err)
                     if not self.client.touch_stream_chunk(sub_playlist_url, channel_login=channel["channel_login"]):
                         pb_new = self.client.get_playback_stream_info(channel["channel_login"])
                         if pb_new.get("sub_playlist_url"):
@@ -1183,10 +1195,16 @@ class DropsMiner:
                 session_ctx=session_ctx,
             )
             global_now = self._get_global_watched_total(session_ctx)
-            global_progress = global_now > baseline_global
+            delta_global = global_now - baseline_global
+            global_progress = delta_global > 0
             baseline_global = max(baseline_global, global_now)
             if current_watched > baseline_watched or claimed_now > 0 or global_progress:
-                gained = max(1, current_watched - baseline_watched)
+                if current_watched > baseline_watched:
+                    gained = current_watched - baseline_watched
+                elif delta_global > 0 and delta_global < 100000:
+                    gained = delta_global
+                else:
+                    gained = 1
                 baseline_watched = max(baseline_watched, current_watched)
                 last_progress_minute = minute + 1
                 progress_verified = True
