@@ -169,7 +169,22 @@ class MiningQueueAndSwapTests(unittest.TestCase):
                 }
             return {"data": {"channel": {"viewerDropCampaigns": []}}}
 
-        with mock.patch.object(client, "post_gql", return_value=gql_directory_response), \
+        def only_fallback(directory):
+            # Twitch's DROPS_ENABLED-filtered query returns nothing -> exercises the verification fallback path
+            def _fake(query, variables=None, operation_name=None):
+                if operation_name == "DirectoryPage_Game":
+                    return {"data": {"game": {"id": "999", "name": "Rust", "streams": {"edges": []}}}}
+                return directory
+            return _fake
+
+        # Twitch's own Drops-enabled directory filter: the first (top-left) channel is chosen as-is
+        with mock.patch.object(client, "post_gql", return_value=gql_directory_response):
+            top = client.find_eligible_channel("Rust", fast_first=True)
+            self.assertEqual(top["channel_login"], "nodrops_guy")
+            top2 = client.find_eligible_channel("Rust", fast_first=True, excluded_channels={"nodrops_guy"})
+            self.assertEqual(top2["channel_login"], "stalled_streamer")
+
+        with mock.patch.object(client, "post_gql", side_effect=only_fallback(gql_directory_response)), \
              mock.patch.object(client, "post_persisted_gql", side_effect=fake_persisted_gql):
             # When stalled_streamer is excluded, must pick good_streamer and ignore nodrops_guy
             ch = client.find_eligible_channel("Rust", fast_first=True, excluded_channels={"stalled_streamer"})
@@ -200,7 +215,7 @@ class MiningQueueAndSwapTests(unittest.TestCase):
                 }
             }
         }
-        with mock.patch.object(client, "post_gql", return_value=no_drops_dir), \
+        with mock.patch.object(client, "post_gql", side_effect=only_fallback(no_drops_dir)), \
              mock.patch.object(client, "post_persisted_gql", return_value={"data": {"channel": {"viewerDropCampaigns": []}}}):
             ch_none = client.find_eligible_channel("Rust", fast_first=True)
             self.assertIsNone(ch_none)

@@ -945,7 +945,7 @@ class TwitchClient:
                         }
                     }
                 }
-                streams(first: 30, options: {tags: ["DropsEnabled", "Drops"]}) {
+                streams(first: 30, options: {systemFilters: [DROPS_ENABLED]}) {
                     edges {
                         node {
                             broadcaster {
@@ -1901,7 +1901,8 @@ class TwitchClient:
             game_id = str(game_obj.get("id") or "")
             edges = game_obj.get("streams", {}).get("edges", [])
 
-            # Fallback if no streams found with DropsEnabled tag query
+            used_drops_filter = bool(edges)
+            # Fallback if no streams found with DropsEnabled filter query
             if not edges:
                 query_fallback = """
                 query DirectoryPage_GameFallback($name: String!) {
@@ -1951,6 +1952,28 @@ class TwitchClient:
             if not candidate_nodes:
                 logger.info("No non-excluded live streams found for game '%s' (excluded=%d)", game_name, len(excluded_set))
                 return None
+
+            # Twitch's own "Drops enabled" directory filter (same list the website shows):
+            # choose the FIRST channel (top-left) directly.
+            if used_drops_filter:
+                n0 = candidate_nodes[0]
+                b0 = n0.get("broadcaster") or {}
+                logger.info(
+                    "Selected top-left Drops-enabled channel for '%s': %s (@%s) with %d viewers",
+                    game_name, b0.get("displayName"), b0.get("login"), int(n0.get("viewersCount") or 0)
+                )
+                return {
+                    "channel_id": str(b0.get("id") or ""),
+                    "channel_login": b0.get("login"),
+                    "channel_name": b0.get("displayName"),
+                    "stream_id": str(n0.get("id") or ""),
+                    "stream_title": str(n0.get("title") or ""),
+                    "viewers": n0.get("viewersCount", 0),
+                    "game_name": game_name,
+                    "game_id": game_id,
+                    "verified_drops": True,
+                    "has_drops_in_title": self._node_has_drops_in_title_or_tags(n0),
+                }
 
             # Keep Twitch's directory order: the FIRST live participating channel in the list is chosen.
             target_game_low = game_name.lower().strip()
