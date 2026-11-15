@@ -569,14 +569,6 @@ class HeadlessBrowserWatcher:
                 "secure": True,
                 "url": "https://www.twitch.tv",
             },
-            {
-                "name": "twitch.lohp.countryCode",
-                "value": "US",
-                "domain": ".twitch.tv",
-                "path": "/",
-                "secure": True,
-                "url": "https://www.twitch.tv",
-            },
         ]
         if device_id:
             cookies_to_set.append({
