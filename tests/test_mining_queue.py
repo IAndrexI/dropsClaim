@@ -1036,6 +1036,7 @@ class MiningQueueAndSwapTests(unittest.TestCase):
         orig_sessions = dict(s.ACTIVE_SESSIONS)
         s.ACTIVE_SESSIONS["test_sess_tok"] = 9999999999.0
         with mock.patch("src.web.server.APP_DIR", self.tmp), \
+             mock.patch("src.web.server.get_running_bot_processes", return_value=[]), \
              mock.patch("src.web.server.load_stored_token", return_value={"login": "viewer_user", "user_id": "42"}), \
              mock.patch.multiple(activity_logger, DATA_DIR=os.path.join(self.tmp, "data"), ACTIVITY_LOG_FILE=log_path):
             httpd = ThreadingHTTPServer(("127.0.0.1", 0), s.DashboardHandler)
@@ -1498,6 +1499,93 @@ class MiningQueueAndSwapTests(unittest.TestCase):
         self.assertEqual(len(watch_calls), 1)
         self.assertEqual(watch_calls[0].get("session_id"), "test_sess_123456")
         self.assertEqual(watch_calls[0].get("device_id"), "test_dev_9876543210123456")
+
+    def test_claim_drop_handles_already_claimed_and_various_statuses(self):
+        client = t_api.TwitchClient("fake_auth_token")
+
+        # Test persisted GQL with DROP_INSTANCE_ALREADY_CLAIMED
+        with mock.patch.object(client, "post_persisted_gql", return_value={"data": {"claimDropRewards": {"status": "DROP_INSTANCE_ALREADY_CLAIMED"}}}):
+            self.assertTrue(client.claim_drop("test_drop_123"))
+
+        # Test persisted GQL with CLAIMED
+        with mock.patch.object(client, "post_persisted_gql", return_value={"data": {"claimDropRewards": {"status": "CLAIMED"}}}):
+            self.assertTrue(client.claim_drop("test_drop_123"))
+
+        # Test error array indicating already claimed
+        with mock.patch.object(client, "post_persisted_gql", return_value={"data": {"claimDropRewards": None}, "errors": [{"message": "Drop instance has already been claimed"}]}):
+            self.assertTrue(client.claim_drop("test_drop_123"))
+
+    def test_claim_pending_drops_proactive_poll_on_session_ctx_completion(self):
+        miner_inst = m.DropsMiner("fake_token")
+        fake_inventory = {
+            "dropCampaignsInProgress": [{
+                "id": "c1",
+                "game": {"name": "WARDOGS"},
+                "timeBasedDrops": [{
+                    "id": "d1",
+                    "name": "WARDOGS Tier 1",
+                    "requiredMinutesWatched": 60,
+                    "self": {"currentMinutesWatched": 60, "isClaimed": False, "dropInstanceID": "drop_inst_wardogs"}
+                }]
+            }]
+        }
+        miner_inst.last_inventory = fake_inventory
+        miner_inst.last_inventory_time = time.time()  # Recently fetched, so normal poll would be suppressed
+
+        inv_calls = []
+        def fake_get_inv():
+            inv_calls.append(1)
+            return fake_inventory
+
+        with mock.patch.object(miner_inst.client, "get_inventory", side_effect=fake_get_inv), \
+             mock.patch.object(miner_inst.client, "claim_drop", return_value=True):
+            # When session_ctx reports 60/60 minutes watched, inventory MUST be polled proactively and drop claimed
+            sess_ctx = {"dropID": "d1", "currentMinutesWatched": 60, "requiredMinutesWatched": 60}
+            claimed = miner_inst.claim_pending_drops(force=True, session_ctx=sess_ctx)
+            self.assertEqual(claimed, 1)
+            self.assertEqual(len(inv_calls), 1)
+
+    def test_claim_pending_drops_recovers_drop_instance_id_from_fresh_inventory(self):
+        miner_inst = m.DropsMiner("fake_token")
+        # Stale inventory where dropInstanceID is None
+        stale_inventory = {
+            "dropCampaignsInProgress": [{
+                "id": "c1",
+                "game": {"name": "WARDOGS"},
+                "timeBasedDrops": [{
+                    "id": "d1",
+                    "name": "WARDOGS Tier 1",
+                    "requiredMinutesWatched": 60,
+                    "self": {"currentMinutesWatched": 60, "isClaimed": False, "dropInstanceID": None}
+                }]
+            }]
+        }
+        # Fresh inventory where Twitch populated the authentic instance UUID
+        fresh_inventory = {
+            "dropCampaignsInProgress": [{
+                "id": "c1",
+                "game": {"name": "WARDOGS"},
+                "timeBasedDrops": [{
+                    "id": "d1",
+                    "name": "WARDOGS Tier 1",
+                    "requiredMinutesWatched": 60,
+                    "self": {"currentMinutesWatched": 60, "isClaimed": False, "dropInstanceID": "authentic-uuid-12345"}
+                }]
+            }]
+        }
+        miner_inst.last_inventory = stale_inventory
+        miner_inst.last_inventory_time = time.time()
+
+        claimed_ids = []
+        def fake_claim(drop_id, browser_watcher=None):
+            claimed_ids.append(drop_id)
+            return True
+
+        with mock.patch.object(miner_inst.client, "get_inventory", return_value=fresh_inventory), \
+             mock.patch.object(miner_inst.client, "claim_drop", side_effect=fake_claim):
+            claimed = miner_inst.claim_pending_drops(force=True)
+            self.assertEqual(claimed, 1)
+            self.assertEqual(claimed_ids, ["authentic-uuid-12345"])
 
 
 if __name__ == "__main__":

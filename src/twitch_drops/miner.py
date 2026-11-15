@@ -410,14 +410,19 @@ class DropsMiner:
         except Exception as e:
             logger.warning("Failed to send webhook notification: %s", e)
 
-    def _should_poll_inventory(self, live_drop_info: Optional[dict] = None, force: bool = False) -> bool:
+    def _should_poll_inventory(
+        self,
+        live_drop_info: Optional[dict] = None,
+        force: bool = False,
+        session_ctx: Optional[dict] = None,
+    ) -> bool:
         """
         Determine if a full GQL Inventory fetch is warranted.
         Inventory is only polled:
         1. On startup or when no inventory data is cached yet,
         2. On scheduled 10-15m intervals with gentle random jitter,
-        3. When a drop is expected to be finished (watched >= required),
-        4. When explicitly forced (e.g. queue swap or user action).
+        3. When a drop completed or reached 100% (via live_drop_info or session_ctx),
+        4. When explicitly forced (e.g. drop completion, queue swap, or user action).
         """
         if force or not self.last_inventory:
             return True
@@ -436,6 +441,13 @@ class DropsMiner:
             if req > 0 and watched >= req:
                 return True
 
+        # Check if real-time session context indicates drop completion
+        if isinstance(session_ctx, dict):
+            s_req = int(session_ctx.get("requiredMinutesWatched") or 0)
+            s_watched = int(session_ctx.get("currentMinutesWatched") or 0)
+            if s_req > 0 and s_watched >= s_req:
+                return True
+
         # Check cached inventory for any completed unclaimed drops
         inv = self.last_inventory or {}
         campaigns = inv.get("dropCampaignsInProgress") or inv.get("dropCampaignInProgress") or []
@@ -452,7 +464,12 @@ class DropsMiner:
 
         return False
 
-    def claim_pending_drops(self, force: bool = False, live_drop_info: Optional[dict] = None) -> int:
+    def claim_pending_drops(
+        self,
+        force: bool = False,
+        live_drop_info: Optional[dict] = None,
+        session_ctx: Optional[dict] = None,
+    ) -> int:
         """Scan inventory for any drops that reached 100% but were not yet claimed."""
         if force:
             self.failed_claim_ids.clear()
@@ -461,7 +478,7 @@ class DropsMiner:
         claimed_count = 0
         try:
             now = time.time()
-            if self._should_poll_inventory(live_drop_info=live_drop_info, force=force):
+            if self._should_poll_inventory(live_drop_info=live_drop_info, session_ctx=session_ctx, force=force):
                 inv = self.client.get_inventory()
                 if inv:
                     self.last_inventory = inv
@@ -499,6 +516,23 @@ class DropsMiner:
                         continue
 
                     if watched >= required and required > 0:
+                        # If dropInstanceID is missing from cached data, refresh inventory to fetch the authentic instance UUID
+                        if not self_data.get("dropInstanceID") and not self_data.get("dropInstanceId"):
+                            fresh_inv = self.client.get_inventory()
+                            if fresh_inv:
+                                self.last_inventory = fresh_inv
+                                self.last_inventory_time = time.time()
+                                for fc in (fresh_inv.get("dropCampaignsInProgress") or []):
+                                    for fd in fc.get("timeBasedDrops", []):
+                                        if fd.get("id") == drop.get("id"):
+                                            fs = fd.get("self") or {}
+                                            drop_id = fs.get("dropInstanceID") or fs.get("dropInstanceId") or drop_id
+                                            self_data = fs
+                                            is_claimed = bool(fs.get("isClaimed", False))
+                                            break
+                            if is_claimed:
+                                continue
+
                         drop_name = drop.get("name", "Drop Reward")
                         logger.info("Found claimable drop: %s (%s) [%d/%d min]", drop_name, game_name, watched, required)
                         if self.client.claim_drop(drop_id, browser_watcher=self.browser_watcher):
@@ -514,11 +548,12 @@ class DropsMiner:
                             backoff_secs = min(900.0, 60.0 * (2 ** (fail_count - 1)) + random.uniform(5.0, 15.0))
                             self.claim_backoff[drop_id] = now + backoff_secs
                             if fail_count >= 5:
+                                # Rather than permanently blacklisting forever, set a 30m cooldown so transient issues or account linking can recover
                                 logger.warning(
-                                    "Drop %s (%s) could not be claimed after %d attempts. Skipping future retries.",
+                                    "Drop %s (%s) could not be claimed after %d attempts. Backing off for 30 minutes (check if game account is linked).",
                                     drop_name, game_name, fail_count
                                 )
-                                self.failed_claim_ids.add(drop_id)
+                                self.claim_backoff[drop_id] = now + 1800.0
                             else:
                                 logger.info(
                                     "Drop %s (%s) claim attempt %d/5 failed; backing off for %.1fs.",
@@ -1281,18 +1316,32 @@ class DropsMiner:
                     session_id=getattr(self.client, "session_id", ""),
                 )
 
-            # Claim any drops completed during this minute & refresh live inventory + DropCurrentSessionContext progress
-            claimed_now = self.claim_pending_drops(live_drop_info=live_drop_info)
+            # 1. Fetch real-time DropCurrentSessionContext FIRST so we have the latest drop watch progress
             session_ctx = self.client.get_drop_current_session(channel["channel_id"], channel["channel_login"])
             if not session_ctx and isinstance(getattr(self.client, "last_drop_session", None), dict):
                 session_ctx = self.client.last_drop_session
 
+            # 2. Check if the active drop completed during this minute in session context
+            sess_w = int((session_ctx or {}).get("currentMinutesWatched") or 0)
+            sess_r = int((session_ctx or {}).get("requiredMinutesWatched") or 0)
+            drop_completed_now = bool(sess_r > 0 and sess_w >= sess_r)
+
+            # 3. Proactively claim drops: force inventory refresh if drop completed, pass latest session context
+            claimed_now = self.claim_pending_drops(
+                force=drop_completed_now,
+                live_drop_info=live_drop_info,
+                session_ctx=session_ctx,
+            )
+
+            # 4. Refresh live drop progress for dashboard telemetry
             live_drop_info = self._get_live_drop_progress(
                 game_name, camp_name, fallback_camp=chosen_campaign, session_ctx=session_ctx
             )
 
-            # Check if all drops for this campaign/game are now completed!
+            # 5. Check if all drops for this campaign/game are now completed!
             if not live_drop_info or not live_drop_info.get("current_drop_required"):
+                # Proactively claim any newly completed drops before declaring campaign complete & advancing queue
+                self.claim_pending_drops(force=True, session_ctx=session_ctx)
                 self._stop_watchers()
                 log_event("MINER_LOOP", "campaign_completed", {"game": game_name, "campaign": camp_name})
                 logger.info(

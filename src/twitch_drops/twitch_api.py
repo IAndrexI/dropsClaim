@@ -3344,6 +3344,37 @@ class TwitchClient:
                 candidate_ids.append(last_part)
             if len(parts) >= 2 and parts[1].strip() and parts[1].strip() not in candidate_ids:
                 candidate_ids.append(parts[1].strip())
+        if "/" in clean_id:
+            parts = clean_id.split("/")
+            last_part = parts[-1].strip()
+            if last_part and last_part not in candidate_ids:
+                candidate_ids.append(last_part)
+        if "_custom_id_" in clean_id:
+            for part in clean_id.split("_custom_id_"):
+                ps = part.strip()
+                if ps and ps not in candidate_ids:
+                    candidate_ids.append(ps)
+
+        def _is_claim_success(res_dict: Optional[dict]) -> bool:
+            if not isinstance(res_dict, dict):
+                return False
+            data = res_dict.get("data") or {}
+            claim_info = data.get("claimDropRewards") or data.get("claimDrop") or {}
+            status = claim_info.get("status")
+            status_str = str(status or "").upper()
+            if (
+                status_str in ("SUCCESS", "ALREADY_CLAIMED", "DROP_INSTANCE_ALREADY_CLAIMED", "ELIGIBLE", "CLAIMED")
+                or "CLAIMED" in status_str
+                or status is True
+            ):
+                return True
+            errors = res_dict.get("errors") or []
+            if isinstance(errors, list):
+                for err in errors:
+                    err_msg = str(err.get("message") if isinstance(err, dict) else err).lower()
+                    if "already" in err_msg and "claim" in err_msg:
+                        return True
+            return False
 
         # 1. Attempt via Headless Chromium browser if active (authentic session & anti-bot context)
         if browser_watcher and hasattr(browser_watcher, "execute_gql_in_browser"):
@@ -3357,13 +3388,11 @@ class TwitchClient:
                         variables={"input": {"dropInstanceID": str(cand)}},
                         is_persisted=True,
                     )
-                    if isinstance(res, dict):
-                        data = res.get("data") or {}
+                    if _is_claim_success(res):
+                        data = (res or {}).get("data") or {}
                         claim_info = data.get("claimDropRewards") or data.get("claimDrop") or {}
-                        status = claim_info.get("status")
-                        if status in ("SUCCESS", "ALREADY_CLAIMED", "ELIGIBLE", True):
-                            logger.info("[CLAIM] In-browser drop claim succeeded for %s (cand=%s): %s", clean_id, cand, status)
-                            return True
+                        logger.info("[CLAIM] In-browser drop claim succeeded for %s (cand=%s): %s", clean_id, cand, claim_info.get("status"))
+                        return True
                 except Exception as err:
                     logger.debug("In-browser claim attempt error on cand %s: %s", cand, err)
 
@@ -3382,7 +3411,7 @@ class TwitchClient:
                 claim_info = data.get("claimDropRewards") or data.get("claimDrop") or {}
                 status = claim_info.get("status")
                 logger.info("Claim result for drop %s (cand=%s): %s", clean_id, cand, status)
-                if status in ("SUCCESS", "ALREADY_CLAIMED", "ELIGIBLE", True):
+                if _is_claim_success(res):
                     return True
             except Exception as e:
                 logger.debug("Persisted claim failed for %s (cand=%s): %s", clean_id, cand, e)
@@ -3408,7 +3437,7 @@ class TwitchClient:
                 data = res.get("data") or {}
                 claim_info = data.get("claimDropRewards") or data.get("claimDrop") or {}
                 status = claim_info.get("status")
-                if status in ("SUCCESS", "ALREADY_CLAIMED", "ELIGIBLE", True):
+                if _is_claim_success(res):
                     logger.info("Raw mutation claim succeeded for drop %s (cand=%s): %s", clean_id, cand, status)
                     return True
             except Exception as e:
