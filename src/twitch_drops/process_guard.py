@@ -46,14 +46,17 @@ def is_pid_alive(pid: int) -> bool:
         return False
 
 
-def acquire_pid_lock() -> bool:
+def acquire_pid_lock(kill_existing: bool = True) -> bool:
     """
     Ensure only 1 instance of the Twitch Drops Miner can run at a time.
     Writes current PID to data/miner.pid.
-    If another miner is running, returns False.
+    If kill_existing is True, any existing competing miner process is terminated
+    so that only the current instance remains.
     """
     os.makedirs(DATA_DIR, exist_ok=True)
     current_pid = os.getpid()
+
+    # 1. Check PID_FILE
     if os.path.exists(PID_FILE):
         try:
             with open(PID_FILE, "r", encoding="utf-8") as f:
@@ -61,9 +64,30 @@ def acquire_pid_lock() -> bool:
                 if content.isdigit():
                     old_pid = int(content)
                     if old_pid != current_pid and is_pid_alive(old_pid):
-                        return False
+                        if kill_existing:
+                            kill_pid(old_pid)
+                            time.sleep(0.3)
+                        else:
+                            return False
         except Exception:
             pass
+
+    # 2. Check running bot processes on the system to prevent untracked duplicate processes
+    try:
+        running_bots = get_running_bot_processes()
+        for bot in running_bots:
+            try:
+                b_pid = int(bot.get("pid", 0))
+                if b_pid > 0 and b_pid != current_pid and is_pid_alive(b_pid):
+                    if kill_existing:
+                        kill_pid(b_pid)
+                        time.sleep(0.3)
+                    else:
+                        return False
+            except Exception:
+                pass
+    except Exception:
+        pass
 
     try:
         with open(PID_FILE, "w", encoding="utf-8") as f:

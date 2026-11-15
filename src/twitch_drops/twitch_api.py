@@ -803,6 +803,9 @@ class TwitchClient:
         }
         if self.auth_token:
             headers["Authorization"] = f"OAuth {self.auth_token}"
+            integrity_tok = self.get_client_integrity_token()
+            if integrity_tok:
+                headers["Client-Integrity"] = integrity_tok
 
         try:
             raw = self._make_request(GQL_URL, data=body, headers=headers, timeout=15)
@@ -828,6 +831,17 @@ class TwitchClient:
 
         if "errors" in data and data["errors"]:
             err_str = str(data["errors"]).lower()
+            if "integrity" in err_str and self.auth_token:
+                try:
+                    fresh_tok = self.get_client_integrity_token(force_refresh=True)
+                    if fresh_tok:
+                        headers["Client-Integrity"] = fresh_tok
+                        raw_retry = self._make_request(GQL_URL, data=body, headers=headers, timeout=15)
+                        data_retry = json.loads(raw_retry.decode("utf-8"))
+                        if not any("integrity" in str(e).lower() for e in data_retry.get("errors", [])):
+                            return data_retry
+                except Exception:
+                    pass
             if self.auth_token and operation_name not in ("CheckUserSession", "CheckUserPresence") and any(
                 k in err_str for k in ("client-id", "oauth", "unauthenticated", "unauthorized", "token")
             ):
@@ -880,10 +894,23 @@ class TwitchClient:
         }
         if self.auth_token:
             headers["Authorization"] = f"OAuth {self.auth_token}"
+            integrity_tok = self.get_client_integrity_token()
+            if integrity_tok:
+                headers["Client-Integrity"] = integrity_tok
 
         raw = self._make_request(GQL_URL, data=body, headers=headers, timeout=15)
         res = json.loads(raw.decode("utf-8"))
         if isinstance(res, dict) and res.get("errors"):
+            err_str = str(res["errors"]).lower()
+            if "integrity" in err_str and self.auth_token:
+                try:
+                    fresh_tok = self.get_client_integrity_token(force_refresh=True)
+                    if fresh_tok:
+                        headers["Client-Integrity"] = fresh_tok
+                        raw_retry = self._make_request(GQL_URL, data=body, headers=headers, timeout=15)
+                        res = json.loads(raw_retry.decode("utf-8"))
+                except Exception:
+                    pass
             log_event(
                 "TWITCH_GQL",
                 f"persisted_errors op={operation_name}",
@@ -1045,11 +1072,28 @@ class TwitchClient:
         }
         if self.auth_token:
             headers["Authorization"] = f"OAuth {self.auth_token}"
+            integrity_tok = self.get_client_integrity_token()
+            if integrity_tok:
+                headers["Client-Integrity"] = integrity_tok
         body = json.dumps(operations).encode("utf-8")
         try:
             raw = self._make_request(GQL_URL, data=body, headers=headers, timeout=timeout)
             parsed = json.loads(raw.decode("utf-8"))
             res_list = parsed if isinstance(parsed, list) else [parsed]
+            # Check for IntegrityCheckFailed across batch items
+            if self.auth_token and res_list and any(
+                isinstance(x, dict) and any("integrity" in str(e).lower() for e in x.get("errors", []))
+                for x in res_list
+            ):
+                try:
+                    fresh_tok = self.get_client_integrity_token(force_refresh=True)
+                    if fresh_tok:
+                        headers["Client-Integrity"] = fresh_tok
+                        raw_retry = self._make_request(GQL_URL, data=body, headers=headers, timeout=timeout)
+                        parsed_retry = json.loads(raw_retry.decode("utf-8"))
+                        res_list = parsed_retry if isinstance(parsed_retry, list) else [parsed_retry]
+                except Exception:
+                    pass
             if self.auth_token and res_list and all(isinstance(x, dict) and x.get("errors") and not x.get("data") for x in res_list):
                 pub_headers = {
                     "Client-Id": TWITCH_CLIENT_ID,
@@ -2971,8 +3015,12 @@ class TwitchClient:
                     "muted": False,
                     "player": "site",
                     "player_size_mode": "default",
+                    "position": 0,
+                    "quality": "chunked",
+                    "real_time": 60,
                     "time_spent_hidden": 0,
                     "user_id": uid_val,
+                    "volume": 1,
                 },
             }
         ]

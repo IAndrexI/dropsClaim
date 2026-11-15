@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import threading
+import time
 import unittest
 import urllib.request
 from http.server import ThreadingHTTPServer
@@ -803,6 +804,10 @@ class MiningQueueAndSwapTests(unittest.TestCase):
         self.assertEqual(props["channel"], "coconutb")
         self.assertEqual(props["game"], "WARDOGS")
         self.assertEqual(props["game_id"], "743893402")
+        self.assertEqual(props["position"], 0)
+        self.assertEqual(props["quality"], "chunked")
+        self.assertEqual(props["real_time"], 60)
+        self.assertEqual(props["volume"], 1)
         self.assertTrue(mock_urlopen.called)
 
     def test_switch_watched_channel_next_and_specific(self):
@@ -1022,6 +1027,51 @@ class MiningQueueAndSwapTests(unittest.TestCase):
                 httpd.server_close()
                 s.ACTIVE_SESSIONS.clear()
                 s.ACTIVE_SESSIONS.update(orig_sessions)
+
+    def test_client_integrity_injection_and_refresh(self):
+        client = t_api.TwitchClient("fake_auth_token")
+        client._integrity_token = "cached_integrity_v4"
+        client._integrity_expiration = int(time.time() * 1000) + 3600000
+
+        captured_headers = []
+
+        def fake_make_request(url, data=b"", headers=None, timeout=15):
+            captured_headers.append(dict(headers or {}))
+            if len(captured_headers) == 1:
+                return json.dumps({
+                    "errors": [{"message": "failed integrity check", "extensions": {"code": "IntegrityCheckFailed"}}]
+                }).encode("utf-8")
+            return json.dumps({"data": {"currentUser": {"id": "130742243", "login": "test_user"}}}).encode("utf-8")
+
+        def fake_get_integrity(force_refresh=False):
+            if force_refresh:
+                return "fresh_integrity_token_v4"
+            return "cached_integrity_v4"
+
+        with mock.patch.object(client, "_make_request", side_effect=fake_make_request), \
+             mock.patch.object(client, "get_client_integrity_token", side_effect=fake_get_integrity):
+            res = client.post_gql("query { currentUser { id } }")
+
+        self.assertIn("data", res)
+        self.assertEqual(res["data"]["currentUser"]["login"], "test_user")
+        self.assertEqual(len(captured_headers), 2)
+        self.assertEqual(captured_headers[0].get("Client-Integrity"), "cached_integrity_v4")
+        self.assertEqual(captured_headers[1].get("Client-Integrity"), "fresh_integrity_token_v4")
+
+    def test_process_guard_singleton_kills_competing_bots(self):
+        from src.twitch_drops import process_guard
+
+        with mock.patch("src.twitch_drops.process_guard.DATA_DIR", self.tmp), \
+             mock.patch("src.twitch_drops.process_guard.PID_FILE", os.path.join(self.tmp, "miner.pid")), \
+             mock.patch("src.twitch_drops.process_guard.get_running_bot_processes", return_value=[{"pid": "99988", "cmdline": "python -m src.twitch_drops.main --daemon"}]), \
+             mock.patch("src.twitch_drops.process_guard.is_pid_alive", return_value=True), \
+             mock.patch("src.twitch_drops.process_guard.kill_pid", return_value=True) as mock_kill:
+            # First lock with kill_existing=True
+            acquired = process_guard.acquire_pid_lock(kill_existing=True)
+            self.assertTrue(acquired)
+            mock_kill.assert_called_with(99988)
+            with open(os.path.join(self.tmp, "miner.pid"), "r", encoding="utf-8") as f:
+                self.assertEqual(f.read().strip(), str(os.getpid()))
 
 
 if __name__ == "__main__":

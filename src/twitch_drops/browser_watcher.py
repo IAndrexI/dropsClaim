@@ -258,7 +258,8 @@ _PLAYER_MAINTAIN_JS = r"""
     }
   }
 
-  const video = document.querySelector("video");
+  const videos = Array.from(document.querySelectorAll("video"));
+  const video = videos.find(v => (v.src || v.srcObject || v.readyState > 0)) || videos[0];
   if (video) {
     res.videoFound = true;
     try { video.muted = true; } catch (e) {}
@@ -268,6 +269,10 @@ _PLAYER_MAINTAIN_JS = r"""
         const p = video.play();
         if (p && typeof p.catch === "function") p.catch(() => {});
       } catch (e) {}
+    }
+    const playBtn = document.querySelector('[data-a-target="player-play-pause-button"]');
+    if (playBtn && video.paused) {
+      try { playBtn.click(); } catch (e) {}
     }
     res.paused = Boolean(video.paused);
     res.readyState = Number(video.readyState || 0);
@@ -296,6 +301,7 @@ class HeadlessBrowserWatcher:
         self.current_channel: str = ""
         self.last_state: Dict[str, Any] = {"available": bool(self.chromium_bin), "running": False}
         self._init_script_added: bool = False
+        self._consecutive_tick_errors: int = 0
 
     def is_available(self) -> bool:
         self.chromium_bin = find_chromium_binary()
@@ -322,14 +328,14 @@ class HeadlessBrowserWatcher:
                 pass
 
         self.port = _pick_free_port()
+        user_agent_str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
         cmd = [
             self.chromium_bin,
-            "--headless",
+            "--headless=new",
             "--no-sandbox",
             "--disable-setuid-sandbox",
             "--disable-dev-shm-usage",
             "--disable-gpu",
-            "--mute-audio",
             "--autoplay-policy=no-user-gesture-required",
             "--disable-background-timer-throttling",
             "--disable-backgrounding-occluded-windows",
@@ -338,6 +344,7 @@ class HeadlessBrowserWatcher:
             "--no-default-browser-check",
             "--disable-extensions",
             "--window-size=1280,720",
+            f"--user-agent={user_agent_str}",
             f"--remote-debugging-port={self.port}",
             "--remote-allow-origins=*",
             f"--user-data-dir={self.profile_dir}",
@@ -460,6 +467,7 @@ class HeadlessBrowserWatcher:
         if not self._init_script_added:
             init_js = """
             try {
+              Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
               localStorage.setItem("mature", "true");
               localStorage.setItem("video-muted", JSON.stringify({ default: true }));
               localStorage.setItem("video-quality", JSON.stringify({ default: "160p30" }));
@@ -535,8 +543,9 @@ class HeadlessBrowserWatcher:
             eval_res = self.cdp.call(
                 "Runtime.evaluate",
                 {"expression": _PLAYER_MAINTAIN_JS, "returnByValue": True},
-                timeout=6.0,
+                timeout=15.0,
             )
+            self._consecutive_tick_errors = 0
             val = ((eval_res.get("result") or {}).get("value")) or {}
             href = str(val.get("href") or "")
             if clean_login and clean_login not in href.lower():
@@ -563,9 +572,19 @@ class HeadlessBrowserWatcher:
             log_event("BROWSER_WATCHER", "player_tick", state)
             return state
         except Exception as err:
-            log_event("BROWSER_WATCHER", "player_tick_error", {"error": str(err)}, level="WARNING")
-            self.stop()
-            self.last_state = {"available": True, "running": False, "error": str(err)}
+            self._consecutive_tick_errors += 1
+            log_event(
+                "BROWSER_WATCHER",
+                "player_tick_error",
+                {"error": str(err), "consecutive_errors": self._consecutive_tick_errors},
+                level="WARNING",
+            )
+            if self._consecutive_tick_errors >= 3:
+                self.stop()
+                self.last_state = {"available": True, "running": False, "error": str(err)}
+            else:
+                if isinstance(self.last_state, dict):
+                    self.last_state["transient_error"] = str(err)
             return dict(self.last_state)
 
     def is_watching(self, channel_login: str = "") -> bool:

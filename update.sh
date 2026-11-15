@@ -75,6 +75,9 @@ fi
 
 # 5. Restart services
 echo "[5/5] Restarting background services..."
+# Clean up any duplicate/stale miner processes first to guarantee single viewing
+python3 -u -m src.twitch_drops.main --kill-bots >/dev/null 2>&1 || true
+
 if command -v rc-service >/dev/null 2>&1; then
     # OpenRC (Alpine Linux)
     rc-service twitch-drops restart 2>/dev/null || rc-service twitch-drops start 2>/dev/null || true

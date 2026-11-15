@@ -248,17 +248,18 @@ class DropsMiner:
                 pass
             self.rotated_channels[cl] = time.time()
 
-    def _mark_channel_unproductive(self, channel_login: str):
+    def _mark_channel_unproductive(self, channel_login: str, force: bool = False):
         """Temporarily blacklist a channel that failed to award drop progress."""
         if channel_login and str(channel_login).strip():
             cl = str(channel_login).strip().lower()
-            try:
-                cfg = load_mining_config()
-                pref = str(cfg.get("preferred_channel") or "").lower().strip()
-                if pref and cl == pref:
-                    return
-            except Exception:
-                pass
+            if not force:
+                try:
+                    cfg = load_mining_config()
+                    pref = str(cfg.get("preferred_channel") or "").lower().strip()
+                    if pref and cl == pref:
+                        return
+                except Exception:
+                    pass
             self.unproductive_channels[cl] = time.time()
 
     def _get_campaign_total_watched(
@@ -1331,14 +1332,26 @@ class DropsMiner:
                 is_preferred = bool(pref_ch_cfg and str(channel.get("channel_login", "")).lower() == pref_ch_cfg)
                 stall_threshold = self.progress_check_minutes
 
-                if is_preferred:
-                    if mins_stalled >= 15 and mins_stalled % 10 == 0:
+                if is_preferred and mins_stalled < 10:
+                    if mins_stalled >= 5 and mins_stalled % 5 == 0:
                         logger.info(
-                            "[MINER] User-selected channel %s (@%s) is active; maintaining watch session despite delayed drop progress (+%dm watched).",
-                            channel["channel_name"], channel["channel_login"], current_watched
+                            "[MINER] User-selected channel %s (@%s) is active; giving up to 10m for Twitch drop progress to register (stalled %dm).",
+                            channel["channel_name"], channel["channel_login"], mins_stalled
                         )
-                elif mins_stalled >= stall_threshold:
+                elif mins_stalled >= (10 if is_preferred else stall_threshold):
                     self.browser_watcher.stop()
+                    if is_preferred:
+                        logger.warning(
+                            "[MINER] User-selected channel %s (@%s) produced no drop progress after %dm. Clearing preferred channel and switching to another drops channel.",
+                            channel["channel_name"], channel["channel_login"], mins_stalled
+                        )
+                        try:
+                            cfg = load_mining_config()
+                            if cfg.get("preferred_channel"):
+                                cfg["preferred_channel"] = ""
+                                save_mining_config(cfg)
+                        except Exception:
+                            pass
                     log_event(
                         "MINER_LOOP",
                         "channel_stalled",
@@ -1348,6 +1361,7 @@ class DropsMiner:
                             "mins_stalled": mins_stalled,
                             "watched": current_watched,
                             "presence_conflict": presence_conflict,
+                            "was_preferred": is_preferred,
                         },
                         level="WARNING",
                     )
@@ -1362,7 +1376,7 @@ class DropsMiner:
                         "Marking channel unproductive and switching to another Drops channel immediately!",
                         mins_stalled, channel["channel_name"], channel["channel_login"], game_name, current_watched
                     )
-                    self._mark_channel_unproductive(channel["channel_login"])
+                    self._mark_channel_unproductive(channel["channel_login"], force=is_preferred)
                     stall_cnt = self.campaign_stall_counts.get(game_name.lower(), 0) + 1
                     self.campaign_stall_counts[game_name.lower()] = stall_cnt
                     if stall_cnt >= 4:
