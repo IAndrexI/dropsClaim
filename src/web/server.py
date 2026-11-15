@@ -1856,11 +1856,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                             claimed = 1
                             message = "Successfully claimed drop reward!"
                         else:
-                            message = "Could not claim drop reward (it may have already been claimed)."
+                            message = "Could not claim drop reward (it may have already been claimed or requires manual claim on Twitch)."
                     else:
                         miner = DropsMiner(token)
-                        claimed = miner.claim_pending_drops()
-                        message = f"Claimed {claimed} ready drop rewards!"
+                        claimed = miner.claim_pending_drops(force=True)
+                        message = f"Claimed {claimed} ready drop rewards!" if claimed > 0 else "Checked for completed drops. No unclaimed drops were currently available."
                 except Exception as e:
                     message = f"Error claiming drops: {e}"
 

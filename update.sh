@@ -43,7 +43,8 @@ git reset --hard origin/main
 NEW_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 
 echo "[2/5] Setting executable permissions on scripts..."
-chmod +x "$DIR"/scripts/*.sh "$DIR"/scripts/*.py "$DIR"/*.sh 2>/dev/null || true
+chmod 755 "$DIR"/scripts/*.sh "$DIR"/scripts/*.py "$DIR"/*.sh 2>/dev/null || true
+chmod 755 /etc/periodic/daily/* 2>/dev/null || true
 
 # 2. Install global shortcut command 'update-loot'
 echo "[3/5] Installing global 'update-loot' command shortcut..."

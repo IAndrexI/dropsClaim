@@ -3301,23 +3301,85 @@ class TwitchClient:
         return sent_ok
 
 
-    def claim_drop(self, drop_instance_id: str) -> bool:
+    def claim_drop(self, drop_instance_id: str, browser_watcher: Any = None) -> bool:
         """
         Claim a completed drop reward.
         Sends the official DropsPage_ClaimDropRewards persisted GraphQL query.
+        Supports in-browser execution via Headless Chromium CDP, fallback raw mutation,
+        and multiple composite ID formats.
         """
-        try:
-            res = self.post_persisted_gql(
-                operation_name="DropsPage_ClaimDropRewards",
-                sha256_hash="a455deea71bdc9015b78eb49f4acfbce8baa7ccbedd28e549bb025bd0f751930",
-                variables={"input": {"dropInstanceID": str(drop_instance_id)}}
-            )
-            # Response may have claimDropRewards or claimDrop
-            data = res.get("data") or {}
-            claim_info = data.get("claimDropRewards") or data.get("claimDrop") or {}
-            status = claim_info.get("status")
-            logger.info("Claim result for drop %s: %s", drop_instance_id, status)
-            return status in ("SUCCESS", "ALREADY_CLAIMED", "ELIGIBLE", True)
-        except Exception as e:
-            logger.error("Failed to claim drop %s: %s", drop_instance_id, e)
+        clean_id = str(drop_instance_id or "").strip()
+        if not clean_id:
             return False
+
+        candidate_ids: List[str] = [clean_id]
+        if "#" in clean_id:
+            parts = clean_id.split("#")
+            last_part = parts[-1].strip()
+            if last_part and last_part not in candidate_ids:
+                candidate_ids.append(last_part)
+            if len(parts) >= 2 and parts[1].strip() and parts[1].strip() not in candidate_ids:
+                candidate_ids.append(parts[1].strip())
+
+        # 1. Attempt via Headless Chromium browser if active (authentic session & anti-bot context)
+        if browser_watcher and hasattr(browser_watcher, "execute_gql_in_browser"):
+            for cand in candidate_ids:
+                try:
+                    res = browser_watcher.execute_gql_in_browser(
+                        operation_name="DropsPage_ClaimDropRewards",
+                        query_or_hash="a455deea71bdc9015b78eb49f4acfbce8baa7ccbedd28e549bb025bd0f751930",
+                        variables={"input": {"dropInstanceID": str(cand)}},
+                        is_persisted=True,
+                    )
+                    if isinstance(res, dict):
+                        data = res.get("data") or {}
+                        claim_info = data.get("claimDropRewards") or data.get("claimDrop") or {}
+                        status = claim_info.get("status")
+                        if status in ("SUCCESS", "ALREADY_CLAIMED", "ELIGIBLE", True):
+                            logger.info("[CLAIM] In-browser drop claim succeeded for %s (cand=%s): %s", clean_id, cand, status)
+                            return True
+                except Exception as err:
+                    logger.debug("In-browser claim attempt error on cand %s: %s", cand, err)
+
+        # 2. HTTP GQL attempt: Official persisted query DropsPage_ClaimDropRewards
+        for cand in candidate_ids:
+            try:
+                res = self.post_persisted_gql(
+                    operation_name="DropsPage_ClaimDropRewards",
+                    sha256_hash="a455deea71bdc9015b78eb49f4acfbce8baa7ccbedd28e549bb025bd0f751930",
+                    variables={"input": {"dropInstanceID": str(cand)}}
+                )
+                data = res.get("data") or {}
+                claim_info = data.get("claimDropRewards") or data.get("claimDrop") or {}
+                status = claim_info.get("status")
+                logger.info("Claim result for drop %s (cand=%s): %s", clean_id, cand, status)
+                if status in ("SUCCESS", "ALREADY_CLAIMED", "ELIGIBLE", True):
+                    return True
+            except Exception as e:
+                logger.debug("Persisted claim failed for %s (cand=%s): %s", clean_id, cand, e)
+
+        # 3. Fallback: Raw GraphQL mutation ClaimDropRewards
+        raw_mutation = """
+        mutation ClaimDropRewards($input: ClaimDropRewardsInput!) {
+            claimDropRewards(input: $input) {
+                status
+            }
+        }
+        """
+        for cand in candidate_ids:
+            try:
+                res = self.post_gql(
+                    raw_mutation,
+                    variables={"input": {"dropInstanceID": str(cand)}},
+                    operation_name="ClaimDropRewards"
+                )
+                data = res.get("data") or {}
+                claim_info = data.get("claimDropRewards") or data.get("claimDrop") or {}
+                status = claim_info.get("status")
+                if status in ("SUCCESS", "ALREADY_CLAIMED", "ELIGIBLE", True):
+                    logger.info("Raw mutation claim succeeded for drop %s (cand=%s): %s", clean_id, cand, status)
+                    return True
+            except Exception as e:
+                logger.debug("Raw claim failed for %s (cand=%s): %s", clean_id, cand, e)
+
+        return False

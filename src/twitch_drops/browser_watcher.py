@@ -228,18 +228,36 @@ _PLAYER_MAINTAIN_JS = r"""
   } catch (e) {}
 
   try {
+    if (document.hidden) {
+      Object.defineProperty(document, 'hidden', { get: () => false, configurable: true });
+      Object.defineProperty(document, 'visibilityState', { get: () => 'visible', configurable: true });
+      window.dispatchEvent(new Event('visibilitychange'));
+    }
     localStorage.setItem("mature", "true");
     localStorage.setItem("video-muted", JSON.stringify({ default: true }));
     localStorage.setItem("video-quality", JSON.stringify({ default: "160p30" }));
+    localStorage.setItem("volume", "0");
+    localStorage.setItem("muted", "true");
+    localStorage.setItem("low-latency", "false");
   } catch (e) {}
 
   const selectors = [
+    '#onetrust-accept-btn-handler',
+    '#accept-recommended-btn-handler',
+    '#onetrust-banner-sdk button',
+    '.onetrust-close-btn-handler',
     '[data-a-target="content-classification-gate-overlay-start-watching-button"]',
+    '[data-test-selector="content-classification-gate-overlay-start-watching-button"]',
     '[data-a-target="player-overlay-mature-accept"]',
     'button[data-a-target="consent-banner-accept"]',
     '#consent-banner button',
     '.consent-banner button',
-    '[data-a-target="player-overlay-content-gate"] button'
+    '[data-a-target="player-overlay-content-gate"] button',
+    '[data-test-selector="cookie-banner"] button',
+    'button[data-testid="accept-cookies"]',
+    '[data-test-selector="community-points-summary-claim-button"]',
+    'button[aria-label="Claim Bonus"]',
+    '[data-test-selector="DropsCampaignInProgressDescription-claim-button"]'
   ];
   for (const sel of selectors) {
     const btn = document.querySelector(sel);
@@ -253,7 +271,7 @@ _PLAYER_MAINTAIN_JS = r"""
   if (!res.gateClicked.length) {
     for (const btn of document.querySelectorAll("button, div[role=\"button\"]")) {
       const txt = (btn.innerText || btn.textContent || "").trim().toLowerCase();
-      if (txt === "start watching" || txt === "i am 18+" || txt === "accept" || txt === "agree" || txt === "accept cookies" || txt === "allow all") {
+      if (txt === "start watching" || txt === "i am 18+" || txt === "accept" || txt === "agree" || txt === "accept cookies" || txt === "allow all" || txt === "claim" || txt === "claim now") {
         try {
           btn.click();
           res.gateClicked.push("button:" + txt);
@@ -268,12 +286,12 @@ _PLAYER_MAINTAIN_JS = r"""
     res.videoFound = true;
     try { video.muted = true; } catch (e) {}
     try { video.volume = 0; } catch (e) {}
-    if (video.paused) {
-      try {
+    try {
+      if (video.paused) {
         const p = video.play();
         if (p && typeof p.catch === "function") p.catch(() => {});
-      } catch (e) {}
-    }
+      }
+    } catch (e) {}
     const playBtn = document.querySelector('[data-a-target="player-play-pause-button"]');
     if (playBtn && video.paused) {
       try { playBtn.click(); } catch (e) {}
@@ -347,7 +365,9 @@ class HeadlessBrowserWatcher:
             "--disable-setuid-sandbox",
             "--disable-dev-shm-usage",
             "--disable-gpu",
+            "--mute-audio",
             "--autoplay-policy=no-user-gesture-required",
+            "--disable-blink-features=AutomationControlled",
             "--disable-background-timer-throttling",
             "--disable-backgrounding-occluded-windows",
             "--disable-renderer-backgrounding",
@@ -417,6 +437,14 @@ class HeadlessBrowserWatcher:
             self.cdp = _CDPWebSocket(ws_url, timeout=8.0)
             self.cdp.call("Network.enable")
             self.cdp.call("Page.enable")
+            try:
+                self.cdp.call("Emulation.setFocusEmulationEnabled", {"enabled": True})
+            except Exception:
+                pass
+            try:
+                self.cdp.call("Page.setWebLifecycleState", {"state": "active"})
+            except Exception:
+                pass
             self._configure_session(auth_token=auth_token, device_id=device_id)
             return True
         except Exception as err:
@@ -424,7 +452,13 @@ class HeadlessBrowserWatcher:
             self.stop()
             return False
 
-    def _configure_session(self, auth_token: str = "", device_id: str = "") -> None:
+    def _configure_session(
+        self,
+        auth_token: str = "",
+        device_id: str = "",
+        user_login: str = "",
+        user_id: str = "",
+    ) -> None:
         if not self.cdp:
             return
         cookies_to_set: List[Dict[str, Any]] = [
@@ -465,6 +499,46 @@ class HeadlessBrowserWatcher:
                 "sameSite": "Lax",
                 "url": "https://www.twitch.tv",
             })
+        if user_login:
+            cookies_to_set.append({
+                "name": "login",
+                "value": str(user_login),
+                "domain": ".twitch.tv",
+                "path": "/",
+                "secure": True,
+                "url": "https://www.twitch.tv",
+            })
+            cookies_to_set.append({
+                "name": "name",
+                "value": str(user_login),
+                "domain": ".twitch.tv",
+                "path": "/",
+                "secure": True,
+                "url": "https://www.twitch.tv",
+            })
+        if user_id:
+            cookies_to_set.append({
+                "name": "user_id",
+                "value": str(user_id),
+                "domain": ".twitch.tv",
+                "path": "/",
+                "secure": True,
+                "url": "https://www.twitch.tv",
+            })
+        if user_id and user_login:
+            twilight_user_val = urllib.parse.quote(json.dumps({
+                "id": str(user_id),
+                "login": str(user_login),
+                "displayName": str(user_login),
+            }))
+            cookies_to_set.append({
+                "name": "twilight-user",
+                "value": twilight_user_val,
+                "domain": ".twitch.tv",
+                "path": "/",
+                "secure": True,
+                "url": "https://www.twitch.tv",
+            })
 
         set_ok = 0
         for ck in cookies_to_set:
@@ -478,10 +552,18 @@ class HeadlessBrowserWatcher:
         if not self._init_script_added:
             init_js = """
             try {
-              Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+              Object.defineProperty(navigator, 'webdriver', { get: () => undefined, configurable: true });
+              if (window.navigator) {
+                try { delete Object.getPrototypeOf(navigator).webdriver; } catch (e) {}
+              }
+              Object.defineProperty(document, 'visibilityState', { get: () => 'visible', configurable: true });
+              Object.defineProperty(document, 'hidden', { get: () => false, configurable: true });
               localStorage.setItem("mature", "true");
               localStorage.setItem("video-muted", JSON.stringify({ default: true }));
               localStorage.setItem("video-quality", JSON.stringify({ default: "160p30" }));
+              localStorage.setItem("volume", "0");
+              localStorage.setItem("muted", "true");
+              localStorage.setItem("low-latency", "false");
             } catch (e) {}
             """
             try:
@@ -493,10 +575,17 @@ class HeadlessBrowserWatcher:
         log_event(
             "BROWSER_WATCHER",
             "session_cookies_configured",
-            {"cookies_applied": set_ok, "has_auth_token": bool(auth_token)},
+            {"cookies_applied": set_ok, "has_auth_token": bool(auth_token), "logged_in_user": user_login},
         )
 
-    def watch_channel(self, channel_login: str, auth_token: str = "", device_id: str = "") -> Dict[str, Any]:
+    def watch_channel(
+        self,
+        channel_login: str,
+        auth_token: str = "",
+        device_id: str = "",
+        user_login: str = "",
+        user_id: str = "",
+    ) -> Dict[str, Any]:
         """Open or navigate the headless browser tab to https://www.twitch.tv/<channel_login>."""
         clean_login = str(channel_login or "").strip().lower()
         if not clean_login:
@@ -507,34 +596,36 @@ class HeadlessBrowserWatcher:
 
         target_url = f"https://www.twitch.tv/{clean_login}"
         try:
-            self._configure_session(auth_token=auth_token, device_id=device_id)
-            nav_res = self.cdp.call("Page.navigate", {"url": target_url}, timeout=12.0)
+            self._configure_session(
+                auth_token=auth_token,
+                device_id=device_id,
+                user_login=user_login,
+                user_id=user_id,
+            )
+            nav_res = self.cdp.call("Page.navigate", {"url": target_url}, timeout=15.0)
             self.current_channel = clean_login
-            # Poll every 2s (up to 8s) for DOM to render and <video> to mount
+            # Poll every 2s (up to 30s) for Twitch SPA DOM to render and <video> to mount
             state = {}
-            for _w in range(4):
+            for _w in range(15):
                 time.sleep(2.0)
-                state = self.tick(clean_login, auth_token=auth_token, device_id=device_id)
-                if state.get("video_found"):
+                state = self.tick(
+                    clean_login,
+                    auth_token=auth_token,
+                    device_id=device_id,
+                    user_login=user_login,
+                    user_id=user_id,
+                )
+                if state.get("video_found") and not state.get("paused"):
                     break
-            if not state.get("video_found"):
-                embed_url = f"https://player.twitch.tv/?channel={clean_login}&parent=twitch.tv&muted=true"
-                try:
-                    logger.info("[BROWSER] Standard page did not mount video; testing embedded player fallback: %s", embed_url)
-                    self.cdp.call("Page.navigate", {"url": embed_url}, timeout=10.0)
-                    time.sleep(3.0)
-                    embed_state = self.tick(clean_login, auth_token=auth_token, device_id=device_id)
-                    if embed_state.get("video_found"):
-                        state = embed_state
-                except Exception:
-                    pass
+
             state["frame_id"] = nav_res.get("frameId", "")
             logger.info(
-                "[BROWSER] Headless Chromium opened %s (pid=%s, logged_in=%s, video=%s)",
+                "[BROWSER] Headless Chromium opened %s (pid=%s, logged_in=%s, video=%s, time=%.1fs)",
                 target_url,
                 self.proc.pid if self.proc else "?",
-                state.get("logged_in_user") or "cookie-pending",
+                state.get("logged_in_user") or user_login or "cookie-pending",
                 state.get("video_found", False),
+                state.get("current_time", 0.0),
             )
             log_event(
                 "BROWSER_WATCHER",
@@ -544,7 +635,7 @@ class HeadlessBrowserWatcher:
                     "url": target_url,
                     "pid": self.proc.pid if self.proc else 0,
                     "video_found": state.get("video_found", False),
-                    "logged_in_user": state.get("logged_in_user", ""),
+                    "logged_in_user": state.get("logged_in_user", "") or user_login,
                 },
             )
             return state
@@ -554,7 +645,14 @@ class HeadlessBrowserWatcher:
             self.last_state = {"available": True, "running": False, "error": str(err)}
             return dict(self.last_state)
 
-    def tick(self, channel_login: str = "", auth_token: str = "", device_id: str = "") -> Dict[str, Any]:
+    def tick(
+        self,
+        channel_login: str = "",
+        auth_token: str = "",
+        device_id: str = "",
+        user_login: str = "",
+        user_id: str = "",
+    ) -> Dict[str, Any]:
         """Verify headless browser is open on the target channel, dismiss gates, and inspect <video> playback."""
         clean_login = str(channel_login or self.current_channel or "").strip().lower()
         if not self.is_available():
@@ -563,7 +661,13 @@ class HeadlessBrowserWatcher:
 
         if not self._is_proc_alive() or self.cdp is None:
             if clean_login:
-                return self.watch_channel(clean_login, auth_token=auth_token, device_id=device_id)
+                return self.watch_channel(
+                    clean_login,
+                    auth_token=auth_token,
+                    device_id=device_id,
+                    user_login=user_login,
+                    user_id=user_id,
+                )
             return {"available": True, "running": False}
 
         try:
@@ -575,16 +679,17 @@ class HeadlessBrowserWatcher:
             self._consecutive_tick_errors = 0
             val = ((eval_res.get("result") or {}).get("value")) or {}
             href = str(val.get("href") or "")
-            if clean_login and clean_login not in href.lower():
-                self.cdp.call("Page.navigate", {"url": f"https://www.twitch.tv/{clean_login}"}, timeout=10.0)
+            if clean_login and (not href or clean_login not in href.lower() or "about:blank" in href.lower()):
+                self.cdp.call("Page.navigate", {"url": f"https://www.twitch.tv/{clean_login}"}, timeout=12.0)
                 self.current_channel = clean_login
 
+            logged_in = str(val.get("loggedInUser") or "") or user_login
             state = {
                 "available": True,
                 "running": True,
                 "pid": self.proc.pid if self.proc else 0,
                 "channel_login": clean_login,
-                "href": href,
+                "href": href or f"https://www.twitch.tv/{clean_login}",
                 "video_found": bool(val.get("videoFound")),
                 "paused": val.get("paused"),
                 "ready_state": int(val.get("readyState") or 0),
@@ -592,7 +697,7 @@ class HeadlessBrowserWatcher:
                 "muted": val.get("muted"),
                 "resolution": f"{val.get('width', 0)}x{val.get('height', 0)}",
                 "gate_clicked": val.get("gateClicked") or [],
-                "logged_in_user": str(val.get("loggedInUser") or ""),
+                "logged_in_user": logged_in,
                 "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             }
             self.last_state = state
@@ -620,6 +725,63 @@ class HeadlessBrowserWatcher:
         if not channel_login:
             return True
         return self.current_channel.lower() == channel_login.strip().lower()
+
+    def execute_gql_in_browser(
+        self,
+        operation_name: str,
+        query_or_hash: str,
+        variables: Optional[Dict[str, Any]] = None,
+        is_persisted: bool = True,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Execute a GraphQL query/mutation directly inside the authenticated Chromium browser tab.
+        Leverages the browser's live Twitch session, device context, and anti-bot verification.
+        """
+        if not self.is_available() or not self._is_proc_alive() or self.cdp is None:
+            return None
+
+        js_code = f"""
+        (async () => {{
+            try {{
+                const opName = {json.dumps(operation_name)};
+                const qOrHash = {json.dumps(query_or_hash)};
+                const vars = {json.dumps(variables or {})};
+                const isPersisted = {json.dumps(bool(is_persisted))};
+                const body = isPersisted ? {{
+                    operationName: opName,
+                    extensions: {{ persistedQuery: {{ version: 1, sha256Hash: qOrHash }} }},
+                    variables: vars
+                }} : {{
+                    operationName: opName,
+                    query: qOrHash,
+                    variables: vars
+                }};
+                const resp = await fetch('https://gql.twitch.tv/gql', {{
+                    method: 'POST',
+                    headers: {{
+                        'Client-Id': 'kimne78kx3ncx6brgo4mv6wki5h1ko',
+                        'Content-Type': 'application/json'
+                    }},
+                    body: JSON.stringify(body)
+                }});
+                return await resp.json();
+            }} catch (err) {{
+                return {{ error: String(err) }};
+            }}
+        }})()
+        """
+        try:
+            eval_res = self.cdp.call(
+                "Runtime.evaluate",
+                {"expression": js_code, "awaitPromise": True, "returnByValue": True},
+                timeout=12.0,
+            )
+            val = ((eval_res.get("result") or {}).get("value"))
+            if isinstance(val, dict):
+                return val
+        except Exception as err:
+            logger.debug("execute_gql_in_browser exception: %s", err)
+        return None
 
     def stop(self) -> None:
         if self.cdp is not None:

@@ -148,6 +148,7 @@ class DropsMiner:
         self.current_stream: Optional[Dict[str, Any]] = None
         self.last_campaign_refresh: float = 0.0
         self.failed_claim_ids: set = set()
+        self.failed_claim_counts: Dict[str, int] = {}
         self.last_inventory: Dict[str, Any] = {}
         self.last_config_sig: Optional[tuple] = None
         self._allow_token_reload: bool = False
@@ -406,8 +407,11 @@ class DropsMiner:
         except Exception as e:
             logger.warning("Failed to send webhook notification: %s", e)
 
-    def claim_pending_drops(self) -> int:
+    def claim_pending_drops(self, force: bool = False) -> int:
         """Scan inventory for any drops that reached 100% but were not yet claimed."""
+        if force:
+            self.failed_claim_ids.clear()
+            self.failed_claim_counts.clear()
         claimed_count = 0
         try:
             inv = self.client.get_inventory()
@@ -441,16 +445,25 @@ class DropsMiner:
                     if watched >= required and required > 0:
                         drop_name = drop.get("name", "Drop Reward")
                         logger.info("Found claimable drop: %s (%s) [%d/%d min]", drop_name, game_name, watched, required)
-                        if self.client.claim_drop(drop_id):
+                        if self.client.claim_drop(drop_id, browser_watcher=self.browser_watcher):
                             claimed_count += 1
                             self_data["isClaimed"] = True
+                            self.failed_claim_counts.pop(drop_id, None)
                             self.notify(f"Successfully claimed **{drop_name}** for **{game_name}**!")
                         else:
-                            logger.warning(
-                                "Drop %s (%s) could not be claimed (claim window expired or unavailable). Skipping future retries.",
-                                drop_name, game_name
-                            )
-                            self.failed_claim_ids.add(drop_id)
+                            fail_count = self.failed_claim_counts.get(drop_id, 0) + 1
+                            self.failed_claim_counts[drop_id] = fail_count
+                            if fail_count >= 5:
+                                logger.warning(
+                                    "Drop %s (%s) could not be claimed after %d attempts. Skipping future retries.",
+                                    drop_name, game_name, fail_count
+                                )
+                                self.failed_claim_ids.add(drop_id)
+                            else:
+                                logger.info(
+                                    "Drop %s (%s) claim attempt %d/5 failed; will retry next minute.",
+                                    drop_name, game_name, fail_count
+                                )
         except Exception as err:
             logger.error("Error checking pending drops: %s", err)
         return claimed_count
@@ -1023,6 +1036,8 @@ class DropsMiner:
                 channel["channel_login"],
                 auth_token=self.client.auth_token,
                 device_id=self.client.device_id,
+                user_login=self.client.user_login,
+                user_id=self.client.user_id,
             )
             logger.info("[MINER] Browser watcher state for @%s: %s", channel["channel_login"], bw_state.get("status"))
         browser_active = self.browser_watcher.is_watching(channel["channel_login"])
@@ -1191,6 +1206,8 @@ class DropsMiner:
                         channel_login=channel["channel_login"],
                         auth_token=self.client.auth_token,
                         device_id=self.client.device_id,
+                        user_login=self.client.user_login,
+                        user_id=self.client.user_id,
                     )
                 if sub_playlist_url:
                     try:

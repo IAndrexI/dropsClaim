@@ -1155,6 +1155,56 @@ class MiningQueueAndSwapTests(unittest.TestCase):
             with open(os.path.join(self.tmp, "miner.pid"), "r", encoding="utf-8") as f:
                 self.assertEqual(f.read().strip(), str(os.getpid()))
 
+    def test_claim_drop_in_browser_and_candidate_resolution(self):
+        client = t_api.TwitchClient("fake_auth_token")
+
+        class FakeBrowserWatcher:
+            def __init__(self):
+                self.calls = []
+
+            def execute_gql_in_browser(self, operation_name, query_or_hash, variables=None, is_persisted=True):
+                self.calls.append((operation_name, query_or_hash, variables))
+                return {"data": {"claimDropRewards": {"status": "SUCCESS"}}}
+
+        fake_bw = FakeBrowserWatcher()
+        comp_id = "130742243#2965fe2b-6ebb-4547-929c-e70112337fda#b8d8fc12-d948-11f1-96f9-0a58a9feac02"
+        res = client.claim_drop(comp_id, browser_watcher=fake_bw)
+        self.assertTrue(res)
+        self.assertEqual(len(fake_bw.calls), 1)
+        self.assertEqual(fake_bw.calls[0][0], "DropsPage_ClaimDropRewards")
+        self.assertEqual(fake_bw.calls[0][2]["input"]["dropInstanceID"], comp_id)
+
+    def test_claim_drop_http_persisted_fallback_with_uuid_candidate(self):
+        client = t_api.TwitchClient("fake_auth_token")
+        attempted_vars = []
+
+        def fake_post_persisted(operation_name, sha256_hash, variables=None):
+            drop_id = variables["input"]["dropInstanceID"]
+            attempted_vars.append(drop_id)
+            if "#" in drop_id:
+                # Composite string rejected by Twitch GQL
+                return {"data": {"claimDropRewards": None}, "errors": [{"message": "Invalid input"}]}
+            # Clean UUID segment accepted
+            return {"data": {"claimDropRewards": {"status": "SUCCESS"}}}
+
+        with mock.patch.object(client, "post_persisted_gql", side_effect=fake_post_persisted):
+            comp_id = "130742243#2965fe2b-6ebb-4547-929c-e70112337fda#b8d8fc12-d948-11f1-96f9-0a58a9feac02"
+            res = client.claim_drop(comp_id)
+            self.assertTrue(res)
+            self.assertEqual(attempted_vars[0], comp_id)
+            self.assertEqual(attempted_vars[1], "b8d8fc12-d948-11f1-96f9-0a58a9feac02")
+
+    def test_miner_claim_pending_drops_retries_and_force_clears(self):
+        miner_inst = m.DropsMiner("fake_token")
+        miner_inst.failed_claim_ids.add("stale_drop_id")
+        miner_inst.failed_claim_counts["stale_drop_id"] = 5
+
+        # Calling with force=True resets failure counts
+        with mock.patch.object(miner_inst.client, "get_inventory", return_value={}):
+            miner_inst.claim_pending_drops(force=True)
+            self.assertEqual(len(miner_inst.failed_claim_ids), 0)
+            self.assertEqual(len(miner_inst.failed_claim_counts), 0)
+
 
 if __name__ == "__main__":
     unittest.main()
