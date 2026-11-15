@@ -33,6 +33,7 @@ def main():
     parser = argparse.ArgumentParser(description="Zero-Telemetry Twitch Drops Miner & Auto-Claimer")
     parser.add_argument("--daemon", action="store_true", help="Run continuously in background daemon mode")
     parser.add_argument("--test", action="store_true", help="Validate authentication token and connection")
+    parser.add_argument("--check", action="store_true", help="Run comprehensive diagnostic checks (token, ViewerDropsDashboard, IP/network)")
     parser.add_argument("--inventory", action="store_true", help="Print active drops progress and claimed loot")
     parser.add_argument("--campaigns", action="store_true", help="List all currently active Twitch drop campaigns")
     parser.add_argument("--claim-now", action="store_true", help="Immediately claim any drops at 100% and exit")
@@ -78,6 +79,12 @@ def main():
         return
 
     auth_token = args.token or resolve_token(os.environ.get("TWITCH_AUTH_TOKEN", "").strip())
+
+    if args.check:
+        from .diagnostics import run_twitch_diagnostics
+        diag = run_twitch_diagnostics(token=auth_token, verbose=True)
+        sys.exit(0 if diag.get("healthy") else 1)
+
     is_oneshot_cmd = bool(args.test or args.inventory or args.campaigns or args.claim_now)
     if not auth_token and is_oneshot_cmd:
         print("[ERROR] Not logged in to Twitch! Run: python -m src.twitch_drops.main --login   (or set TWITCH_AUTH_TOKEN / pass --token)")
@@ -94,13 +101,16 @@ def main():
     priority_games = [g.strip() for g in priority_env.split(",") if g.strip()]
 
     if args.test:
-        client = TwitchClient(auth_token)
-        if client.validate_session():
-            print(f"[SUCCESS] Connected to Twitch! Logged in as: {client.user_login} (User ID: {client.user_id})")
+        from .diagnostics import run_twitch_diagnostics
+        diag = run_twitch_diagnostics(token=auth_token, verbose=True)
+        if diag.get("user_session", {}).get("valid"):
+            u = diag["user_session"]
+            print(f"[SUCCESS] Connected to Twitch! Logged in as: {u.get('display_name')} (Login: {u.get('login')}, User ID: {u.get('user_id')})")
+            client = TwitchClient(auth_token)
             user_active = client.is_user_actively_using_twitch()
             print(f"User actively using Twitch right now: {user_active}")
         else:
-            print("[FAIL] Could not validate token. Please verify your auth-token cookie.")
+            print("[FAIL] Could not validate token. Please verify your auth-token cookie or run --login.")
         return
 
 

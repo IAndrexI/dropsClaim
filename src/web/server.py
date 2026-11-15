@@ -84,6 +84,23 @@ def build_diagnostics_bundle():
             except Exception as err:
                 service_logs[os.path.basename(lp)] = f"<read error: {err}>"
 
+    twitch_diag = {}
+    if "unittest" not in sys.modules:
+        try:
+            from src.twitch_drops.diagnostics import check_network_and_ip_restrictions, check_current_user, check_viewer_drops_dashboard
+            tw_tok = resolve_token(env.get("TWITCH_AUTH_TOKEN", "").strip())
+            net_chk = check_network_and_ip_restrictions(timeout=3)
+            usr_chk = check_current_user(tw_tok, timeout=3) if tw_tok else {"status": "FAIL", "message": "No auth token configured"}
+            dash_chk = check_viewer_drops_dashboard(tw_tok, timeout=3) if tw_tok else {"status": "UNAUTHENTICATED", "message": "Unauthenticated"}
+            twitch_diag = {
+                "network": net_chk,
+                "user_session": usr_chk,
+                "drops_dashboard": dash_chk,
+                "healthy": (net_chk.get("status") == "OK" and usr_chk.get("status") == "OK" and dash_chk.get("status") == "OK"),
+            }
+        except Exception as e:
+            twitch_diag = {"error": str(e)}
+
     diag = {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "git_status": git_stat,
@@ -91,6 +108,7 @@ def build_diagnostics_bundle():
         "chromium_binary": chrom_bin,
         "running_bots": bots,
         "accounts_summary": accounts_summary,
+        "twitch_diagnostics": twitch_diag,
         "mining_config": mining_cfg,
         "miner_status": miner_stat,
         "recent_ui_buttons": recent_ui_buttons,
@@ -105,6 +123,9 @@ def build_diagnostics_bundle():
         f"Headless Chromium: {'AVAILABLE (' + chrom_bin + ')' if chrom_bin else 'NOT INSTALLED (using HTTP+GQL+Spade+HLS emulation)'}",
         f"Running Bot Processes ({len(bots)}): {json.dumps(bots, ensure_ascii=True)}",
         f"Accounts Summary: {json.dumps(accounts_summary, ensure_ascii=True)}",
+        "",
+        "--- Twitch Account & Network Diagnostics ---",
+        json.dumps(twitch_diag, indent=2, ensure_ascii=True) if twitch_diag else "(deferred in test mode)",
         "",
         "--- Mining Config ---",
         json.dumps(mining_cfg, indent=2, ensure_ascii=True),
@@ -1558,6 +1579,17 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 "report": report_text,
                 "diagnostics": diag_dict,
             }).encode("utf-8"))
+            return
+
+        elif route_path in ("/api/diagnostics/twitch", "/api/diagnostics/check"):
+            env = load_env_file()
+            token = resolve_token(env.get("TWITCH_AUTH_TOKEN", "").strip())
+            from src.twitch_drops.diagnostics import run_twitch_diagnostics
+            diag_res = run_twitch_diagnostics(token=token, verbose=False)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(diag_res).encode("utf-8"))
             return
 
         elif route_path == "/api/system/git-status":

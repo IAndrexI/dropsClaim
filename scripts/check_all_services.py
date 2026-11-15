@@ -10,6 +10,12 @@ import json
 import urllib.request
 import urllib.error
 
+# Ensure repository root is on sys.path
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
+
+
 def load_env(path=".env"):
     if not os.path.exists(path):
         return {}
@@ -24,10 +30,25 @@ def load_env(path=".env"):
     return env
 
 
-def check_twitch(token):
-    print("\n[1] --- TWITCH DROPS CONNECTION ---")
+def check_twitch(token=None, env=None):
+    print("\n[1] --- TWITCH DROPS & ACCOUNT DIAGNOSTICS ---")
+    try:
+        from src.auth.twitch_auth import get_credentials, resolve_token
+        from src.twitch_drops.diagnostics import run_twitch_diagnostics
+
+        raw_env_tok = (env or {}).get("TWITCH_AUTH_TOKEN", "")
+        active_tok = resolve_token(token or raw_env_tok)
+
+        diag = run_twitch_diagnostics(token=active_tok, verbose=True)
+        return diag.get("healthy", False)
+    except Exception as err:
+        print(f"  [WARN] Advanced diagnostic suite note ({err}); running direct GQL verification...")
+
+    # Fallback to direct GQL query
+    if not token and env:
+        token = env.get("TWITCH_AUTH_TOKEN")
     if not token:
-        print("  [FAIL] TWITCH_AUTH_TOKEN is missing in .env")
+        print("  [FAIL] TWITCH_AUTH_TOKEN is missing in .env and data/twitch_token.json")
         return False
 
     url = "https://gql.twitch.tv/gql"
@@ -161,13 +182,14 @@ def main():
     env_file = os.path.join(app_dir, ".env")
     data_dir = os.path.join(app_dir, "data", "fgc")
 
-    if not os.path.exists(env_file):
-        print(f"  [FAIL] .env file not found at: {env_file}")
-        print("         Please create it from the template.")
-        sys.exit(1)
+    env = {}
+    if os.path.exists(env_file):
+        env = load_env(env_file)
+    else:
+        print(f"  [INFO] .env file not found at: {env_file}")
+        print("         Checking stored session credentials & network connectivity...")
 
-    env = load_env(env_file)
-    check_twitch(env.get("TWITCH_AUTH_TOKEN"))
+    check_twitch(env.get("TWITCH_AUTH_TOKEN"), env=env)
     check_epic(env, data_dir)
     check_amazon(env, data_dir)
     check_gog(env, data_dir)
