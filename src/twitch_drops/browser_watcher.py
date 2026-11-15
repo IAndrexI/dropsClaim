@@ -58,6 +58,8 @@ def find_chromium_binary() -> Optional[str]:
         for win_path in (
             r"C:\Program Files\Google\Chrome\Application\chrome.exe",
             r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
         ):
             if os.path.isfile(win_path):
                 return win_path
@@ -247,12 +249,12 @@ _PLAYER_MAINTAIN_JS = r"""
     }
   }
   if (!res.gateClicked.length) {
-    for (const btn of document.querySelectorAll("button")) {
-      const txt = (btn.innerText || "").trim().toLowerCase();
-      if (txt === "start watching" || txt === "i am 18+") {
+    for (const btn of document.querySelectorAll("button, div[role=\"button\"]")) {
+      const txt = (btn.innerText || btn.textContent || "").trim().toLowerCase();
+      if (txt === "start watching" || txt === "i am 18+" || txt === "accept" || txt === "agree" || txt === "accept cookies" || txt === "allow all") {
         try {
           btn.click();
-          res.gateClicked.push("text:" + txt);
+          res.gateClicked.push("button:" + txt);
         } catch (e) {}
       }
     }
@@ -499,8 +501,13 @@ class HeadlessBrowserWatcher:
             self._configure_session(auth_token=auth_token, device_id=device_id)
             nav_res = self.cdp.call("Page.navigate", {"url": target_url}, timeout=12.0)
             self.current_channel = clean_login
-            time.sleep(2.0)
-            state = self.tick(clean_login, auth_token=auth_token, device_id=device_id)
+            # Poll every 2s (up to 8s) for DOM to render and <video> to mount
+            state = {}
+            for _w in range(4):
+                time.sleep(2.0)
+                state = self.tick(clean_login, auth_token=auth_token, device_id=device_id)
+                if state.get("video_found"):
+                    break
             state["frame_id"] = nav_res.get("frameId", "")
             logger.info(
                 "[BROWSER] Headless Chromium opened %s (pid=%s, logged_in=%s, video=%s)",

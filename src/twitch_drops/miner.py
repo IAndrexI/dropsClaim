@@ -1170,26 +1170,9 @@ class DropsMiner:
                     )
                 if sub_playlist_url:
                     try:
-                        self.client.send_spade_watch(
-                            channel["channel_id"],
-                            broadcast_id,
-                            channel_login=channel["channel_login"],
-                            game_name=game_name,
-                            game_id=channel.get("game_id", ""),
-                            minutes_logged=1,
-                        )
-                        if hasattr(self.client, "send_gql_spade_event"):
-                            self.client.send_gql_spade_event(
-                                channel_id=channel["channel_id"],
-                                stream_id=broadcast_id,
-                                channel_login=channel["channel_login"],
-                                game_name=game_name,
-                                game_id=channel.get("game_id", ""),
-                                minutes_logged=1,
-                            )
                         self.client.get_drop_current_session(channel["channel_id"], channel["channel_login"])
-                    except Exception as sp_err:
-                        logger.debug("Spade watch ping error: %s", sp_err)
+                    except Exception:
+                        pass
                     if not self.client.touch_stream_chunk(sub_playlist_url, channel_login=channel["channel_login"]):
                         pb_new = self.client.get_playback_stream_info(channel["channel_login"])
                         if pb_new.get("sub_playlist_url"):
