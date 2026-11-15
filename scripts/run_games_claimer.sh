@@ -9,11 +9,23 @@ set -e
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$DIR"
 
-# Source environment variables if .env exists
+# Safely load environment variables from .env if it exists (handles unquoted values with spaces)
 if [ -f .env ]; then
-    set -a
-    source .env
-    set +a
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+            \#*|"") continue ;;
+            *=*)
+                key="${line%%=*}"
+                val="${line#*=}"
+                key=$(echo "$key" | tr -d '[:space:]')
+                val="${val#\"}"
+                val="${val%\"}"
+                val="${val#\'}"
+                val="${val%\'}"
+                export "$key"="$val"
+                ;;
+        esac
+    done < .env
 fi
 
 # Detect Chromium binary on Alpine (/usr/bin/chromium-browser) or Debian (/usr/bin/chromium)

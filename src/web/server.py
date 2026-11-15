@@ -1366,6 +1366,12 @@ def build_status_payload():
 
 
 class DashboardHandler(SimpleHTTPRequestHandler):
+    def handle(self):
+        try:
+            super().handle()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
     def do_GET(self):
         route_path = self.path.split("?", 1)[0]
         # 1. Public PWA & Static Asset Handlers (Do not require authentication)

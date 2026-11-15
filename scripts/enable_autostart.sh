@@ -62,6 +62,7 @@ if command -v rc-update >/dev/null 2>&1; then
     rc-update add crond default
 
     echo "[3/4] Ensuring periodic daily schedules exist..."
+    chmod +x "$DIR"/scripts/*.sh "$DIR"/scripts/*.py "$DIR"/*.sh 2>/dev/null || true
     mkdir -p /etc/periodic/daily
     cat << 'EOF' > /etc/periodic/daily/free-games
 #!/bin/sh
