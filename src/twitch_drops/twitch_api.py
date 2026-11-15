@@ -3252,14 +3252,24 @@ class TwitchClient:
         game_id: Optional[str] = None,
         sub_playlist_url: Optional[str] = None,
         minutes_logged: int = 1,
+        browser_active: bool = False,
     ) -> bool:
         """
         Send a stream-viewing progress heartbeat to Twitch via both the authenticated GraphQL
         SendEvents (sendSpadeEvents GZIP_B64) mutation and https://spade.twitch.tv/track.
         Simulates watching the stream under the user's account without video bandwidth.
+        When browser_active is True, headless Chromium is already actively watching the channel
+        and natively generating player/spade telemetry, so synthetic Python requests are skipped.
         Also refreshes DropsHighlightService_AvailableDrops and DropCurrentSessionContext for the
         watched channel so Twitch's drop progress session remains bound to this channel.
         """
+        if browser_active:
+            logger.debug(
+                "send_minute_watched_heartbeat: browser_active=True, skipping synthetic Python telemetry for %s.",
+                channel_login or channel_id
+            )
+            return True
+
         if not self.user_id and self.auth_token:
             try:
                 self.validate_session()
@@ -3320,7 +3330,7 @@ class TwitchClient:
         Claim a completed drop reward.
         Sends the official DropsPage_ClaimDropRewards persisted GraphQL query.
         Supports in-browser execution via Headless Chromium CDP, fallback raw mutation,
-        and multiple composite ID formats.
+        and multiple composite ID formats. Applies polite pacing and backoff between requests.
         """
         clean_id = str(drop_instance_id or "").strip()
         if not clean_id:
@@ -3337,7 +3347,9 @@ class TwitchClient:
 
         # 1. Attempt via Headless Chromium browser if active (authentic session & anti-bot context)
         if browser_watcher and hasattr(browser_watcher, "execute_gql_in_browser"):
-            for cand in candidate_ids:
+            for idx, cand in enumerate(candidate_ids):
+                if idx > 0:
+                    time.sleep(random.uniform(0.5, 1.0))
                 try:
                     res = browser_watcher.execute_gql_in_browser(
                         operation_name="DropsPage_ClaimDropRewards",
@@ -3356,7 +3368,10 @@ class TwitchClient:
                     logger.debug("In-browser claim attempt error on cand %s: %s", cand, err)
 
         # 2. HTTP GQL attempt: Official persisted query DropsPage_ClaimDropRewards
-        for cand in candidate_ids:
+        time.sleep(random.uniform(0.3, 0.6))
+        for idx, cand in enumerate(candidate_ids):
+            if idx > 0:
+                time.sleep(random.uniform(0.5, 1.0))
             try:
                 res = self.post_persisted_gql(
                     operation_name="DropsPage_ClaimDropRewards",
@@ -3373,6 +3388,7 @@ class TwitchClient:
                 logger.debug("Persisted claim failed for %s (cand=%s): %s", clean_id, cand, e)
 
         # 3. Fallback: Raw GraphQL mutation ClaimDropRewards
+        time.sleep(random.uniform(0.3, 0.6))
         raw_mutation = """
         mutation ClaimDropRewards($input: ClaimDropRewardsInput!) {
             claimDropRewards(input: $input) {
@@ -3380,7 +3396,9 @@ class TwitchClient:
             }
         }
         """
-        for cand in candidate_ids:
+        for idx, cand in enumerate(candidate_ids):
+            if idx > 0:
+                time.sleep(random.uniform(0.5, 1.0))
             try:
                 res = self.post_gql(
                     raw_mutation,

@@ -1283,6 +1283,222 @@ class MiningQueueAndSwapTests(unittest.TestCase):
         })
         self.assertEqual(bw.hls_segments_count, 1)
 
+    def test_platform_user_agent_detection(self):
+        from src.twitch_drops.browser_watcher import get_platform_user_agent
+        with mock.patch("sys.platform", "linux"):
+            ua_linux = get_platform_user_agent()
+            self.assertIn("X11; Linux", ua_linux)
+            self.assertIn("Chrome/133", ua_linux)
+        with mock.patch("sys.platform", "darwin"):
+            ua_mac = get_platform_user_agent()
+            self.assertIn("Macintosh; Intel Mac OS X", ua_mac)
+        with mock.patch("sys.platform", "win32"):
+            ua_win = get_platform_user_agent()
+            self.assertIn("Windows NT 10.0; Win64; x64", ua_win)
+        custom = get_platform_user_agent("CustomUserAgent/1.0")
+        self.assertEqual(custom, "CustomUserAgent/1.0")
+
+    def test_browser_watcher_clean_cookies_and_persistent_session(self):
+        bw = browser_watcher.HeadlessBrowserWatcher()
+        set_cookies = []
+
+        class MockCDP:
+            def call(self, method, params=None, timeout=8.0):
+                if method == "Network.setCookie":
+                    set_cookies.append(params)
+                    return {"success": True}
+                return {}
+
+        bw.cdp = MockCDP()
+        bw._configure_session(
+            auth_token="auth_abc_123",
+            device_id="dev_xyz_456",
+            user_login="cool_viewer",
+            user_id="998877",
+            session_id="sess_112233",
+        )
+        names = [c["name"] for c in set_cookies]
+        self.assertIn("mature", names)
+        self.assertIn("unique_id", names)
+        self.assertIn("auth-token", names)
+        self.assertIn("twilight-user", names)
+        self.assertNotIn("twitch.lohp.countryCode", names)
+        self.assertNotIn("countryCode", names)
+        self.assertNotIn("login", names)
+        self.assertNotIn("name", names)
+        self.assertNotIn("user_id", names)
+
+        # Cached persistent session: identical configure is a no-op
+        count_before = len(set_cookies)
+        bw._configure_session(
+            auth_token="auth_abc_123",
+            device_id="dev_xyz_456",
+            user_login="cool_viewer",
+            user_id="998877",
+            session_id="sess_112233",
+        )
+        self.assertEqual(len(set_cookies), count_before)
+
+    def test_browser_watcher_tick_throttling_and_keepalive(self):
+        bw = browser_watcher.HeadlessBrowserWatcher()
+        bw._is_proc_alive = lambda: True
+        eval_calls = []
+
+        class MockCDP:
+            def drain_events(self, timeout=0.05):
+                pass
+
+            def call(self, method, params=None, timeout=15.0):
+                if method == "Runtime.evaluate":
+                    eval_calls.append(params)
+                    return {
+                        "result": {
+                            "value": {
+                                "href": "https://www.twitch.tv/shroud",
+                                "videoFound": True,
+                                "paused": False,
+                                "currentTime": 42.0,
+                            }
+                        }
+                    }
+                return {}
+
+        bw.cdp = MockCDP()
+        bw.current_channel = "shroud"
+        bw.is_available = lambda: True
+
+        # First tick runs evaluate
+        res1 = bw.tick("shroud", force=True)
+        self.assertEqual(len(eval_calls), 1)
+        self.assertTrue(res1["video_found"])
+        self.assertEqual(res1["current_time"], 42.0)
+
+        # Immediate second tick (within 60s keepalive) throttles and returns cached state without CDP evaluate
+        res2 = bw.tick("shroud", force=False)
+        self.assertEqual(len(eval_calls), 1)
+        self.assertEqual(res2["current_time"], 42.0)
+
+        # Tick with force=True bypasses keepalive throttle
+        res3 = bw.tick("shroud", force=True)
+        self.assertEqual(len(eval_calls), 2)
+
+    def test_send_minute_watched_heartbeat_skips_when_browser_active(self):
+        client = t_api.TwitchClient("fake_token")
+        with mock.patch.object(client, "post_persisted_gql") as mock_gql, \
+             mock.patch.object(client, "touch_stream_chunk") as mock_touch, \
+             mock.patch.object(client, "send_gql_spade_event") as mock_gql_spade, \
+             mock.patch.object(client, "send_spade_watch") as mock_spade:
+            res = client.send_minute_watched_heartbeat(
+                channel_id="12345",
+                stream_id="67890",
+                channel_login="teststreamer",
+                game_name="Rust",
+                browser_active=True,
+            )
+            self.assertTrue(res)
+            mock_gql.assert_not_called()
+            mock_touch.assert_not_called()
+            mock_gql_spade.assert_not_called()
+            mock_spade.assert_not_called()
+
+    def test_miner_throttles_inventory_polling_during_watch_loop(self):
+        miner_inst = m.DropsMiner("fake_token")
+        fake_inventory = {
+            "dropCampaignsInProgress": [{
+                "id": "c1",
+                "game": {"name": "Rust"},
+                "timeBasedDrops": [{
+                    "id": "d1",
+                    "name": "Rust Hat",
+                    "requiredMinutesWatched": 60,
+                    "self": {"currentMinutesWatched": 10, "isClaimed": False, "dropInstanceID": "drop_inst_1"}
+                }]
+            }]
+        }
+        miner_inst.last_inventory = fake_inventory
+        miner_inst.last_inventory_time = time.time()  # Recently fetched
+
+        inv_calls = []
+        def fake_get_inv():
+            inv_calls.append(1)
+            return fake_inventory
+
+        with mock.patch.object(miner_inst.client, "get_inventory", side_effect=fake_get_inv):
+            # 1. Normal minute tick with 10/60m watched: should NOT poll inventory
+            live_info_incomplete = {"current_drop_watched": 10, "current_drop_required": 60}
+            claimed = miner_inst.claim_pending_drops(live_drop_info=live_info_incomplete)
+            self.assertEqual(claimed, 0)
+            self.assertEqual(len(inv_calls), 0)
+
+            # 2. When drop is expected to be finished (watched >= required): MUST poll inventory
+            live_info_finished = {"current_drop_watched": 60, "current_drop_required": 60}
+            with mock.patch.object(miner_inst.client, "claim_drop", return_value=True):
+                claimed = miner_inst.claim_pending_drops(live_drop_info=live_info_finished)
+                self.assertEqual(len(inv_calls), 1)
+
+    def test_claim_pending_drops_exponential_backoff_on_failure(self):
+        miner_inst = m.DropsMiner("fake_token")
+        fake_inventory = {
+            "dropCampaignsInProgress": [{
+                "id": "c1",
+                "game": {"name": "Rust"},
+                "timeBasedDrops": [{
+                    "id": "d1",
+                    "name": "Rust Hat",
+                    "requiredMinutesWatched": 60,
+                    "self": {"currentMinutesWatched": 60, "isClaimed": False, "dropInstanceID": "drop_fail_1"}
+                }]
+            }]
+        }
+        miner_inst.last_inventory = fake_inventory
+        miner_inst.last_inventory_time = time.time()
+
+        claim_attempts = []
+        def fake_claim(drop_id, browser_watcher=None):
+            claim_attempts.append(drop_id)
+            return False  # Simulate failure
+
+        with mock.patch.object(miner_inst.client, "claim_drop", side_effect=fake_claim), \
+             mock.patch.object(miner_inst.client, "get_inventory", return_value=fake_inventory):
+            # First attempt fails: increments fail count and sets backoff
+            miner_inst.claim_pending_drops(force=True)
+            self.assertEqual(len(claim_attempts), 1)
+            self.assertEqual(miner_inst.failed_claim_counts.get("drop_fail_1"), 1)
+            self.assertIn("drop_fail_1", miner_inst.claim_backoff)
+            self.assertGreater(miner_inst.claim_backoff["drop_fail_1"], time.time() + 50)
+
+            # Immediate second attempt: backoff is active, so claim_drop is skipped
+            miner_inst.claim_pending_drops(force=False)
+            self.assertEqual(len(claim_attempts), 1)  # No new call!
+
+    def test_browser_watcher_receives_matching_session_and_device_id(self):
+        miner_inst = m.DropsMiner("fake_token")
+        miner_inst.client.session_id = "test_sess_123456"
+        miner_inst.client.device_id = "test_dev_9876543210123456"
+
+        watch_calls = []
+        def fake_watch_channel(channel_login, **kwargs):
+            watch_calls.append(kwargs)
+            return {"available": True, "running": True}
+
+        miner_inst.browser_watcher.is_available = lambda: True
+        miner_inst.browser_watcher.watch_channel = fake_watch_channel
+
+        # Simulate channel launch check
+        channel = {"channel_login": "rust_streamer", "channel_name": "RustStreamer", "channel_id": "111", "viewers": 100}
+        miner_inst.browser_watcher.watch_channel(
+            channel["channel_login"],
+            auth_token=miner_inst.client.auth_token,
+            device_id=miner_inst.client.device_id,
+            user_login=miner_inst.client.user_login,
+            user_id=miner_inst.client.user_id,
+            session_id=miner_inst.client.session_id,
+        )
+
+        self.assertEqual(len(watch_calls), 1)
+        self.assertEqual(watch_calls[0].get("session_id"), "test_sess_123456")
+        self.assertEqual(watch_calls[0].get("device_id"), "test_dev_9876543210123456")
+
 
 if __name__ == "__main__":
     unittest.main()

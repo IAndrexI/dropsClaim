@@ -172,6 +172,9 @@ class DropsMiner:
         except Exception:
             env_check_mins = 8
         self.progress_check_minutes: int = max(2, min(30, env_check_mins))
+        self.last_inventory_time: float = 0.0
+        self.inventory_interval_secs: float = 900.0  # 15m scheduled interval
+        self.claim_backoff: Dict[str, float] = {}    # drop_id -> next allowed claim time
         self.browser_watcher = HeadlessBrowserWatcher()
         self.pubsub_watcher = TwitchPubSubWatcher(user_agent=getattr(self.client, "user_agent", None))
 
@@ -407,15 +410,64 @@ class DropsMiner:
         except Exception as e:
             logger.warning("Failed to send webhook notification: %s", e)
 
-    def claim_pending_drops(self, force: bool = False) -> int:
+    def _should_poll_inventory(self, live_drop_info: Optional[dict] = None, force: bool = False) -> bool:
+        """
+        Determine if a full GQL Inventory fetch is warranted.
+        Inventory is only polled:
+        1. On startup or when no inventory data is cached yet,
+        2. On scheduled 10-15m intervals with gentle random jitter,
+        3. When a drop is expected to be finished (watched >= required),
+        4. When explicitly forced (e.g. queue swap or user action).
+        """
+        if force or not self.last_inventory:
+            return True
+
+        now = time.time()
+        # Schedule next interval check with gentle jitter (10-15 mins = 600-900 seconds)
+        jitter = random.uniform(-60.0, 60.0)
+        interval = max(600.0, self.inventory_interval_secs + jitter)
+        if (now - self.last_inventory_time) >= interval:
+            return True
+
+        # Check if live drop progress indicates completion
+        if live_drop_info:
+            req = int(live_drop_info.get("current_drop_required") or 0)
+            watched = int(live_drop_info.get("current_drop_watched") or 0)
+            if req > 0 and watched >= req:
+                return True
+
+        # Check cached inventory for any completed unclaimed drops
+        inv = self.last_inventory or {}
+        campaigns = inv.get("dropCampaignsInProgress") or inv.get("dropCampaignInProgress") or []
+        if isinstance(campaigns, dict):
+            campaigns = [campaigns]
+        for camp in campaigns:
+            for drop in camp.get("timeBasedDrops", []):
+                self_data = drop.get("self") or {}
+                if not self_data.get("isClaimed"):
+                    w = int(self_data.get("currentMinutesWatched") or 0)
+                    r = int(drop.get("requiredMinutesWatched") or 0)
+                    if r > 0 and w >= r:
+                        return True
+
+        return False
+
+    def claim_pending_drops(self, force: bool = False, live_drop_info: Optional[dict] = None) -> int:
         """Scan inventory for any drops that reached 100% but were not yet claimed."""
         if force:
             self.failed_claim_ids.clear()
             self.failed_claim_counts.clear()
+            self.claim_backoff.clear()
         claimed_count = 0
         try:
-            inv = self.client.get_inventory()
-            self.last_inventory = inv or {}
+            now = time.time()
+            if self._should_poll_inventory(live_drop_info=live_drop_info, force=force):
+                inv = self.client.get_inventory()
+                if inv:
+                    self.last_inventory = inv
+                    self.last_inventory_time = now
+            else:
+                inv = self.last_inventory or {}
             campaigns = inv.get("dropCampaignsInProgress") or inv.get("dropCampaignInProgress") or []
             if isinstance(campaigns, dict):
                 campaigns = [campaigns]
@@ -442,6 +494,10 @@ class DropsMiner:
                         self.failed_claim_ids.add(drop_id)
                         continue
 
+                    # Respect exponential backoff on previously failed claim attempts
+                    if drop_id in self.claim_backoff and now < self.claim_backoff[drop_id]:
+                        continue
+
                     if watched >= required and required > 0:
                         drop_name = drop.get("name", "Drop Reward")
                         logger.info("Found claimable drop: %s (%s) [%d/%d min]", drop_name, game_name, watched, required)
@@ -449,10 +505,14 @@ class DropsMiner:
                             claimed_count += 1
                             self_data["isClaimed"] = True
                             self.failed_claim_counts.pop(drop_id, None)
+                            self.claim_backoff.pop(drop_id, None)
                             self.notify(f"Successfully claimed **{drop_name}** for **{game_name}**!")
                         else:
                             fail_count = self.failed_claim_counts.get(drop_id, 0) + 1
                             self.failed_claim_counts[drop_id] = fail_count
+                            # Exponential backoff: ~60s * 2^(fail_count-1) with gentle random jitter
+                            backoff_secs = min(900.0, 60.0 * (2 ** (fail_count - 1)) + random.uniform(5.0, 15.0))
+                            self.claim_backoff[drop_id] = now + backoff_secs
                             if fail_count >= 5:
                                 logger.warning(
                                     "Drop %s (%s) could not be claimed after %d attempts. Skipping future retries.",
@@ -461,8 +521,8 @@ class DropsMiner:
                                 self.failed_claim_ids.add(drop_id)
                             else:
                                 logger.info(
-                                    "Drop %s (%s) claim attempt %d/5 failed; will retry next minute.",
-                                    drop_name, game_name, fail_count
+                                    "Drop %s (%s) claim attempt %d/5 failed; backing off for %.1fs.",
+                                    drop_name, game_name, fail_count, backoff_secs
                                 )
         except Exception as err:
             logger.error("Error checking pending drops: %s", err)
@@ -1038,6 +1098,7 @@ class DropsMiner:
                 device_id=self.client.device_id,
                 user_login=self.client.user_login,
                 user_id=self.client.user_id,
+                session_id=getattr(self.client, "session_id", ""),
             )
             logger.info("[MINER] Browser watcher state for @%s: %s", channel["channel_login"], bw_state.get("status"))
         browser_active = self.browser_watcher.is_watching(channel["channel_login"])
@@ -1138,8 +1199,9 @@ class DropsMiner:
         broadcast_id = playback_info.get("broadcast_id") or channel.get("stream_id", "")
         sub_playlist_url = playback_info.get("sub_playlist_url")
 
-        # 5. Browser-emulated watch loop under user account (sending heartbeat every ~60s + 20s ticks)
+        # 5. Browser-emulated watch loop under user account (sending heartbeat every ~60s)
         # Watches ONLY this single stream, verifies progress & availability every 5 mins, and rotates channels after 1 hour (60 mins)!
+        live_drop_info: Optional[Dict[str, Any]] = dict(initial_drop_info) if isinstance(initial_drop_info, dict) else None
         for minute in range(self.stream_cycle_minutes):
             if self._has_config_changed(cycle_sig):
                 self._handle_mid_cycle_swap(channel["channel_name"], game_name)
@@ -1184,44 +1246,43 @@ class DropsMiner:
                 broadcast_id = playback_info.get("broadcast_id") or broadcast_id or channel.get("stream_id", "")
                 sub_playlist_url = playback_info.get("sub_playlist_url") or sub_playlist_url
 
-            success = self.client.send_minute_watched_heartbeat(
-                channel_id=channel["channel_id"],
-                stream_id=broadcast_id,
-                channel_login=channel["channel_login"],
-                game_name=game_name,
-                game_id=channel.get("game_id"),
-                sub_playlist_url=sub_playlist_url,
-                minutes_logged=1,
-            )
+            if browser_active:
+                logger.debug(
+                    "[MINER] Browser watcher is active on %s (@%s); skipping duplicate synthetic Python telemetry.",
+                    channel["channel_name"], channel["channel_login"]
+                )
+                success = True
+            else:
+                success = self.client.send_minute_watched_heartbeat(
+                    channel_id=channel["channel_id"],
+                    stream_id=broadcast_id,
+                    channel_login=channel["channel_login"],
+                    game_name=game_name,
+                    game_id=channel.get("game_id"),
+                    sub_playlist_url=sub_playlist_url,
+                    minutes_logged=1,
+                    browser_active=browser_active,
+                )
 
-            # Interruptible ~60s watch interval: simulate active browser player presence every ~20s
-            # (headless Chromium keepalive + HTTP Spade + GQL SendEvents + HLS chunk slice + DropCurrentSessionContext)
-            for _step in range(3):
-                if self._interruptible_sleep(random.uniform(19.0, 20.0), cycle_sig):
-                    self._stop_watchers()
-                    self._handle_mid_cycle_swap(channel["channel_name"], game_name)
-                    return
-                if self.browser_watcher.is_available():
-                    self.browser_watcher.tick(
-                        channel_login=channel["channel_login"],
-                        auth_token=self.client.auth_token,
-                        device_id=self.client.device_id,
-                        user_login=self.client.user_login,
-                        user_id=self.client.user_id,
-                    )
-                if sub_playlist_url:
-                    try:
-                        self.client.get_drop_current_session(channel["channel_id"], channel["channel_login"])
-                    except Exception:
-                        pass
-                    if not self.client.touch_stream_chunk(sub_playlist_url, channel_login=channel["channel_login"]):
-                        pb_new = self.client.get_playback_stream_info(channel["channel_login"])
-                        if pb_new.get("sub_playlist_url"):
-                            sub_playlist_url = pb_new["sub_playlist_url"]
-                            self.client.touch_stream_chunk(sub_playlist_url, channel_login=channel["channel_login"])
+            # Calm ~60s watch interval with gentle random jitter (58.0 to 63.0 seconds)
+            jittered_sleep = random.uniform(58.0, 63.0)
+            if self._interruptible_sleep(jittered_sleep, cycle_sig):
+                self._stop_watchers()
+                self._handle_mid_cycle_swap(channel["channel_name"], game_name)
+                return
+
+            if self.browser_watcher.is_available():
+                self.browser_watcher.tick(
+                    channel_login=channel["channel_login"],
+                    auth_token=self.client.auth_token,
+                    device_id=self.client.device_id,
+                    user_login=self.client.user_login,
+                    user_id=self.client.user_id,
+                    session_id=getattr(self.client, "session_id", ""),
+                )
 
             # Claim any drops completed during this minute & refresh live inventory + DropCurrentSessionContext progress
-            claimed_now = self.claim_pending_drops()
+            claimed_now = self.claim_pending_drops(live_drop_info=live_drop_info)
             session_ctx = self.client.get_drop_current_session(channel["channel_id"], channel["channel_login"])
             if not session_ctx and isinstance(getattr(self.client, "last_drop_session", None), dict):
                 session_ctx = self.client.last_drop_session
@@ -1299,11 +1360,13 @@ class DropsMiner:
                     "[MINER] Refreshing stream progress status (5 min check) on %s (@%s) for '%s'...",
                     channel["channel_name"], channel["channel_login"], game_name
                 )
-                # Ensure fresh inventory data from Twitch for 5-minute progress verification
-                try:
-                    self.last_inventory = self.client.get_inventory()
-                except Exception as inv_err:
-                    logger.debug("Inventory refresh during 5m check error: %s", inv_err)
+                # Only poll full inventory on scheduled interval or when drop completion is expected
+                if self._should_poll_inventory(live_drop_info=live_drop_info):
+                    try:
+                        self.last_inventory = self.client.get_inventory()
+                        self.last_inventory_time = time.time()
+                    except Exception as inv_err:
+                        logger.debug("Inventory refresh during 5m check error: %s", inv_err)
 
             current_watched = self._get_campaign_total_watched(
                 game_name,

@@ -66,6 +66,20 @@ def find_chromium_binary() -> Optional[str]:
     return None
 
 
+def get_platform_user_agent(custom_ua: Optional[str] = None) -> str:
+    """Return an authentic Chrome User-Agent matching the host platform."""
+    if custom_ua and custom_ua.strip():
+        return custom_ua.strip()
+    if sys.platform.startswith("linux"):
+        machine = os.uname().machine.lower() if hasattr(os, "uname") else "x86_64"
+        arch = "aarch64" if ("aarch64" in machine or "arm64" in machine) else "x86_64"
+        return f"Mozilla/5.0 (X11; Linux {arch}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+    elif sys.platform == "darwin":
+        return "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+    else:
+        return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+
+
 def _pick_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
@@ -260,14 +274,16 @@ _PLAYER_MAINTAIN_JS = r"""
   } catch (e) {}
 
   try {
-    Object.defineProperty(Document.prototype, 'visibilityState', { get: () => 'visible', configurable: true });
-    Object.defineProperty(Document.prototype, 'hidden', { get: () => false, configurable: true });
-    Object.defineProperty(document, 'visibilityState', { get: () => 'visible', configurable: true });
-    Object.defineProperty(document, 'hidden', { get: () => false, configurable: true });
-    Document.prototype.hasFocus = () => true;
-    document.hasFocus = () => true;
-    document.dispatchEvent(new Event('visibilitychange'));
-    window.dispatchEvent(new Event('visibilitychange'));
+    if (document.hidden) {
+      Object.defineProperty(Document.prototype, 'visibilityState', { get: () => 'visible', configurable: true });
+      Object.defineProperty(Document.prototype, 'hidden', { get: () => false, configurable: true });
+      Object.defineProperty(document, 'visibilityState', { get: () => 'visible', configurable: true });
+      Object.defineProperty(document, 'hidden', { get: () => false, configurable: true });
+      Document.prototype.hasFocus = () => true;
+      document.hasFocus = () => true;
+      document.dispatchEvent(new Event('visibilitychange'));
+      window.dispatchEvent(new Event('visibilitychange'));
+    }
   } catch (e) {}
 
   function clickEl(el) {
@@ -366,8 +382,9 @@ class HeadlessBrowserWatcher:
     Falls back cleanly to no-op if Chromium is not installed.
     """
 
-    def __init__(self, profile_dir: Optional[str] = None):
+    def __init__(self, profile_dir: Optional[str] = None, user_agent: Optional[str] = None):
         self.profile_dir = profile_dir or PROFILE_DIR
+        self.user_agent: str = get_platform_user_agent(user_agent)
         self.chromium_bin: Optional[str] = find_chromium_binary()
         self.proc: Optional[subprocess.Popen] = None
         self.port: Optional[int] = None
@@ -375,7 +392,14 @@ class HeadlessBrowserWatcher:
         self.current_channel: str = ""
         self.last_state: Dict[str, Any] = {"available": bool(self.chromium_bin), "running": False}
         self._init_script_added: bool = False
+        self._session_configured: bool = False
+        self._session_sig: Tuple[str, str, str, str, str] = ("", "", "", "", "")
+        self._last_auth_token: str = ""
+        self._last_device_id: str = ""
+        self._last_session_id: str = ""
         self._consecutive_tick_errors: int = 0
+        self.last_tick_time: float = 0.0
+        self.keepalive_interval: float = 60.0
 
         # CDP Network Inspection & Playback Progress Telemetry
         self.spade_requests_count: int = 0
@@ -424,7 +448,7 @@ class HeadlessBrowserWatcher:
             elif "gql.twitch.tv" in url:
                 self.last_gql_status = int(status) if status else None
 
-    def _ensure_browser_started(self, auth_token: str = "", device_id: str = "") -> bool:
+    def _ensure_browser_started(self, auth_token: str = "", device_id: str = "", session_id: str = "") -> bool:
         if not self.is_available():
             self.last_state = {"available": False, "running": False, "reason": "chromium_not_found"}
             return False
@@ -442,7 +466,7 @@ class HeadlessBrowserWatcher:
                 pass
 
         self.port = _pick_free_port()
-        user_agent_str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+        user_agent_str = self.user_agent
         cmd = [
             self.chromium_bin,
             "--headless=new",
@@ -542,7 +566,7 @@ class HeadlessBrowserWatcher:
                 self.cdp.call("Page.setWebLifecycleState", {"state": "active"})
             except Exception:
                 pass
-            self._configure_session(auth_token=auth_token, device_id=device_id)
+            self._configure_session(auth_token=auth_token, device_id=device_id, session_id=session_id)
             return True
         except Exception as err:
             log_event("BROWSER_WATCHER", "cdp_init_error", {"error": str(err)}, level="WARNING")
@@ -555,11 +579,21 @@ class HeadlessBrowserWatcher:
         device_id: str = "",
         user_login: str = "",
         user_id: str = "",
+        session_id: str = "",
     ) -> None:
         if auth_token:
             self._last_auth_token = str(auth_token)
+        if device_id:
+            self._last_device_id = str(device_id)
+        if session_id:
+            self._last_session_id = str(session_id)
         if not self.cdp:
             return
+
+        session_sig = (str(auth_token), str(device_id), str(user_login), str(user_id), str(session_id))
+        if self._session_configured and self._session_sig == session_sig:
+            return
+
         cookies_to_set: List[Dict[str, Any]] = [
             {
                 "name": "mature",
@@ -588,32 +622,6 @@ class HeadlessBrowserWatcher:
                 "secure": True,
                 "httpOnly": False,
                 "sameSite": "Lax",
-                "url": "https://www.twitch.tv",
-            })
-        if user_login:
-            cookies_to_set.append({
-                "name": "login",
-                "value": str(user_login),
-                "domain": ".twitch.tv",
-                "path": "/",
-                "secure": True,
-                "url": "https://www.twitch.tv",
-            })
-            cookies_to_set.append({
-                "name": "name",
-                "value": str(user_login),
-                "domain": ".twitch.tv",
-                "path": "/",
-                "secure": True,
-                "url": "https://www.twitch.tv",
-            })
-        if user_id:
-            cookies_to_set.append({
-                "name": "user_id",
-                "value": str(user_id),
-                "domain": ".twitch.tv",
-                "path": "/",
-                "secure": True,
                 "url": "https://www.twitch.tv",
             })
         if user_id and user_login:
@@ -645,6 +653,7 @@ class HeadlessBrowserWatcher:
             dev_val_json = json.dumps(str(device_id or ""))
             login_val_json = json.dumps(str(user_login or ""))
             uid_val_json = json.dumps(str(user_id or ""))
+            sess_val_json = json.dumps(str(session_id or ""))
             init_js = f"""
             try {{
               Object.defineProperty(navigator, 'webdriver', {{ get: () => undefined, configurable: true }});
@@ -657,8 +666,6 @@ class HeadlessBrowserWatcher:
               Object.defineProperty(document, 'hidden', {{ get: () => false, configurable: true }});
               Document.prototype.hasFocus = () => true;
               document.hasFocus = () => true;
-              document.dispatchEvent(new Event('visibilitychange'));
-              window.dispatchEvent(new Event('visibilitychange'));
 
               localStorage.setItem("mature", "true");
               localStorage.setItem("video-muted", JSON.stringify({{ default: true }}));
@@ -671,13 +678,15 @@ class HeadlessBrowserWatcher:
               const dId = {dev_val_json};
               const uLog = {login_val_json};
               const uId = {uid_val_json};
+              const sId = {sess_val_json};
               if (aTok) {{
                 localStorage.setItem("auth-token", aTok);
-                localStorage.setItem("api_token", aTok);
               }}
               if (dId) {{
                 localStorage.setItem("unique_id", dId);
-                localStorage.setItem("client_session_id", dId);
+              }}
+              if (sId) {{
+                localStorage.setItem("client_session_id", sId);
               }}
               if (uLog && uId) {{
                 localStorage.setItem("twilight.user", JSON.stringify({{ id: uId, login: uLog, displayName: uLog }}));
@@ -725,6 +734,8 @@ class HeadlessBrowserWatcher:
             except Exception:
                 pass
 
+        self._session_configured = True
+        self._session_sig = session_sig
         log_event(
             "BROWSER_WATCHER",
             "session_cookies_configured",
@@ -738,13 +749,14 @@ class HeadlessBrowserWatcher:
         device_id: str = "",
         user_login: str = "",
         user_id: str = "",
+        session_id: str = "",
     ) -> Dict[str, Any]:
         """Open or navigate the headless browser tab to https://www.twitch.tv/<channel_login>."""
         clean_login = str(channel_login or "").strip().lower()
         if not clean_login:
             return {"available": self.is_available(), "running": False}
 
-        if not self._ensure_browser_started(auth_token=auth_token, device_id=device_id):
+        if not self._ensure_browser_started(auth_token=auth_token, device_id=device_id, session_id=session_id):
             return dict(self.last_state)
 
         target_url = f"https://www.twitch.tv/{clean_login}"
@@ -754,6 +766,7 @@ class HeadlessBrowserWatcher:
                 device_id=device_id,
                 user_login=user_login,
                 user_id=user_id,
+                session_id=session_id,
             )
             nav_res = self.cdp.call("Page.navigate", {"url": target_url}, timeout=15.0)
             self.current_channel = clean_login
@@ -767,6 +780,8 @@ class HeadlessBrowserWatcher:
                     device_id=device_id,
                     user_login=user_login,
                     user_id=user_id,
+                    session_id=session_id,
+                    force=True,
                 )
                 if state.get("video_found") and not state.get("paused"):
                     break
@@ -805,8 +820,14 @@ class HeadlessBrowserWatcher:
         device_id: str = "",
         user_login: str = "",
         user_id: str = "",
+        session_id: str = "",
+        force: bool = False,
     ) -> Dict[str, Any]:
-        """Verify headless browser is open on the target channel, dismiss gates, and inspect <video> playback."""
+        """Verify headless browser is open on the target channel, dismiss gates, and inspect <video> playback.
+        
+        Throttles heavy CDP evaluate calls to a calm keepalive check every 60s (keepalive_interval)
+        while continuously draining CDP network events to keep telemetry updated.
+        """
         clean_login = str(channel_login or self.current_channel or "").strip().lower()
         if not self.is_available():
             self.last_state = {"available": False, "running": False}
@@ -820,23 +841,47 @@ class HeadlessBrowserWatcher:
                     device_id=device_id,
                     user_login=user_login,
                     user_id=user_id,
+                    session_id=session_id,
                 )
             return {"available": True, "running": False}
 
+        # Drain incoming CDP event frames to update network telemetry in real-time
         try:
-            # Drain incoming CDP event frames to update network telemetry
-            if self.cdp:
-                try:
-                    self.cdp.drain_events()
-                except Exception:
-                    pass
+            self.cdp.drain_events()
+        except Exception:
+            pass
 
+        now = time.time()
+        # Calm keepalive throttle: if stream is actively playing on current channel and not forced,
+        # skip repeated Runtime.evaluate calls until keepalive_interval (60s) has elapsed.
+        if (
+            not force
+            and self.last_state.get("running")
+            and clean_login == self.current_channel
+            and self.last_tick_time > 0
+            and (now - self.last_tick_time) < self.keepalive_interval
+        ):
+            cached_state = dict(self.last_state)
+            cached_state["network_telemetry"] = {
+                "spade_requests": self.spade_requests_count,
+                "last_spade_status": self.last_spade_status,
+                "last_spade_time": self.last_spade_req_time,
+                "has_minute_watched_pings": self.has_minute_watched_pings,
+                "hls_segments_count": self.hls_segments_count,
+                "last_hls_time": self.last_hls_time,
+                "gql_requests": self.gql_requests_count,
+                "last_gql_status": self.last_gql_status,
+            }
+            return cached_state
+
+        try:
             eval_res = self.cdp.call(
                 "Runtime.evaluate",
                 {"expression": _PLAYER_MAINTAIN_JS, "returnByValue": True},
                 timeout=15.0,
             )
             self._consecutive_tick_errors = 0
+            self.last_tick_time = now
             val = ((eval_res.get("result") or {}).get("value")) or {}
             href = str(val.get("href") or "")
             if clean_login and (not href or clean_login not in href.lower() or "about:blank" in href.lower()):
@@ -922,16 +967,21 @@ class HeadlessBrowserWatcher:
         variables: Optional[Dict[str, Any]] = None,
         is_persisted: bool = True,
         auth_token: str = "",
+        session_id: str = "",
     ) -> Optional[Dict[str, Any]]:
         """
         Execute a GraphQL query/mutation directly inside the authenticated Chromium browser tab.
-        Leverages the browser's live Twitch session, device context, and anti-bot verification.
+        Leverages the browser's live Twitch session, device context, and anti-bot verification,
+        reusing the page's exact live HTTP/2 connection and credentials without establishing
+        redundant external connections.
         """
         if not self.is_available() or not self._is_proc_alive() or self.cdp is None:
             return None
 
         tok = auth_token or getattr(self, "_last_auth_token", "")
         tok_json = json.dumps(str(tok or ""))
+        sess = session_id or getattr(self, "_last_session_id", "")
+        sess_json = json.dumps(str(sess or ""))
 
         js_code = f"""
         (async () => {{
@@ -940,7 +990,14 @@ class HeadlessBrowserWatcher:
                 const qOrHash = {json.dumps(query_or_hash)};
                 const vars = {json.dumps(variables or {})};
                 const isPersisted = {json.dumps(bool(is_persisted))};
-                const aTok = {tok_json};
+                const passedTok = {tok_json};
+                const passedSess = {sess_json};
+                const cookieTok = (document.cookie.match(/(?:^|;\\s*)auth-token=([^;]+)/) || [])[1] || "";
+                const storageTok = localStorage.getItem("auth-token") || "";
+                const aTok = passedTok || decodeURIComponent(cookieTok) || storageTok;
+                const dId = (document.cookie.match(/(?:^|;\\s*)unique_id=([^;]+)/) || [])[1] || localStorage.getItem("unique_id") || "";
+                const sId = passedSess || localStorage.getItem("client_session_id") || "";
+
                 const body = isPersisted ? {{
                     operationName: opName,
                     extensions: {{ persistedQuery: {{ version: 1, sha256Hash: qOrHash }} }},
@@ -956,6 +1013,12 @@ class HeadlessBrowserWatcher:
                 }};
                 if (aTok) {{
                     hdrs['Authorization'] = 'OAuth ' + aTok;
+                }}
+                if (dId) {{
+                    hdrs['X-Device-Id'] = dId;
+                }}
+                if (sId) {{
+                    hdrs['Client-Session-Id'] = sId;
                 }}
                 const resp = await fetch('https://gql.twitch.tv/gql', {{
                     method: 'POST',
@@ -977,9 +1040,20 @@ class HeadlessBrowserWatcher:
             )
             val = ((eval_res.get("result") or {}).get("value"))
             if isinstance(val, dict):
+                log_event(
+                    "BROWSER_WATCHER",
+                    "gql_in_browser_executed",
+                    {"operation": operation_name, "has_error": "error" in val or "errors" in val},
+                )
                 return val
         except Exception as err:
             logger.debug("execute_gql_in_browser exception: %s", err)
+            log_event(
+                "BROWSER_WATCHER",
+                "gql_in_browser_failed",
+                {"operation": operation_name, "error": str(err)},
+                level="WARNING",
+            )
         return None
 
     def stop(self) -> None:
@@ -1000,6 +1074,9 @@ class HeadlessBrowserWatcher:
             self.proc = None
         self.current_channel = ""
         self._init_script_added = False
+        self._session_configured = False
+        self._session_sig = ("", "", "", "", "")
+        self.last_tick_time = 0.0
         self.spade_requests_count = 0
         self.last_spade_req_time = 0.0
         self.last_spade_url = ""
