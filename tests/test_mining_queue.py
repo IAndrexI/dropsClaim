@@ -810,6 +810,88 @@ class MiningQueueAndSwapTests(unittest.TestCase):
         self.assertEqual(props["volume"], 1)
         self.assertTrue(mock_urlopen.called)
 
+    def test_touch_stream_chunk_issues_head_requests_to_all_segments(self):
+        client = t_api.TwitchClient("fake_token")
+        fake_m3u8 = (
+            "#EXTM3U\n"
+            "#EXT-X-VERSION:3\n"
+            "#EXT-X-TARGETDURATION:2\n"
+            '#EXT-X-DATERANGE:ID="trig",X-TV-TWITCH-TRIGGER-URL="https://usher.ttvnw.net/trigger/123"\n'
+            "https://video-edge-1.ttvnw.net/v1/segment/chunk1.ts\n"
+            "https://video-edge-1.ttvnw.net/v1/segment/chunk2.ts\n"
+            "https://video-edge-1.ttvnw.net/v1/segment/chunk3.ts\n"
+        )
+        head_calls = []
+
+        def fake_urlopen(req, timeout=None):
+            url = req.get_full_url() if hasattr(req, "get_full_url") else str(req)
+            method = req.get_method() if hasattr(req, "get_method") else "GET"
+            resp = mock.MagicMock()
+            resp.status = 200
+            if "playlist.m3u8" in url:
+                resp.read.return_value = fake_m3u8.encode("utf-8")
+            elif "trigger" in url:
+                resp.read.return_value = b""
+            else:
+                if method == "HEAD":
+                    head_calls.append(url)
+                resp.read.return_value = b"bytes1024"
+            cm = mock.MagicMock()
+            cm.__enter__.return_value = resp
+            cm.__exit__.return_value = False
+            return cm
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            ok = client.touch_stream_chunk("https://usw22.playlist.ttvnw.net/v1/playlist.m3u8", channel_login="teststreamer")
+
+        self.assertTrue(ok)
+        self.assertEqual(len(head_calls), 3)
+        self.assertIn("chunk1.ts", head_calls[0])
+        self.assertIn("chunk2.ts", head_calls[1])
+        self.assertIn("chunk3.ts", head_calls[2])
+
+    def test_send_spade_watch_includes_oauth_and_client_headers(self):
+        client = t_api.TwitchClient("oauth_secret_token_123")
+        client.user_id = "998877"
+        client.device_id = "test_device_id_abc"
+        client.session_id = "test_session_id_xyz"
+
+        captured_requests = []
+
+        def fake_urlopen(req, timeout=None):
+            captured_requests.append({
+                "url": req.get_full_url(),
+                "headers": dict(req.headers),
+                "data": req.data.decode("utf-8") if req.data else "",
+            })
+            resp = mock.MagicMock()
+            resp.status = 204
+            cm = mock.MagicMock()
+            cm.__enter__.return_value = resp
+            cm.__exit__.return_value = False
+            return cm
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            ok = client.send_spade_watch(
+                channel_id="112233",
+                broadcast_id="99887766",
+                channel_login="teststreamer",
+                game_name="WARDOGS",
+                game_id="743893402",
+                minutes_logged=1,
+            )
+
+        self.assertTrue(ok)
+        spade_reqs = [r for r in captured_requests if "spade" in r["url"] or "track" in r["url"]]
+        self.assertTrue(len(spade_reqs) >= 1)
+        req = spade_reqs[0]
+        hdrs = {k.lower(): v for k, v in req["headers"].items()}
+        self.assertEqual(hdrs.get("authorization"), "OAuth oauth_secret_token_123")
+        self.assertEqual(hdrs.get("client-id"), client.client_id)
+        self.assertEqual(hdrs.get("x-device-id"), "test_device_id_abc")
+        self.assertEqual(hdrs.get("client-session-id"), "test_session_id_xyz")
+        self.assertIn("data=", req["data"])
+
     def test_switch_watched_channel_next_and_specific(self):
         os.makedirs(os.path.join(self.tmp, "data"), exist_ok=True)
         with open(os.path.join(self.tmp, "data", "mining_config.json"), "w", encoding="utf-8") as f:

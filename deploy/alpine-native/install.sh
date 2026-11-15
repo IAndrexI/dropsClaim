@@ -26,6 +26,8 @@ apk add --no-cache \
     nodejs \
     npm \
     chromium \
+    ffmpeg \
+    gst-plugins-good \
     nss \
     freetype \
     harfbuzz \

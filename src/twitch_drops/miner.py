@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Set
 
 from .activity_logger import log_event
 from .browser_watcher import HeadlessBrowserWatcher
+from .pubsub import TwitchPubSubWatcher
 from .twitch_api import TwitchClient, extract_game_name, is_campaign_expired, is_timestamp_expired
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -171,6 +172,18 @@ class DropsMiner:
             env_check_mins = 5
         self.progress_check_minutes: int = max(2, min(30, env_check_mins))
         self.browser_watcher = HeadlessBrowserWatcher()
+        self.pubsub_watcher = TwitchPubSubWatcher(user_agent=getattr(self.client, "user_agent", None))
+
+    def _stop_watchers(self) -> None:
+        """Stop both headless browser watcher and WebSocket PubSub presence client."""
+        try:
+            self.browser_watcher.stop()
+        except Exception:
+            pass
+        try:
+            self.pubsub_watcher.stop()
+        except Exception:
+            pass
 
     def _refresh_auth_if_needed(self) -> bool:
         """Reload Twitch OAuth token from token store or .env if updated via Web UI while daemon is running."""
@@ -730,7 +743,7 @@ class DropsMiner:
 
     def _handle_mid_cycle_swap(self, old_channel_name: str, old_game_name: str):
         """Log swap and only set switching=True if server.py hasn't already resolved the new active stream."""
-        self.browser_watcher.stop()
+        self._stop_watchers()
         new_cfg = load_mining_config()
         next_target = new_cfg.get("selected_game") or "Auto-Queue"
         log_event(
@@ -809,7 +822,7 @@ class DropsMiner:
                 return
 
             if pause_when_user_active and self.client.is_user_actively_using_twitch():
-                self.browser_watcher.stop()
+                self._stop_watchers()
                 log_event("MINER_LOOP", "paused_user_active", {"mode": mode_cfg, "selected_game": selected_game_cfg})
                 logger.info("[MINER] User is currently using Twitch. Pausing miner to ensure ONLY 1 viewing of Twitch.")
                 save_miner_status({
@@ -839,7 +852,7 @@ class DropsMiner:
         self.last_config_sig = cycle_sig
 
         if not eligible_campaigns:
-            self.browser_watcher.stop()
+            self._stop_watchers()
             if mode_cfg == "stopped":
                 msg = "Miner is stopped. Twitch stream viewing is completely turned off."
             elif mode_cfg == "selective" and queue_cfg:
@@ -962,7 +975,7 @@ class DropsMiner:
                 break
 
         if not chosen_campaign or not channel:
-            self.browser_watcher.stop()
+            self._stop_watchers()
             first_camp = eligible_campaigns[0]
             game_name = extract_game_name(first_camp, "Unknown")
             camp_name = first_camp.get("name", game_name)
@@ -1014,6 +1027,16 @@ class DropsMiner:
             logger.info("[MINER] Browser watcher state for @%s: %s", channel["channel_login"], bw_state.get("status"))
         browser_active = self.browser_watcher.is_watching(channel["channel_login"])
 
+        # Maintain real viewer presence on Twitch PubSub WebSocket (video-playback-by-id)
+        try:
+            self.pubsub_watcher.start(
+                channel["channel_id"],
+                channel_login=channel["channel_login"],
+                auth_token=self.client.auth_token,
+            )
+        except Exception as err:
+            logger.debug("[MINER] PubSub watcher start error: %s", err)
+
         presence_info = self.client.get_user_presence_info()
         user_active = bool(presence_info.get("is_active"))
         presence_conflict = bool(user_active and not browser_active)
@@ -1051,6 +1074,7 @@ class DropsMiner:
             "conflict_warning": conflict_msg,
             "browser_active": browser_active,
             "browser_watcher": self.browser_watcher.last_state,
+            "pubsub_connected": self.pubsub_watcher.is_connected(),
             "game": game_name,
             "game_cover_url": chosen_campaign.get("cover_url") or "",
             "selected_game": selected_game_cfg or game_name,
@@ -1121,7 +1145,7 @@ class DropsMiner:
                 )
 
             if pause_when_user_active and presence_conflict:
-                self.browser_watcher.stop()
+                self._stop_watchers()
                 log_event("MINER_LOOP", "paused_user_active_mid_stream", {"channel": channel["channel_login"], "game": game_name})
                 logger.info("[MINER] User started using Twitch. Stopping stream viewing immediately to ensure ONLY 1 viewing.")
                 save_miner_status({
@@ -1159,7 +1183,7 @@ class DropsMiner:
             # (headless Chromium keepalive + HTTP Spade + GQL SendEvents + HLS chunk slice + DropCurrentSessionContext)
             for _step in range(3):
                 if self._interruptible_sleep(random.uniform(19.0, 20.0), cycle_sig):
-                    self.browser_watcher.stop()
+                    self._stop_watchers()
                     self._handle_mid_cycle_swap(channel["channel_name"], game_name)
                     return
                 if self.browser_watcher.is_available():
@@ -1191,7 +1215,7 @@ class DropsMiner:
 
             # Check if all drops for this campaign/game are now completed!
             if not live_drop_info or not live_drop_info.get("current_drop_required"):
-                self.browser_watcher.stop()
+                self._stop_watchers()
                 log_event("MINER_LOOP", "campaign_completed", {"game": game_name, "campaign": camp_name})
                 logger.info(
                     "[MINER] All watch-time drops for '%s' (%s) are now completed! Advancing queue and swapping immediately...",
@@ -1223,7 +1247,7 @@ class DropsMiner:
                     game_name=game_name,
                 )
                 if not is_avail:
-                    self.browser_watcher.stop()
+                    self._stop_watchers()
                     log_event("MINER_LOOP", "stream_unavailable", {"channel": channel["channel_login"], "game": game_name, "reason": avail_reason}, level="WARNING")
                     logger.warning(
                         "[MINER] Mining check: stream or drops no longer available on %s (@%s) for '%s' (%s). "
@@ -1322,7 +1346,7 @@ class DropsMiner:
                             channel["channel_name"], channel["channel_login"], mins_stalled
                         )
                 elif mins_stalled >= (10 if is_preferred else stall_threshold):
-                    self.browser_watcher.stop()
+                    self._stop_watchers()
                     if is_preferred:
                         logger.warning(
                             "[MINER] User-selected channel %s (@%s) produced no drop progress after %dm. Clearing preferred channel and switching to another drops channel.",
@@ -1409,6 +1433,7 @@ class DropsMiner:
                 "conflict_warning": conflict_msg,
                 "browser_active": browser_active,
                 "browser_watcher": self.browser_watcher.last_state,
+                "pubsub_connected": self.pubsub_watcher.is_connected(),
                 "game": game_name,
                 "selected_game": selected_game_cfg or game_name,
                 "queue": queue_cfg,
@@ -1456,7 +1481,7 @@ class DropsMiner:
                 logger.warning("[MINER] Heartbeat returned non-204, verifying stream status...")
 
         # Completed full 1-hour (60-minute) cycle on this streamer: rotate to another drops-enabled channel!
-        self.browser_watcher.stop()
+        self._stop_watchers()
         log_event("MINER_LOOP", "cycle_rotation", {"channel": channel["channel_login"], "game": game_name, "minutes": self.stream_cycle_minutes})
         logger.info(
             "[MINER] Completed 1-hour watch cycle (%d/%d minutes) on %s (@%s) for '%s'. Rotating to next channel to keep drops active and fresh...",
@@ -1497,7 +1522,7 @@ class DropsMiner:
             log_event("MINER_LOOP", "signal_stop", {"signal": str(sig)})
             self.running = False
             self.current_stream = None
-            self.browser_watcher.stop()
+            self._stop_watchers()
             release_pid_lock()
             save_miner_status({
                 "active": False,

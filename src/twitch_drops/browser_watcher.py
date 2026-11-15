@@ -237,6 +237,8 @@ _PLAYER_MAINTAIN_JS = r"""
     '[data-a-target="content-classification-gate-overlay-start-watching-button"]',
     '[data-a-target="player-overlay-mature-accept"]',
     'button[data-a-target="consent-banner-accept"]',
+    '#consent-banner button',
+    '.consent-banner button',
     '[data-a-target="player-overlay-content-gate"] button'
   ];
   for (const sel of selectors) {
@@ -282,6 +284,13 @@ _PLAYER_MAINTAIN_JS = r"""
     res.muted = Boolean(video.muted);
     res.width = Number(video.videoWidth || 0);
     res.height = Number(video.videoHeight || 0);
+    if (video.error) {
+      res.videoError = { code: Number(video.error.code || 0), message: String(video.error.message || "") };
+    }
+  } else {
+    res.videoError = null;
+    const iframes = Array.from(document.querySelectorAll("iframe"));
+    if (iframes.length) res.iframeCount = iframes.length;
   }
   return res;
 })()
@@ -508,6 +517,17 @@ class HeadlessBrowserWatcher:
                 state = self.tick(clean_login, auth_token=auth_token, device_id=device_id)
                 if state.get("video_found"):
                     break
+            if not state.get("video_found"):
+                embed_url = f"https://player.twitch.tv/?channel={clean_login}&parent=twitch.tv&muted=true"
+                try:
+                    logger.info("[BROWSER] Standard page did not mount video; testing embedded player fallback: %s", embed_url)
+                    self.cdp.call("Page.navigate", {"url": embed_url}, timeout=10.0)
+                    time.sleep(3.0)
+                    embed_state = self.tick(clean_login, auth_token=auth_token, device_id=device_id)
+                    if embed_state.get("video_found"):
+                        state = embed_state
+                except Exception:
+                    pass
             state["frame_id"] = nav_res.get("frameId", "")
             logger.info(
                 "[BROWSER] Headless Chromium opened %s (pid=%s, logged_in=%s, video=%s)",

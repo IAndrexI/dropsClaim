@@ -2713,9 +2713,12 @@ class TwitchClient:
 
     def touch_stream_chunk(self, sub_playlist_url: str, channel_login: str = "") -> bool:
         """
-        Perform an authentic lightweight Range GET request against the latest stream video segment.
-        Also fires any player-session X-TV-TWITCH-TRIGGER-URL beacons and downloads a tiny 1KB slice
-        so Twitch's CDN and video edge log active media streaming without bandwidth.
+        Simulate authentic browser media player playback on Twitch's CDN and video edge:
+        1. Fetch the active HLS sub-playlist (variant chunklist),
+        2. Fire all player trigger beacons (X-TV-TWITCH-TRIGGER-URL),
+        3. Iterate through available stream segment chunks and issue lightweight HEAD requests
+           (DevilXD protocol) to signal active segment consumption without streaming bandwidth,
+        4. Download a tiny 1KB media slice on the latest chunk to register CDN ingress.
         """
         if not sub_playlist_url:
             return False
@@ -2725,6 +2728,7 @@ class TwitchClient:
                 sub_playlist_url,
                 headers={
                     "User-Agent": self.user_agent,
+                    "Client-Id": self.client_id,
                     "Origin": "https://www.twitch.tv",
                     "Referer": ch_ref,
                     "Connection": "close",
@@ -2760,26 +2764,58 @@ class TwitchClient:
 
             chunks = [line.strip() for line in data.splitlines() if line.strip().startswith("https://")]
             if chunks:
+                touched_head = 0
+                for chunk_url in chunks:
+                    try:
+                        h_req = urllib.request.Request(
+                            chunk_url,
+                            headers={
+                                "User-Agent": self.user_agent,
+                                "Referer": ch_ref,
+                                "Origin": "https://www.twitch.tv",
+                                "Connection": "close",
+                            },
+                            method="HEAD",
+                        )
+                        with urllib.request.urlopen(h_req, timeout=4) as h_resp:
+                            if h_resp.status in (200, 204, 206):
+                                touched_head += 1
+                    except Exception:
+                        pass
+
                 latest_chunk = chunks[-1]
-                r_req = urllib.request.Request(
-                    latest_chunk,
-                    headers={
-                        "User-Agent": self.user_agent,
-                        "Range": "bytes=0-1023",
-                        "Connection": "close",
-                        "Referer": ch_ref,
-                        "Origin": "https://www.twitch.tv",
-                    }
-                )
-                with urllib.request.urlopen(r_req, timeout=6) as r_resp:
-                    r_resp.read(1024)
-                    ok = r_resp.status in (200, 204, 206)
-                    log_event(
-                        "TWITCH_HLS",
-                        "touch_stream_chunk",
-                        {"channel": channel_login, "status": r_resp.status, "triggers_fired": triggers_fired, "ok": ok},
+                slice_ok = False
+                try:
+                    r_req = urllib.request.Request(
+                        latest_chunk,
+                        headers={
+                            "User-Agent": self.user_agent,
+                            "Range": "bytes=0-1023",
+                            "Connection": "close",
+                            "Referer": ch_ref,
+                            "Origin": "https://www.twitch.tv",
+                        }
                     )
-                    return ok
+                    with urllib.request.urlopen(r_req, timeout=6) as r_resp:
+                        r_resp.read(1024)
+                        slice_ok = r_resp.status in (200, 204, 206)
+                except Exception:
+                    pass
+
+                ok = (touched_head > 0) or slice_ok
+                log_event(
+                    "TWITCH_HLS",
+                    "touch_stream_chunk",
+                    {
+                        "channel": channel_login,
+                        "head_chunks_touched": touched_head,
+                        "total_chunks": len(chunks),
+                        "slice_ok": slice_ok,
+                        "triggers_fired": triggers_fired,
+                        "ok": ok,
+                    },
+                )
+                return ok
         except Exception as e:
             logger.debug("Stream chunk touch error: %s", e)
             log_event("TWITCH_HLS", "touch_stream_chunk_error", {"channel": channel_login, "error": str(e)}, level="WARNING")
@@ -3096,10 +3132,41 @@ class TwitchClient:
     ) -> bool:
         """
         Send minute-watched telemetry to https://spade.twitch.tv/track (and resolved Spade URL)
-        with both the TwitchDropsMiner payload schema and minimal 4-key fallback.
-        Always hits every candidate tracking endpoint rather than breaking early.
+        with authenticated user credentials (OAuth, Client-Id, Device-Id, Session-Id) and both
+        the DevilXD protocol schema and Twilight fallback schema.
         """
-        payload = self._build_minute_watched_payload(
+        uid_val: Any = str(self.user_id) if self.user_id else 0
+        if isinstance(uid_val, str) and uid_val.isdigit():
+            uid_val = int(uid_val)
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        if "+00:00" in now_iso:
+            now_iso = now_iso.replace("+00:00", "Z")
+        elif not now_iso.endswith("Z"):
+            now_iso += "Z"
+
+        devilxd_payload = [
+            {
+                "event": "minute-watched",
+                "properties": {
+                    "broadcast_id": str(broadcast_id),
+                    "channel_id": str(channel_id),
+                    "channel": str(channel_login or ""),
+                    "client_time": now_iso,
+                    "game": str(game_name or ""),
+                    "game_id": str(game_id or ""),
+                    "hidden": False,
+                    "is_live": True,
+                    "live": True,
+                    "logged_in": bool(uid_val),
+                    "minutes_logged": max(1, int(minutes_logged or 1)),
+                    "muted": False,
+                    "user_id": uid_val,
+                },
+            }
+        ]
+
+        full_payload = self._build_minute_watched_payload(
             channel_id=str(channel_id),
             stream_id=str(broadcast_id),
             channel_login=str(channel_login or ""),
@@ -3107,17 +3174,22 @@ class TwitchClient:
             game_id=str(game_id or ""),
             minutes_logged=minutes_logged,
         )
-        raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-        b64_payload = base64.b64encode(raw).decode("utf-8")
-        body = urllib.parse.urlencode({"data": b64_payload}).encode("utf-8")
+
         ch_referer = f"https://www.twitch.tv/{channel_login}" if channel_login else "https://www.twitch.tv/"
         headers = {
             "User-Agent": self.user_agent,
+            "Client-Id": self.client_id,
             "Content-Type": "application/x-www-form-urlencoded",
             "Accept": "*/*",
             "Origin": "https://www.twitch.tv",
             "Referer": ch_referer,
         }
+        if self.auth_token:
+            headers["Authorization"] = f"OAuth {self.auth_token}"
+        if getattr(self, "device_id", None):
+            headers["X-Device-Id"] = self.device_id
+        if getattr(self, "session_id", None):
+            headers["Client-Session-Id"] = self.session_id
 
         spade_url = self.get_spade_url(channel_login)
         candidate_urls = [SPADE_URL]
@@ -3127,21 +3199,33 @@ class TwitchClient:
 
         ok = False
         statuses: Dict[str, Any] = {}
-        for url in candidate_urls:
-            try:
-                req = urllib.request.Request(url, data=body, headers=headers, method="POST")
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    statuses[url] = resp.status
-                    if resp.status in (200, 204):
-                        ok = True
-            except Exception as err:
-                statuses[url] = f"ERR:{err}"
-                logger.debug("send_spade_watch error on %s: %s", url, err)
+        for p_idx, payload_variant in enumerate((devilxd_payload, full_payload)):
+            schema_label = "devilxd" if p_idx == 0 else "full"
+            raw = json.dumps(payload_variant, separators=(",", ":")).encode("utf-8")
+            b64_payload = base64.b64encode(raw).decode("utf-8")
+            body = urllib.parse.urlencode({"data": b64_payload}).encode("utf-8")
+            for url in candidate_urls:
+                try:
+                    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+                    with urllib.request.urlopen(req, timeout=10) as resp:
+                        statuses[f"{url}#{schema_label}"] = resp.status
+                        if resp.status in (200, 204):
+                            ok = True
+                except Exception as err:
+                    statuses[f"{url}#{schema_label}"] = f"ERR:{err}"
+                    logger.debug("send_spade_watch error on %s: %s", url, err)
+            if ok:
+                break
 
         log_event(
             "TWITCH_SPADE",
             "http_spade_watch",
-            {"channel": channel_login or channel_id, "statuses": statuses, "ok": ok},
+            {
+                "channel": channel_login or channel_id,
+                "has_auth": bool(self.auth_token),
+                "statuses": statuses,
+                "ok": ok,
+            },
         )
         return ok
 
