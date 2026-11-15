@@ -709,9 +709,13 @@ class TwitchClient:
         import uuid
         self.session_id: str = uuid.uuid4().hex[:16]
         self.device_id: str = uuid.uuid4().hex[:32]
-        self.cookies["unique_id"] = self.device_id
         try:
             stored = load_token()
+            if stored:
+                if stored.get("device_id"):
+                    self.device_id = str(stored["device_id"])
+                elif stored.get("unique_id"):
+                    self.device_id = str(stored["unique_id"])
             if stored and clean_auth_token(stored.get("access_token", "")) == self.auth_token:
                 if stored.get("user_id"):
                     self.user_id = str(stored["user_id"])
@@ -725,6 +729,7 @@ class TwitchClient:
                     self.user_login = str(v_info["login"])
         except Exception:
             pass
+        self.cookies["unique_id"] = self.device_id
 
     def get_client_integrity_token(self, force_refresh: bool = False) -> str:
         """
@@ -3152,7 +3157,9 @@ class TwitchClient:
                     "broadcast_id": str(broadcast_id),
                     "channel_id": str(channel_id),
                     "channel": str(channel_login or ""),
+                    "client_session_id": getattr(self, "session_id", ""),
                     "client_time": now_iso,
+                    "device_id": getattr(self, "device_id", ""),
                     "game": str(game_name or ""),
                     "game_id": str(game_id or ""),
                     "hidden": False,
@@ -3186,10 +3193,16 @@ class TwitchClient:
         }
         if self.auth_token:
             headers["Authorization"] = f"OAuth {self.auth_token}"
+            integrity_tok = self.get_client_integrity_token()
+            if integrity_tok:
+                headers["Client-Integrity"] = integrity_tok
         if getattr(self, "device_id", None):
             headers["X-Device-Id"] = self.device_id
         if getattr(self, "session_id", None):
             headers["Client-Session-Id"] = self.session_id
+        cookie_hdr = self._build_cookie_header()
+        if cookie_hdr:
+            headers["Cookie"] = cookie_hdr
 
         spade_url = self.get_spade_url(channel_login)
         candidate_urls = [SPADE_URL]
@@ -3199,8 +3212,8 @@ class TwitchClient:
 
         ok = False
         statuses: Dict[str, Any] = {}
-        for p_idx, payload_variant in enumerate((devilxd_payload, full_payload)):
-            schema_label = "devilxd" if p_idx == 0 else "full"
+        for p_idx, payload_variant in enumerate((full_payload, devilxd_payload)):
+            schema_label = "full" if p_idx == 0 else "devilxd"
             raw = json.dumps(payload_variant, separators=(",", ":")).encode("utf-8")
             b64_payload = base64.b64encode(raw).decode("utf-8")
             body = urllib.parse.urlencode({"data": b64_payload}).encode("utf-8")
@@ -3208,6 +3221,7 @@ class TwitchClient:
                 try:
                     req = urllib.request.Request(url, data=body, headers=headers, method="POST")
                     with urllib.request.urlopen(req, timeout=10) as resp:
+                        self._capture_response_cookies(resp)
                         statuses[f"{url}#{schema_label}"] = resp.status
                         if resp.status in (200, 204):
                             ok = True

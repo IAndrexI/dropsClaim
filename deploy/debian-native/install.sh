@@ -28,6 +28,8 @@ apt-get install -y --no-install-recommends \
     npm \
     chromium \
     chromium-sandbox \
+    chromium-codecs-ffmpeg-extra \
+    alsa-utils \
     ca-certificates \
     curl \
     git

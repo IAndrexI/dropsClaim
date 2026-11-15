@@ -28,6 +28,8 @@ apk add --no-cache \
     chromium \
     ffmpeg \
     gst-plugins-good \
+    alsa-lib \
+    alsa-utils \
     nss \
     freetype \
     harfbuzz \

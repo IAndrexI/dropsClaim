@@ -1205,6 +1205,84 @@ class MiningQueueAndSwapTests(unittest.TestCase):
             self.assertEqual(len(miner_inst.failed_claim_ids), 0)
             self.assertEqual(len(miner_inst.failed_claim_counts), 0)
 
+    def test_send_spade_watch_injects_integrity_cookie_and_full_payload(self):
+        client = t_api.TwitchClient("oauth_secret_token_123")
+        client.user_id = "998877"
+        client.device_id = "test_device_id_abc"
+        client.session_id = "test_session_id_xyz"
+        client._integrity_token = "test_paseto_token_123"
+        client._integrity_expiration = int(time.time() * 1000) + 3600000
+        client.cookies["unique_id"] = "test_unique_id_cookie"
+
+        captured_requests = []
+
+        def fake_urlopen(req, timeout=None):
+            captured_requests.append({
+                "url": req.get_full_url(),
+                "headers": dict(req.headers),
+                "data": req.data.decode("utf-8") if req.data else "",
+            })
+            resp = mock.MagicMock()
+            resp.status = 204
+            resp.info.return_value.get_all.return_value = []
+            cm = mock.MagicMock()
+            cm.__enter__.return_value = resp
+            cm.__exit__.return_value = False
+            return cm
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            ok = client.send_spade_watch(
+                channel_id="112233",
+                broadcast_id="99887766",
+                channel_login="teststreamer",
+                game_name="WARDOGS",
+                game_id="743893402",
+                minutes_logged=1,
+            )
+
+        self.assertTrue(ok)
+        spade_reqs = [r for r in captured_requests if "spade" in r["url"] or "track" in r["url"]]
+        self.assertTrue(len(spade_reqs) >= 1)
+        req = spade_reqs[0]
+        hdrs = {k.lower(): v for k, v in req["headers"].items()}
+        self.assertEqual(hdrs.get("client-integrity"), "test_paseto_token_123")
+        self.assertIn("unique_id=test_unique_id_cookie", hdrs.get("cookie", ""))
+        self.assertIn("data=", req["data"])
+
+        # Decode base64 payload to verify full_payload prioritization
+        import base64
+        import urllib.parse
+        parsed_body = urllib.parse.parse_qs(req["data"])
+        b64_str = parsed_body["data"][0]
+        payload = json.loads(base64.b64decode(b64_str).decode("utf-8"))
+        self.assertIsInstance(payload, list)
+        self.assertEqual(payload[0]["event"], "minute-watched")
+        props = payload[0]["properties"]
+        self.assertEqual(props.get("player"), "site")
+        self.assertEqual(props.get("location"), "channel")
+        self.assertEqual(props.get("quality"), "chunked")
+
+    def test_browser_watcher_network_telemetry_and_stall_tracking(self):
+        bw = m.HeadlessBrowserWatcher()
+        self.assertEqual(bw.spade_requests_count, 0)
+        self.assertEqual(bw.hls_segments_count, 0)
+
+        # Feed CDP network events through _on_cdp_event handler
+        bw._on_cdp_event("Network.requestWillBeSent", {
+            "request": {"url": "https://spade.twitch.tv/track?client_id=kimne78kx3ncx6brgo4mv6wki5h1ko"}
+        })
+        self.assertEqual(bw.spade_requests_count, 1)
+
+        bw._on_cdp_event("Network.responseReceived", {
+            "response": {"url": "https://spade.twitch.tv/track", "status": 204}
+        })
+        self.assertEqual(bw.last_spade_status, 204)
+
+        bw._on_cdp_event("Network.requestWillBeSent", {
+            "request": {"url": "https://video-weaver.syd02.hls.ttvnw.net/v1/segment/12345.ts"}
+        })
+        self.assertEqual(bw.hls_segments_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

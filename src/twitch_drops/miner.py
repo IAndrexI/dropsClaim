@@ -168,9 +168,9 @@ class DropsMiner:
             env_cycle_mins = 60
         self.stream_cycle_minutes: int = max(5, min(180, env_cycle_mins))
         try:
-            env_check_mins = int(os.environ.get("TWITCH_PROGRESS_CHECK_MINS", "5"))
+            env_check_mins = int(os.environ.get("TWITCH_PROGRESS_CHECK_MINS", "8"))
         except Exception:
-            env_check_mins = 5
+            env_check_mins = 8
         self.progress_check_minutes: int = max(2, min(30, env_check_mins))
         self.browser_watcher = HeadlessBrowserWatcher()
         self.pubsub_watcher = TwitchPubSubWatcher(user_agent=getattr(self.client, "user_agent", None))
@@ -431,7 +431,7 @@ class DropsMiner:
                 for drop in camp.get("timeBasedDrops", []):
                     self_data = drop.get("self") or {}
                     is_claimed = bool(self_data.get("isClaimed", False))
-                    drop_id = self_data.get("dropInstanceID") or self_data.get("dropInstanceId")
+                    drop_id = self_data.get("dropInstanceID") or self_data.get("dropInstanceId") or drop.get("id")
                     watched = int(self_data.get("currentMinutesWatched") or 0)
                     required = int(drop.get("requiredMinutesWatched") or 0)
                     drop_end = str(drop.get("endAt") or camp_end)
@@ -1363,6 +1363,42 @@ class DropsMiner:
                             channel["channel_name"], channel["channel_login"], mins_stalled
                         )
                 elif mins_stalled >= (10 if is_preferred else stall_threshold):
+                    # Cache-busted inventory refresh before declaring stall to prevent false positives from edge cache delay
+                    try:
+                        fresh_inv = self.client.get_inventory()
+                        if fresh_inv:
+                            self.last_inventory = fresh_inv
+                        fresh_sess = self.client.get_drop_current_session(channel["channel_id"], channel["channel_login"])
+                        if fresh_sess:
+                            session_ctx = fresh_sess
+                        fresh_drop_info = self._get_live_drop_progress(
+                            game_name, camp_name, fallback_camp=chosen_campaign, session_ctx=session_ctx
+                        )
+                        fresh_watched = self._get_campaign_total_watched(
+                            game_name,
+                            camp_name,
+                            fallback_camp=chosen_campaign,
+                            live_drop_info=fresh_drop_info,
+                            session_ctx=session_ctx,
+                        )
+                        fresh_global = self._get_global_watched_total(session_ctx)
+                        if fresh_watched > baseline_watched or (fresh_global - baseline_global) > 0:
+                            current_watched = max(current_watched, fresh_watched)
+                            gained = current_watched - baseline_watched if current_watched > baseline_watched else 1
+                            baseline_watched = max(baseline_watched, current_watched)
+                            baseline_global = max(baseline_global, fresh_global)
+                            last_progress_minute = minute + 1
+                            progress_verified = True
+                            self.campaign_stall_counts[game_name.lower()] = 0
+                            self.stalled_campaigns.pop(game_name.lower(), None)
+                            logger.info(
+                                "[MINER] Drop progress verified on fresh retry for %s (@%s) for '%s' (+%dm watched, now %dm total).",
+                                channel["channel_name"], channel["channel_login"], game_name, gained, current_watched
+                            )
+                            continue
+                    except Exception as retry_err:
+                        logger.debug("Stall verification retry error: %s", retry_err)
+
                     self._stop_watchers()
                     if is_preferred:
                         logger.warning(

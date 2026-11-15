@@ -75,7 +75,7 @@ def _pick_free_port() -> int:
 class _CDPWebSocket:
     """Minimal RFC 6455 stdlib WebSocket client for Chrome DevTools Protocol on 127.0.0.1."""
 
-    def __init__(self, ws_url: str, timeout: float = 8.0):
+    def __init__(self, ws_url: str, timeout: float = 8.0, on_event: Optional[Any] = None):
         parsed = urllib.parse.urlparse(ws_url)
         host = parsed.hostname or "127.0.0.1"
         port = int(parsed.port or 80)
@@ -85,6 +85,7 @@ class _CDPWebSocket:
 
         self.sock = socket.create_connection((host, port), timeout=timeout)
         self.sock.settimeout(timeout)
+        self.on_event = on_event
         self._buf = bytearray()
         self._next_id = 1
 
@@ -172,6 +173,31 @@ class _CDPWebSocket:
                 if fin:
                     return b"".join(fragments).decode("utf-8", errors="ignore")
 
+    def drain_events(self, timeout: float = 0.05) -> None:
+        """Poll and dispatch any pending CDP event frames without blocking."""
+        orig_timeout = self.sock.gettimeout()
+        self.sock.settimeout(timeout)
+        try:
+            while True:
+                raw = self._recv_message()
+                if not raw:
+                    break
+                try:
+                    resp = json.loads(raw)
+                    if "method" in resp and callable(self.on_event):
+                        self.on_event(resp["method"], resp.get("params") or {})
+                except Exception:
+                    pass
+        except (socket.timeout, TimeoutError, BlockingIOError, ConnectionError):
+            pass
+        except Exception:
+            pass
+        finally:
+            try:
+                self.sock.settimeout(orig_timeout)
+            except Exception:
+                pass
+
     def call(self, method: str, params: Optional[Dict[str, Any]] = None, timeout: float = 8.0) -> Dict[str, Any]:
         req_id = self._next_id
         self._next_id += 1
@@ -188,6 +214,11 @@ class _CDPWebSocket:
                 resp = json.loads(raw)
             except Exception:
                 continue
+            if "method" in resp and callable(self.on_event):
+                try:
+                    self.on_event(resp["method"], resp.get("params") or {})
+                except Exception:
+                    pass
             if resp.get("id") == req_id:
                 if "error" in resp:
                     raise RuntimeError(f"CDP {method} error: {resp['error']}")
@@ -217,7 +248,8 @@ _PLAYER_MAINTAIN_JS = r"""
     width: 0,
     height: 0,
     gateClicked: [],
-    loggedInUser: ""
+    loggedInUser: "",
+    videoError: null,
   };
   try {
     const m = document.cookie.match(/(?:^|;\s*)twilight-user=([^;]+)/);
@@ -228,26 +260,39 @@ _PLAYER_MAINTAIN_JS = r"""
   } catch (e) {}
 
   try {
-    if (document.hidden) {
-      Object.defineProperty(document, 'hidden', { get: () => false, configurable: true });
-      Object.defineProperty(document, 'visibilityState', { get: () => 'visible', configurable: true });
-      window.dispatchEvent(new Event('visibilitychange'));
-    }
-    localStorage.setItem("mature", "true");
-    localStorage.setItem("video-muted", JSON.stringify({ default: true }));
-    localStorage.setItem("video-quality", JSON.stringify({ default: "160p30" }));
-    localStorage.setItem("volume", "0");
-    localStorage.setItem("muted", "true");
-    localStorage.setItem("low-latency", "false");
+    Object.defineProperty(Document.prototype, 'visibilityState', { get: () => 'visible', configurable: true });
+    Object.defineProperty(Document.prototype, 'hidden', { get: () => false, configurable: true });
+    Object.defineProperty(document, 'visibilityState', { get: () => 'visible', configurable: true });
+    Object.defineProperty(document, 'hidden', { get: () => false, configurable: true });
+    Document.prototype.hasFocus = () => true;
+    document.hasFocus = () => true;
+    document.dispatchEvent(new Event('visibilitychange'));
+    window.dispatchEvent(new Event('visibilitychange'));
   } catch (e) {}
+
+  function clickEl(el) {
+    if (!el) return false;
+    try {
+      el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: window }));
+      el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
+      el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
+      el.click();
+      return true;
+    } catch (e) {
+      try { el.click(); return true; } catch (e2) {}
+    }
+    return false;
+  }
 
   const selectors = [
     '#onetrust-accept-btn-handler',
     '#accept-recommended-btn-handler',
     '#onetrust-banner-sdk button',
     '.onetrust-close-btn-handler',
+    'button[data-a-target="content-classification-gate-overlay-start-watching-button"]',
     '[data-a-target="content-classification-gate-overlay-start-watching-button"]',
     '[data-test-selector="content-classification-gate-overlay-start-watching-button"]',
+    'button[data-a-target="player-overlay-mature-accept"]',
     '[data-a-target="player-overlay-mature-accept"]',
     'button[data-a-target="consent-banner-accept"]',
     '#consent-banner button',
@@ -261,21 +306,17 @@ _PLAYER_MAINTAIN_JS = r"""
   ];
   for (const sel of selectors) {
     const btn = document.querySelector(sel);
-    if (btn && typeof btn.click === "function") {
-      try {
-        btn.click();
-        res.gateClicked.push(sel);
-      } catch (e) {}
+    if (btn && clickEl(btn)) {
+      res.gateClicked.push(sel);
     }
   }
   if (!res.gateClicked.length) {
     for (const btn of document.querySelectorAll("button, div[role=\"button\"]")) {
       const txt = (btn.innerText || btn.textContent || "").trim().toLowerCase();
       if (txt === "start watching" || txt === "i am 18+" || txt === "accept" || txt === "agree" || txt === "accept cookies" || txt === "allow all" || txt === "claim" || txt === "claim now") {
-        try {
-          btn.click();
+        if (clickEl(btn)) {
           res.gateClicked.push("button:" + txt);
-        } catch (e) {}
+        }
       }
     }
   }
@@ -286,15 +327,20 @@ _PLAYER_MAINTAIN_JS = r"""
     res.videoFound = true;
     try { video.muted = true; } catch (e) {}
     try { video.volume = 0; } catch (e) {}
-    try {
-      if (video.paused) {
+    if (video.paused) {
+      try {
         const p = video.play();
         if (p && typeof p.catch === "function") p.catch(() => {});
-      }
-    } catch (e) {}
+      } catch (e) {}
+    }
     const playBtn = document.querySelector('[data-a-target="player-play-pause-button"]');
-    if (playBtn && video.paused) {
-      try { playBtn.click(); } catch (e) {}
+    if (playBtn) {
+      const stateAttr = (playBtn.getAttribute("data-a-player-state") || "").toLowerCase();
+      const label = (playBtn.getAttribute("aria-label") || "").toLowerCase();
+      // Only click play button if it unambiguously indicates paused state
+      if ((stateAttr === "paused" || label.includes("play")) && video.paused) {
+        try { clickEl(playBtn); } catch (e) {}
+      }
     }
     res.paused = Boolean(video.paused);
     res.readyState = Number(video.readyState || 0);
@@ -306,7 +352,6 @@ _PLAYER_MAINTAIN_JS = r"""
       res.videoError = { code: Number(video.error.code || 0), message: String(video.error.message || "") };
     }
   } else {
-    res.videoError = null;
     const iframes = Array.from(document.querySelectorAll("iframe"));
     if (iframes.length) res.iframeCount = iframes.length;
   }
@@ -332,12 +377,52 @@ class HeadlessBrowserWatcher:
         self._init_script_added: bool = False
         self._consecutive_tick_errors: int = 0
 
+        # CDP Network Inspection & Playback Progress Telemetry
+        self.spade_requests_count: int = 0
+        self.last_spade_req_time: float = 0.0
+        self.last_spade_url: str = ""
+        self.has_minute_watched_pings: bool = False
+        self.last_spade_status: Optional[int] = None
+        self.last_spade_resp_time: float = 0.0
+        self.hls_segments_count: int = 0
+        self.last_hls_time: float = 0.0
+        self.gql_requests_count: int = 0
+        self.last_gql_status: Optional[int] = None
+        self.last_video_current_time: float = -1.0
+        self.consecutive_stalled_ticks: int = 0
+
     def is_available(self) -> bool:
         self.chromium_bin = find_chromium_binary()
         return bool(self.chromium_bin)
 
     def _is_proc_alive(self) -> bool:
         return bool(self.proc is not None and self.proc.poll() is None)
+
+    def _on_cdp_event(self, method: str, params: Dict[str, Any]) -> None:
+        if method == "Network.requestWillBeSent":
+            req = params.get("request") or {}
+            url = str(req.get("url") or "")
+            if "spade.twitch.tv" in url or "/track" in url:
+                self.spade_requests_count += 1
+                self.last_spade_req_time = time.time()
+                self.last_spade_url = url
+                post_data = str(req.get("postData") or "")
+                if "minute-watched" in post_data:
+                    self.has_minute_watched_pings = True
+            elif ".m3u8" in url or ".ts" in url or "ttvnw.net" in url:
+                self.hls_segments_count += 1
+                self.last_hls_time = time.time()
+            elif "gql.twitch.tv" in url:
+                self.gql_requests_count += 1
+        elif method == "Network.responseReceived":
+            resp = params.get("response") or {}
+            url = str(resp.get("url") or "")
+            status = resp.get("status")
+            if "spade.twitch.tv" in url:
+                self.last_spade_status = int(status) if status else None
+                self.last_spade_resp_time = time.time()
+            elif "gql.twitch.tv" in url:
+                self.last_gql_status = int(status) if status else None
 
     def _ensure_browser_started(self, auth_token: str = "", device_id: str = "") -> bool:
         if not self.is_available():
@@ -365,12 +450,15 @@ class HeadlessBrowserWatcher:
             "--disable-setuid-sandbox",
             "--disable-dev-shm-usage",
             "--disable-gpu",
+            "--disable-audio-output",
             "--mute-audio",
             "--autoplay-policy=no-user-gesture-required",
             "--disable-blink-features=AutomationControlled",
             "--disable-background-timer-throttling",
             "--disable-backgrounding-occluded-windows",
             "--disable-renderer-backgrounding",
+            "--disable-features=CalculateNativeWinOcclusion,AudioServiceOutOfProcess",
+            "--force-color-profile=srgb",
             "--no-first-run",
             "--no-default-browser-check",
             "--disable-extensions",
@@ -434,11 +522,20 @@ class HeadlessBrowserWatcher:
             return False
 
         try:
-            self.cdp = _CDPWebSocket(ws_url, timeout=8.0)
+            self.cdp = _CDPWebSocket(ws_url, timeout=8.0, on_event=self._on_cdp_event)
             self.cdp.call("Network.enable")
             self.cdp.call("Page.enable")
             try:
                 self.cdp.call("Emulation.setFocusEmulationEnabled", {"enabled": True})
+            except Exception:
+                pass
+            try:
+                self.cdp.call("Emulation.setDeviceMetricsOverride", {
+                    "width": 1280,
+                    "height": 720,
+                    "deviceScaleFactor": 1,
+                    "mobile": False,
+                })
             except Exception:
                 pass
             try:
@@ -459,6 +556,8 @@ class HeadlessBrowserWatcher:
         user_login: str = "",
         user_id: str = "",
     ) -> None:
+        if auth_token:
+            self._last_auth_token = str(auth_token)
         if not self.cdp:
             return
         cookies_to_set: List[Dict[str, Any]] = [
@@ -550,21 +649,83 @@ class HeadlessBrowserWatcher:
                 logger.debug("Network.setCookie failed for %s: %s", ck["name"], err)
 
         if not self._init_script_added:
-            init_js = """
-            try {
-              Object.defineProperty(navigator, 'webdriver', { get: () => undefined, configurable: true });
-              if (window.navigator) {
-                try { delete Object.getPrototypeOf(navigator).webdriver; } catch (e) {}
-              }
-              Object.defineProperty(document, 'visibilityState', { get: () => 'visible', configurable: true });
-              Object.defineProperty(document, 'hidden', { get: () => false, configurable: true });
+            auth_val_json = json.dumps(str(auth_token or ""))
+            dev_val_json = json.dumps(str(device_id or ""))
+            login_val_json = json.dumps(str(user_login or ""))
+            uid_val_json = json.dumps(str(user_id or ""))
+            init_js = f"""
+            try {{
+              Object.defineProperty(navigator, 'webdriver', {{ get: () => undefined, configurable: true }});
+              if (window.navigator) {{
+                try {{ delete Object.getPrototypeOf(navigator).webdriver; }} catch (e) {{}}
+              }}
+              Object.defineProperty(Document.prototype, 'visibilityState', {{ get: () => 'visible', configurable: true }});
+              Object.defineProperty(Document.prototype, 'hidden', {{ get: () => false, configurable: true }});
+              Object.defineProperty(document, 'visibilityState', {{ get: () => 'visible', configurable: true }});
+              Object.defineProperty(document, 'hidden', {{ get: () => false, configurable: true }});
+              Document.prototype.hasFocus = () => true;
+              document.hasFocus = () => true;
+              document.dispatchEvent(new Event('visibilitychange'));
+              window.dispatchEvent(new Event('visibilitychange'));
+
               localStorage.setItem("mature", "true");
-              localStorage.setItem("video-muted", JSON.stringify({ default: true }));
-              localStorage.setItem("video-quality", JSON.stringify({ default: "160p30" }));
+              localStorage.setItem("video-muted", JSON.stringify({{ default: true }}));
+              localStorage.setItem("video-quality", JSON.stringify({{ default: "160p30" }}));
               localStorage.setItem("volume", "0");
               localStorage.setItem("muted", "true");
               localStorage.setItem("low-latency", "false");
-            } catch (e) {}
+
+              const aTok = {auth_val_json};
+              const dId = {dev_val_json};
+              const uLog = {login_val_json};
+              const uId = {uid_val_json};
+              if (aTok) {{
+                localStorage.setItem("auth-token", aTok);
+                localStorage.setItem("api_token", aTok);
+              }}
+              if (dId) {{
+                localStorage.setItem("unique_id", dId);
+                localStorage.setItem("client_session_id", dId);
+              }}
+              if (uLog && uId) {{
+                localStorage.setItem("twilight.user", JSON.stringify({{ id: uId, login: uLog, displayName: uLog }}));
+              }}
+
+              const dismissGates = () => {{
+                const sels = [
+                  'button[data-a-target="content-classification-gate-overlay-start-watching-button"]',
+                  '[data-a-target="content-classification-gate-overlay-start-watching-button"]',
+                  '[data-test-selector="content-classification-gate-overlay-start-watching-button"]',
+                  'button[data-a-target="player-overlay-mature-accept"]',
+                  '[data-a-target="player-overlay-mature-accept"]',
+                  'button[data-a-target="consent-banner-accept"]',
+                  '#onetrust-accept-btn-handler',
+                  '#accept-recommended-btn-handler',
+                  'button[data-testid="accept-cookies"]',
+                  '[data-test-selector="cookie-banner"] button',
+                  '[data-test-selector="community-points-summary-claim-button"]',
+                  'button[aria-label="Claim Bonus"]',
+                ];
+                for (const s of sels) {{
+                  const el = document.querySelector(s);
+                  if (el) {{
+                    try {{
+                      el.dispatchEvent(new MouseEvent('mouseover', {{ bubbles: true, cancelable: true, view: window }}));
+                      el.dispatchEvent(new MouseEvent('mousedown', {{ bubbles: true, cancelable: true, view: window }}));
+                      el.dispatchEvent(new MouseEvent('mouseup', {{ bubbles: true, cancelable: true, view: window }}));
+                      el.click();
+                    }} catch (e) {{}}
+                  }}
+                }}
+              }};
+              if (document.body) {{
+                new MutationObserver(dismissGates).observe(document.body, {{ childList: true, subtree: true }});
+              }} else {{
+                window.addEventListener('DOMContentLoaded', () => {{
+                  if (document.body) new MutationObserver(dismissGates).observe(document.body, {{ childList: true, subtree: true }});
+                }});
+              }}
+            }} catch (e) {{}}
             """
             try:
                 self.cdp.call("Page.addScriptToEvaluateOnNewDocument", {"source": init_js})
@@ -671,6 +832,13 @@ class HeadlessBrowserWatcher:
             return {"available": True, "running": False}
 
         try:
+            # Drain incoming CDP event frames to update network telemetry
+            if self.cdp:
+                try:
+                    self.cdp.drain_events()
+                except Exception:
+                    pass
+
             eval_res = self.cdp.call(
                 "Runtime.evaluate",
                 {"expression": _PLAYER_MAINTAIN_JS, "returnByValue": True},
@@ -684,20 +852,49 @@ class HeadlessBrowserWatcher:
                 self.current_channel = clean_login
 
             logged_in = str(val.get("loggedInUser") or "") or user_login
+            curr_time = float(val.get("currentTime") or 0.0)
+            vid_found = bool(val.get("videoFound"))
+            is_paused = bool(val.get("paused"))
+
+            if vid_found and not is_paused:
+                if self.last_video_current_time >= 0 and curr_time <= self.last_video_current_time:
+                    self.consecutive_stalled_ticks += 1
+                else:
+                    self.consecutive_stalled_ticks = 0
+                self.last_video_current_time = curr_time
+            else:
+                self.consecutive_stalled_ticks = 0
+
+            stalled = bool(self.consecutive_stalled_ticks >= 2)
+
             state = {
                 "available": True,
                 "running": True,
                 "pid": self.proc.pid if self.proc else 0,
                 "channel_login": clean_login,
                 "href": href or f"https://www.twitch.tv/{clean_login}",
-                "video_found": bool(val.get("videoFound")),
+                "video_found": vid_found,
                 "paused": val.get("paused"),
                 "ready_state": int(val.get("readyState") or 0),
-                "current_time": float(val.get("currentTime") or 0.0),
+                "current_time": curr_time,
                 "muted": val.get("muted"),
                 "resolution": f"{val.get('width', 0)}x{val.get('height', 0)}",
                 "gate_clicked": val.get("gateClicked") or [],
                 "logged_in_user": logged_in,
+                "playback_advancing": not stalled,
+                "stalled": stalled,
+                "stalled_ticks": self.consecutive_stalled_ticks,
+                "video_error": val.get("videoError"),
+                "network_telemetry": {
+                    "spade_requests": self.spade_requests_count,
+                    "last_spade_status": self.last_spade_status,
+                    "last_spade_time": self.last_spade_req_time,
+                    "has_minute_watched_pings": self.has_minute_watched_pings,
+                    "hls_segments_count": self.hls_segments_count,
+                    "last_hls_time": self.last_hls_time,
+                    "gql_requests": self.gql_requests_count,
+                    "last_gql_status": self.last_gql_status,
+                },
                 "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             }
             self.last_state = state
@@ -732,6 +929,7 @@ class HeadlessBrowserWatcher:
         query_or_hash: str,
         variables: Optional[Dict[str, Any]] = None,
         is_persisted: bool = True,
+        auth_token: str = "",
     ) -> Optional[Dict[str, Any]]:
         """
         Execute a GraphQL query/mutation directly inside the authenticated Chromium browser tab.
@@ -740,6 +938,9 @@ class HeadlessBrowserWatcher:
         if not self.is_available() or not self._is_proc_alive() or self.cdp is None:
             return None
 
+        tok = auth_token or getattr(self, "_last_auth_token", "")
+        tok_json = json.dumps(str(tok or ""))
+
         js_code = f"""
         (async () => {{
             try {{
@@ -747,6 +948,7 @@ class HeadlessBrowserWatcher:
                 const qOrHash = {json.dumps(query_or_hash)};
                 const vars = {json.dumps(variables or {})};
                 const isPersisted = {json.dumps(bool(is_persisted))};
+                const aTok = {tok_json};
                 const body = isPersisted ? {{
                     operationName: opName,
                     extensions: {{ persistedQuery: {{ version: 1, sha256Hash: qOrHash }} }},
@@ -756,12 +958,17 @@ class HeadlessBrowserWatcher:
                     query: qOrHash,
                     variables: vars
                 }};
+                const hdrs = {{
+                    'Client-Id': 'kimne78kx3ncx6brgo4mv6wki5h1ko',
+                    'Content-Type': 'application/json'
+                }};
+                if (aTok) {{
+                    hdrs['Authorization'] = 'OAuth ' + aTok;
+                }}
                 const resp = await fetch('https://gql.twitch.tv/gql', {{
                     method: 'POST',
-                    headers: {{
-                        'Client-Id': 'kimne78kx3ncx6brgo4mv6wki5h1ko',
-                        'Content-Type': 'application/json'
-                    }},
+                    headers: hdrs,
+                    credentials: 'include',
                     body: JSON.stringify(body)
                 }});
                 return await resp.json();
@@ -801,4 +1008,16 @@ class HeadlessBrowserWatcher:
             self.proc = None
         self.current_channel = ""
         self._init_script_added = False
+        self.spade_requests_count = 0
+        self.last_spade_req_time = 0.0
+        self.last_spade_url = ""
+        self.has_minute_watched_pings = False
+        self.last_spade_status = None
+        self.last_spade_resp_time = 0.0
+        self.hls_segments_count = 0
+        self.last_hls_time = 0.0
+        self.gql_requests_count = 0
+        self.last_gql_status = None
+        self.last_video_current_time = -1.0
+        self.consecutive_stalled_ticks = 0
         self.last_state = {"available": self.is_available(), "running": False}
