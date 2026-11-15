@@ -1,0 +1,17 @@
+# Ultra-lean, zero-telemetry Alpine container for Twitch Drops Miner
+FROM python:3.11-alpine
+
+WORKDIR /app
+
+# Non-root user for security isolation
+RUN adduser -D -u 1000 appuser && \
+    mkdir -p /app/data && \
+    chown -R appuser:appuser /app
+
+COPY --chown=appuser:appuser src/ /app/src/
+
+USER appuser
+
+ENV PYTHONUNBUFFERED=1
+
+CMD ["python", "-m", "src.twitch_drops.main", "--daemon"]

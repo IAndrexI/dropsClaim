@@ -1,0 +1,3526 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Loot Claimer Dashboard</title>
+  <link rel="manifest" href="/manifest.json">
+  <link rel="icon" type="image/svg+xml" href="/static/icons/icon.svg">
+  <link rel="icon" type="image/png" sizes="192x192" href="/static/icons/icon-192.png">
+  <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
+  <meta name="theme-color" content="#6366f1">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="AutoLoot">
+  <style>
+    :root {
+      --bg: #0b0f19;
+      --card-bg: #131b2e;
+      --card-border: #1e293b;
+      --card-hover: #26334d;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --accent-twitch: #9146ff;
+      --accent-epic: #0078f2;
+      --accent-amazon: #ff9900;
+      --accent-gog: #9e44c4;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --btn-bg: #1e293b;
+      --btn-hover: #334155;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { background-color: var(--bg); color: var(--text); padding: 24px; min-height: 100vh; }
+    .container { max-width: 1240px; margin: 0 auto; }
+    
+    /* Header */
+    header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; flex-wrap: wrap; gap: 16px; border-bottom: 1px solid var(--card-border); padding-bottom: 16px; }
+    .title-area h1 { font-size: 1.6rem; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+    .title-area p { color: var(--text-muted); font-size: 0.9rem; margin-top: 4px; }
+    .header-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .btn { background: var(--btn-bg); color: white; border: 1px solid #334155; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 0.85rem; font-weight: 500; transition: all 0.2s; display: inline-flex; align-items: center; gap: 6px; }
+    .btn:hover { background: var(--btn-hover); }
+    .btn-primary { background: var(--accent-twitch); border-color: var(--accent-twitch); }
+    .btn-primary:hover { background: #7c2cf1; }
+    .btn-success { background: #059669; border-color: #059669; }
+    .btn-success:hover { background: #047857; }
+    .btn-sm { padding: 4px 10px; font-size: 0.78rem; }
+    
+    /* Live Sync Badge & Pulse Dot */
+    .sync-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: #94a3b8;
+      background: rgba(30, 41, 59, 0.6);
+      padding: 5px 10px;
+      border-radius: 9999px;
+      border: 1px solid #334155;
+    }
+    .sync-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #22c55e;
+      display: inline-block;
+      box-shadow: 0 0 6px #22c55e;
+      transition: background 0.3s, box-shadow 0.3s;
+    }
+    .sync-dot.pulsing {
+      background: #38bdf8;
+      box-shadow: 0 0 8px #38bdf8;
+    }
+    
+    /* Status banner */
+    .status-bar { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 24px; }
+    .stat-card { background: var(--card-bg); border: 1px solid var(--card-border); padding: 16px; border-radius: 10px; display: flex; flex-direction: column; }
+    .stat-label { font-size: 0.75rem; text-transform: uppercase; color: var(--text-muted); font-weight: 600; letter-spacing: 0.05em; }
+    .stat-value { font-size: 1.25rem; font-weight: 700; margin-top: 4px; display: flex; align-items: center; gap: 6px; }
+    
+    /* Tabs */
+    .tabs { display: flex; gap: 8px; margin-bottom: 20px; border-bottom: 1px solid var(--card-border); padding-bottom: 8px; overflow-x: auto; }
+    .tab-btn { background: none; border: none; color: var(--text-muted); padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 0.95rem; font-weight: 600; white-space: nowrap; }
+    .tab-btn.active { color: white; background: #1e293b; }
+    
+    /* Grid & Cards */
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 16px; }
+    .card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 10px; padding: 18px; display: flex; flex-direction: column; justify-content: space-between; transition: transform 0.15s, border-color 0.15s; position: relative; }
+    .card:hover { border-color: #3b82f6; }
+    .card-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; gap: 8px; }
+    .store-tag { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; padding: 3px 8px; border-radius: 4px; }
+    .store-epic { background: rgba(0, 120, 242, 0.15); color: #60a5fa; border: 1px solid rgba(0, 120, 242, 0.3); }
+    .store-twitch { background: rgba(145, 70, 255, 0.15); color: #c084fc; border: 1px solid rgba(145, 70, 255, 0.3); }
+    .store-amazon { background: rgba(255, 153, 0, 0.15); color: #fbbf24; border: 1px solid rgba(255, 153, 0, 0.3); }
+    .store-gog { background: rgba(158, 68, 196, 0.15); color: #e879f9; border: 1px solid rgba(158, 68, 196, 0.3); }
+    
+    /* Badges */
+    .badge { font-size: 0.73rem; font-weight: 700; padding: 4px 10px; border-radius: 9999px; display: inline-flex; align-items: center; gap: 4px; }
+    .badge-claimed { background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.35); }
+    .badge-ready { background: rgba(245, 158, 11, 0.18); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4); animation: pulse 2s infinite; }
+    .badge-progress { background: rgba(59, 130, 246, 0.18); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.4); }
+    .badge-needs { background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.35); }
+    .badge-available { background: rgba(148, 163, 184, 0.15); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.3); }
+    .badge-unavailable { background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.35); }
+    .badge-upcoming { background: rgba(100, 116, 139, 0.15); color: #94a3b8; border: 1px solid rgba(100, 116, 139, 0.3); }
+    .badge-target { background: rgba(145, 70, 255, 0.2); color: #c084fc; border: 1px solid rgba(145, 70, 255, 0.4); }
+
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
+
+    .item-title { font-size: 1.15rem; font-weight: 600; margin-bottom: 4px; color: #f1f5f9; line-height: 1.3; }
+    .item-sub { font-size: 0.82rem; color: var(--text-muted); margin-bottom: 12px; }
+    .stat-sub { font-size: 0.74rem; color: var(--text-muted); margin-top: 3px; }
+    
+    /* Drops sub-list inside campaign card */
+    .drops-list { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; border-top: 1px solid #1e293b; padding-top: 12px; }
+    .drop-entry { background: #0c1322; border: 1px solid #1e293b; border-radius: 6px; padding: 10px 12px; transition: border-color 0.15s; }
+    .drop-entry.drop-claimed { border-color: rgba(16, 185, 129, 0.3); background: rgba(16, 185, 129, 0.04); }
+    .drop-entry.drop-in-progress { border-color: rgba(59, 130, 246, 0.45); background: rgba(59, 130, 246, 0.05); }
+    .drop-entry.drop-ready { border-color: rgba(245, 158, 11, 0.5); background: rgba(245, 158, 11, 0.06); }
+    .drop-entry.drop-unavailable { border-color: rgba(239, 68, 68, 0.3); background: rgba(239, 68, 68, 0.04); opacity: 0.92; }
+    .drop-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; gap: 8px; flex-wrap: wrap; }
+    .drop-title-wrap { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1; }
+    .drop-thumb { width: 36px; height: 36px; border-radius: 6px; object-fit: contain; background: #131b2e; border: 1px solid #1e293b; flex-shrink: 0; }
+    .drop-name { font-size: 0.88rem; font-weight: 600; color: #e2e8f0; word-break: break-word; }
+    .drop-unavail-reason { font-size: 0.76rem; color: #fca5a5; background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.25); border-radius: 4px; padding: 5px 8px; margin-top: 6px; }
+    
+    /* Progress bar */
+    .progress-box { margin-top: 6px; }
+    .progress-label { display: flex; justify-content: space-between; font-size: 0.72rem; color: var(--text-muted); margin-bottom: 4px; }
+    .progress-track { background: #1e293b; height: 7px; border-radius: 4px; overflow: hidden; }
+    .progress-fill { height: 100%; background: linear-gradient(90deg, #3b82f6, #9146ff); border-radius: 4px; transition: width 0.4s ease; }
+    .progress-fill.complete { background: #10b981; }
+    .progress-fill.unavailable { background: #ef4444; }
+
+    /* Collected Inventory Grid */
+    .collected-section { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 10px; padding: 18px; margin-bottom: 20px; grid-column: 1 / -1; }
+    .collected-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 10px; margin-top: 12px; max-height: 540px; overflow-y: auto; padding-right: 4px; }
+    .collected-item-card { display: flex; align-items: center; gap: 10px; background: #0c1322; border: 1px solid rgba(16, 185, 129, 0.25); border-radius: 8px; padding: 10px 12px; }
+    .collected-item-thumb { width: 44px; height: 44px; border-radius: 6px; object-fit: contain; background: #131b2e; border: 1px solid #1e293b; flex-shrink: 0; }
+    .collected-item-info { min-width: 0; flex: 1; }
+    .collected-item-name { font-size: 0.86rem; font-weight: 600; color: #f1f5f9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .collected-item-meta { font-size: 0.74rem; color: var(--text-muted); margin-top: 2px; display: flex; justify-content: space-between; gap: 6px; flex-wrap: wrap; }
+
+    /* Control banner for Twitch target selection */
+    .target-bar { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 10px; padding: 16px 20px; margin-bottom: 20px; display: flex; flex-direction: column; gap: 12px; }
+    .target-bar-top { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
+    .target-chips { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .chip { background: #1e293b; border: 1px solid #334155; padding: 4px 10px; border-radius: 16px; font-size: 0.78rem; display: inline-flex; align-items: center; gap: 6px; }
+    .chip.active { background: rgba(145, 70, 255, 0.25); border-color: #9146ff; color: #e9d5ff; font-weight: 600; }
+    .chip-remove { cursor: pointer; color: #94a3b8; font-weight: bold; }
+    .chip-remove:hover { color: #f87171; }
+
+    /* Filter pills */
+    .filter-group { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+    .filter-btn { background: #131b2e; border: 1px solid #1e293b; color: var(--text-muted); padding: 6px 12px; border-radius: 20px; font-size: 0.8rem; cursor: pointer; font-weight: 500; transition: all 0.15s; }
+    .filter-btn:hover { border-color: #475569; color: #e2e8f0; }
+    .filter-btn.active { background: #1e293b; border-color: #3b82f6; color: white; }
+
+    /* Account Manager forms */
+    .accounts-container { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 20px; }
+    .account-section { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 10px; padding: 20px; }
+    .account-section h3 { font-size: 1.05rem; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
+    .account-section p { font-size: 0.8rem; color: var(--text-muted); margin-bottom: 16px; }
+    .form-group { margin-bottom: 14px; }
+    .form-group label { display: block; font-size: 0.8rem; font-weight: 600; margin-bottom: 6px; color: var(--text-muted); }
+    .form-input { width: 100%; background: #0b0f19; border: 1px solid #1e293b; color: white; padding: 9px 12px; border-radius: 6px; font-size: 0.88rem; outline: none; transition: border-color 0.2s; }
+    .form-input:focus { border-color: #3b82f6; }
+    .form-row-actions { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; gap: 8px; }
+    
+    /* Logs view */
+    .log-container { background: #050811; border: 1px solid #1e293b; border-radius: 8px; padding: 14px; font-family: monospace; font-size: 0.8rem; color: #cbd5e1; max-height: 440px; overflow-y: auto; white-space: pre-wrap; line-height: 1.5; }
+    
+    .empty-state { text-align: center; padding: 48px 16px; color: var(--text-muted); grid-column: 1 / -1; }
+    
+    /* Quick Claim Links Bar */
+    .quick-links-bar { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; background: #101626; border: 1px solid var(--card-border); border-radius: 8px; padding: 10px 16px; align-items: center; font-size: 0.82rem; }
+    .quick-link-label { font-weight: 700; text-transform: uppercase; color: var(--text-muted); font-size: 0.72rem; letter-spacing: 0.05em; margin-right: 4px; }
+    .quick-link { color: #60a5fa; text-decoration: none; display: inline-flex; align-items: center; gap: 4px; font-weight: 500; transition: color 0.15s; }
+    .quick-link:hover { text-decoration: underline; color: #93c5fd; }
+    .quick-link.twitch { color: #c084fc; }
+    .quick-link.twitch:hover { color: #d8b4fe; }
+    .quick-link.amazon { color: #fbbf24; }
+    .quick-link.amazon:hover { color: #fde68a; }
+    .quick-link.gog { color: #e879f9; }
+    .quick-link.gog:hover { color: #f0abfc; }
+
+    /* Live Miner Telemetry Card */
+    .live-miner-banner { background: #131b2e; border: 1px solid #9146ff; border-radius: 10px; padding: 16px 20px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 14px; position: relative; }
+    .live-stream-badge { background: rgba(145, 70, 255, 0.2); border: 1px solid #9146ff; color: #d8b4fe; font-weight: 700; padding: 4px 10px; border-radius: 9999px; font-size: 0.75rem; display: inline-flex; align-items: center; gap: 6px; }
+    .live-indicator-dot { width: 8px; height: 8px; border-radius: 50%; background: #10b981; display: inline-block; box-shadow: 0 0 8px #10b981; animation: pulse 1.5s infinite; }
+    .live-indicator-dot.idle { background: #64748b; box-shadow: none; animation: none; }
+    .miner-details { display: flex; flex-direction: column; gap: 4px; }
+    .miner-title { font-size: 1.05rem; font-weight: 700; color: #f8fafc; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .miner-sub { font-size: 0.82rem; color: var(--text-muted); }
+    .miner-telemetry-stats { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; font-size: 0.8rem; color: #cbd5e1; }
+    .miner-stat-pill { background: #0c1322; border: 1px solid #1e293b; padding: 4px 10px; border-radius: 6px; }
+
+    /* Mode Switcher */
+    .mode-switch-box { background: #0c1322; border: 1px solid #1e293b; border-radius: 8px; padding: 3px; display: inline-flex; gap: 4px; }
+    .mode-btn { background: none; border: none; color: var(--text-muted); padding: 5px 12px; border-radius: 6px; cursor: pointer; font-size: 0.8rem; font-weight: 600; transition: all 0.2s; }
+    .mode-btn.active { background: #1e293b; color: white; border: 1px solid #3b82f6; }
+
+    /* Master Light Switch Toggle */
+    .master-switch-card {
+      background: linear-gradient(135deg, rgba(19, 27, 46, 0.95), rgba(15, 23, 42, 0.98));
+      border: 1px solid #334155;
+      border-radius: 12px;
+      padding: 14px 20px;
+      margin-bottom: 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 14px;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+    }
+    .master-switch-info { display: flex; align-items: center; gap: 14px; }
+    .master-switch-icon {
+      width: 42px;
+      height: 42px;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.3rem;
+      background: rgba(145, 70, 255, 0.15);
+      border: 1px solid rgba(145, 70, 255, 0.3);
+      color: #c084fc;
+      transition: all 0.3s ease;
+    }
+    .master-switch-card.disconnected .master-switch-icon {
+      background: rgba(239, 68, 68, 0.15);
+      border-color: rgba(239, 68, 68, 0.35);
+      color: #f87171;
+    }
+    .master-switch-text h3 { font-size: 1rem; font-weight: 700; margin-bottom: 2px; }
+    .master-switch-text p { font-size: 0.8rem; color: var(--text-muted); }
+    .master-switch-ctrl { display: flex; align-items: center; gap: 12px; }
+    .toggle-switch-label {
+      position: relative;
+      display: inline-block;
+      width: 58px;
+      height: 32px;
+      cursor: pointer;
+    }
+    .toggle-switch-label input { opacity: 0; width: 0; height: 0; }
+    .toggle-slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background-color: #334155;
+      transition: 0.25s;
+      border-radius: 34px;
+      border: 1px solid #475569;
+    }
+    .toggle-slider:before {
+      position: absolute;
+      content: "";
+      height: 22px;
+      width: 22px;
+      left: 4px;
+      bottom: 4px;
+      background-color: white;
+      transition: 0.25s;
+      border-radius: 50%;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.4);
+    }
+    .toggle-switch-label input:checked + .toggle-slider {
+      background-color: #10b981;
+      border-color: #059669;
+      box-shadow: 0 0 12px rgba(16, 185, 129, 0.4);
+    }
+    .toggle-switch-label input:checked + .toggle-slider:before {
+      transform: translateX(26px);
+    }
+    .toggle-state-pill {
+      font-size: 0.78rem;
+      font-weight: 700;
+      padding: 5px 12px;
+      border-radius: 20px;
+      letter-spacing: 0.04em;
+    }
+    .toggle-state-pill.online {
+      background: rgba(16, 185, 129, 0.15);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.35);
+    }
+    .toggle-state-pill.offline {
+      background: rgba(239, 68, 68, 0.15);
+      color: #f87171;
+      border: 1px solid rgba(239, 68, 68, 0.35);
+    }
+
+    /* Live Stream Mini-Viewer Component */
+    .mini-viewer-card {
+      background: #090d16;
+      border: 1px solid #1e293b;
+      border-radius: 10px;
+      margin-top: 14px;
+      width: 100%;
+      overflow: hidden;
+      display: none;
+      flex-direction: column;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+    }
+    .mini-viewer-header {
+      background: #0f172a;
+      padding: 8px 14px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid #1e293b;
+      font-size: 0.8rem;
+    }
+    .mini-viewer-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 600;
+      color: #cbd5e1;
+    }
+    .mini-viewer-frame-wrap {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      max-height: 380px;
+      background: #000;
+    }
+    .mini-viewer-frame-wrap iframe {
+      width: 100%;
+      height: 100%;
+      border: 0;
+    }
+    .mini-viewer-warn-overlay {
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(11, 15, 25, 0.94);
+      color: #f87171;
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      text-align: center;
+      gap: 10px;
+      z-index: 10;
+    }
+    .mini-viewer-warn-overlay p {
+      font-size: 0.82rem;
+      color: #cbd5e1;
+      max-width: 440px;
+      line-height: 1.5;
+    }
+
+    /* Campaign Cards with Image and Links */
+    .camp-card-body { display: flex; gap: 14px; }
+    .camp-cover { width: 62px; height: 84px; object-fit: cover; border-radius: 8px; border: 1px solid #334155; flex-shrink: 0; background: #0c1322; box-shadow: 0 4px 10px rgba(0, 0, 0, 0.35); }
+    .camp-cover-fallback { width: 62px; height: 84px; border-radius: 8px; border: 1px solid #1e293b; flex-shrink: 0; background: #0f172a; display: flex; flex-direction: column; align-items: center; justify-content: center; font-size: 1.3rem; color: #64748b; text-align: center; padding: 4px; }
+    .camp-cover-fallback small { font-size: 0.65rem; line-height: 1.1; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; max-width: 100%; white-space: nowrap; color: #94a3b8; }
+    .drop-thumb-fallback { width: 34px; height: 34px; border-radius: 4px; background: #1e293b; display: inline-flex; align-items: center; justify-content: center; font-size: 1.15rem; flex-shrink: 0; border: 1px solid #334155; }
+    .camp-info { flex: 1; min-width: 0; }
+    .camp-actions { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
+    .btn-link { color: #60a5fa; text-decoration: none; font-size: 0.8rem; font-weight: 500; display: inline-flex; align-items: center; gap: 4px; }
+    .btn-link:hover { text-decoration: underline; color: #93c5fd; }
+    .btn-danger { background: #dc2626; border-color: #dc2626; }
+    .btn-danger:hover { background: #b91c1c; }
+
+    /* Game Logo in Active Telemetry Banner & Queue Chips */
+    .miner-banner-main { display: flex; gap: 16px; align-items: center; }
+    .miner-game-logo { width: 56px; height: 76px; object-fit: cover; border-radius: 8px; border: 1px solid #334155; background: #090d16; flex-shrink: 0; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45); }
+    .chip-game-logo { width: 20px; height: 26px; object-fit: cover; border-radius: 3px; border: 1px solid #334155; margin-right: 6px; vertical-align: middle; display: inline-block; }
+    .camp-game-fullname { font-size: 0.86rem; font-weight: 700; color: #93c5fd; letter-spacing: 0.02em; }
+    
+    /* Toast alert */
+    #toast { position: fixed; bottom: 20px; right: 20px; background: #1e293b; border: 1px solid #3b82f6; color: white; padding: 12px 20px; border-radius: 8px; font-size: 0.9rem; z-index: 9999; display: none; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5); }
+
+    /* Direct Update Modal */
+    .update-modal-backdrop {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0, 0, 0, 0.78);
+      backdrop-filter: blur(4px);
+      z-index: 10000;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+    .update-modal-content {
+      background: #0b0f19;
+      border: 1px solid #1e293b;
+      border-radius: 12px;
+      width: 100%;
+      max-width: 600px;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    .update-modal-header {
+      padding: 14px 20px;
+      background: #0f172a;
+      border-bottom: 1px solid #1e293b;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .update-modal-header h3 {
+      margin: 0;
+      font-size: 1.05rem;
+      color: #38bdf8;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .update-modal-body {
+      padding: 20px;
+      font-size: 0.86rem;
+      color: #cbd5e1;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .update-log-terminal {
+      background: #030712;
+      border: 1px solid #1e293b;
+      border-radius: 8px;
+      padding: 12px;
+      font-family: monospace;
+      font-size: 0.78rem;
+      color: #94a3b8;
+      max-height: 200px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      line-height: 1.4;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="title-area">
+        <h1>Auto Loot & Claimer</h1>
+        <p>Continuous inventory cross-referencing, drop selection, and multi-store auto-claim</p>
+      </div>
+      <div class="header-actions">
+        <span id="sync-status-indicator" class="sync-badge" title="Live bidirectional sync with server">
+          <span class="sync-dot"></span>
+          <span id="sync-text">LIVE SYNCED</span>
+        </span>
+        <button id="btn-header-direct-update" class="btn btn-sm" onclick="openDirectUpdateModal()" style="border-color: #38bdf8; color: #38bdf8; font-weight: 600; display: inline-flex; align-items: center; gap: 5px;" title="Check GitHub for app updates (manual only)">&#8635; Update App</button>
+        <button id="btn-install-app" class="btn btn-sm" onclick="installAppPrompt()" style="display: none; border-color: #8b5cf6; color: #c084fc;" title="Install as desktop or mobile app">Install App</button>
+        <span id="app-mode-badge" class="badge" style="display: none; background: rgba(99, 102, 241, 0.15); color: #818cf8;">[APP MODE]</span>
+        <button class="btn btn-primary" onclick="claimDropsNow()">Claim Ready Drops</button>
+        <button class="btn btn-success" onclick="triggerGamesCheck()">Check All Stores</button>
+        <button id="btn-header-refresh-progress" class="btn" onclick="refreshMiningProgress()" title="Refresh live mining progress and drop bars on the page">&#8635; Refresh Progress</button>
+        <button class="btn" style="border-color: #ef4444; color: #f87171;" onclick="signOut()">Sign Out</button>
+      </div>
+    </header>
+
+    <!-- Top Stats Bar -->
+    <div class="status-bar">
+      <div class="stat-card">
+        <span class="stat-label">Twitch Account</span>
+        <span class="stat-value" id="stat-twitch-user">Connecting...</span>
+        <span class="stat-sub" id="stat-twitch-sub">Active Campaigns: 0</span>
+      </div>
+      <div class="stat-card" style="cursor: pointer;" onclick="setDropsFilterByName('collected')" title="Click to view all collected Twitch drops">
+        <span class="stat-label">Collected Items</span>
+        <span class="stat-value" id="stat-inventory-count" style="color: #34d399;">0 Collected</span>
+        <span class="stat-sub" id="stat-inventory-sub">0 Twitch Drops | 0 Store Items</span>
+      </div>
+      <div class="stat-card" style="cursor: pointer;" onclick="setDropsFilterByName('needs_collection')" title="Click to view drops that need to be collected">
+        <span class="stat-label">Drops Needing Collection</span>
+        <span class="stat-value" id="stat-active-campaigns" style="color: #60a5fa;">0 Drops</span>
+        <span class="stat-sub" id="stat-needs-sub">0 In Progress | 0 Ready to Collect</span>
+      </div>
+      <div class="stat-card" style="cursor: pointer;" onclick="setDropsFilterByName('unavailable')" title="Click to view drops unavailable for collection">
+        <span class="stat-label">Unavailable for Collection</span>
+        <span class="stat-value" id="stat-ready-count" style="color: #f87171;">0 Unavailable</span>
+        <span class="stat-sub" id="stat-unavail-sub">Expired or Sub-Only Drops</span>
+      </div>
+    </div>
+
+    <!-- Quick Claim Links to Storefronts & Claim Hubs -->
+    <div class="quick-links-bar">
+      <span class="quick-link-label">Direct Claim Links:</span>
+      <a href="https://store.epicgames.com/free-games" target="_blank" rel="noopener noreferrer" class="quick-link">[Epic Free Games Hub]</a>
+      <a href="https://www.epicgames.com/account/transactions" target="_blank" rel="noopener noreferrer" class="quick-link">[Epic Library & Transactions]</a>
+      <span style="color: #334155;">|</span>
+      <a href="https://gaming.amazon.com/home" target="_blank" rel="noopener noreferrer" class="quick-link amazon">[Prime Gaming Home]</a>
+      <a href="https://gaming.amazon.com/loot" target="_blank" rel="noopener noreferrer" class="quick-link amazon">[Prime Claimed Loot]</a>
+      <span style="color: #334155;">|</span>
+      <a href="https://www.gog.com" target="_blank" rel="noopener noreferrer" class="quick-link gog">[GOG Storefront]</a>
+      <a href="https://www.gog.com/account" target="_blank" rel="noopener noreferrer" class="quick-link gog">[GOG Account Library]</a>
+      <span style="color: #334155;">|</span>
+      <a href="https://www.twitch.tv/drops/inventory" target="_blank" rel="noopener noreferrer" class="quick-link twitch">[Twitch Inventory]</a>
+      <a href="https://www.twitch.tv/drops/campaigns" target="_blank" rel="noopener noreferrer" class="quick-link twitch">[Twitch Drop Campaigns]</a>
+      <a href="https://drophunter.app/drops" target="_blank" rel="noopener noreferrer" class="quick-link twitch">[DropHunter Live Catalog]</a>
+    </div>
+
+    <!-- Navigation Tabs -->
+    <div class="tabs">
+      <button class="tab-btn active" onclick="switchTab('drops', event)">Twitch Drops</button>
+      <button class="tab-btn" onclick="switchTab('epic', event)">Epic Games Store</button>
+      <button class="tab-btn" onclick="switchTab('stores', event)">Amazon & GOG</button>
+      <button class="tab-btn" onclick="switchTab('accounts', event)">Accounts & Logins</button>
+      <button class="tab-btn" onclick="switchTab('logs', event)">Live Logs</button>
+      <button class="tab-btn" onclick="switchTab('system', event)">System & GitHub</button>
+    </div>
+
+    <!-- TAB 1: TWITCH DROPS (WITH SELECTION & INVENTORY CROSS-REFERENCE) -->
+    <div id="tab-drops" class="tab-content">
+      <!-- Master Twitch Mining Switch (Light Switch Toggle) -->
+      <div class="master-switch-card" id="master-switch-card">
+        <div class="master-switch-info">
+          <div class="master-switch-icon" id="master-switch-icon">&#9889;</div>
+          <div class="master-switch-text">
+            <h3 id="master-switch-heading">Twitch Drops Mining: Connected</h3>
+            <p id="master-switch-sub">Stream-watching connection is active. Flipping this light switch completely disconnects Twitch stream viewing until switched back.</p>
+          </div>
+        </div>
+        <div class="master-switch-ctrl">
+          <span class="toggle-state-pill online" id="toggle-state-pill">MINING ON</span>
+          <label class="toggle-switch-label" title="Toggle Twitch Mining Access On/Off">
+            <input type="checkbox" id="master-mining-toggle" checked onchange="onMasterToggleChange(this.checked)">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Concurrent Viewing / Active User Warning Banner -->
+      <div id="miner-conflict-banner" style="display: none; background: rgba(234, 179, 8, 0.12); border: 1px solid rgba(234, 179, 8, 0.4); border-radius: 8px; padding: 12px 16px; margin-bottom: 14px; align-items: flex-start; gap: 12px;">
+        <span style="font-size: 1.3rem; line-height: 1;">&#9888;</span>
+        <div style="flex: 1;">
+          <div style="font-weight: 700; color: #fde047; font-size: 0.9rem; margin-bottom: 3px;">
+            Concurrent Twitch Stream Detected (Drop Progression Warning)
+          </div>
+          <div id="miner-conflict-text" style="font-size: 0.82rem; color: #fef08a; line-height: 1.45;">
+            Twitch detected active viewing on another device or browser. Twitch strictly limits drop watch-time credit to <strong>only 1 stream at a time</strong> across your entire account. If your drop progress is not advancing, please close other Twitch tabs, mobile apps, or TV streams.
+          </div>
+        </div>
+      </div>
+
+      <!-- Live Miner Telemetry Banner (Pretending to watch stream under account - strictly 1 stream at a time) -->
+      <div class="live-miner-banner" id="live-miner-banner">
+        <div class="miner-banner-main">
+          <img id="miner-game-cover" class="miner-game-logo" src="" alt="Game Logo" style="display: none;" referrerpolicy="no-referrer">
+          <div class="miner-details">
+            <div class="miner-title">
+              <span class="live-indicator-dot" id="miner-dot"></span>
+              <span id="miner-status-heading">Twitch Drops Miner</span>
+              <span class="live-stream-badge" id="miner-stream-badge">1 STREAM ACTIVE</span>
+            </div>
+            <div id="miner-game-badge-wrap" style="display: none; margin-top: 4px; margin-bottom: 4px; align-items: center; gap: 8px; flex-wrap: wrap;">
+              <span class="store-tag store-twitch" id="miner-game-tag" style="font-size: 0.76rem; font-weight: 700;">GAME</span>
+              <span id="miner-campaign-tag" style="font-size: 0.82rem; color: #93c5fd; font-weight: 600;"></span>
+            </div>
+            <p class="miner-sub" id="miner-status-sub">
+              Pretending to watch stream under your account. Strictly 1 stream at a time (zero bandwidth browser simulation).
+            </p>
+          </div>
+        </div>
+        <div class="miner-telemetry-stats" id="miner-telemetry-stats">
+          <span class="miner-stat-pill" id="miner-stream-channel">Channel: Searching...</span>
+          <span class="miner-stat-pill" id="miner-drop-live-progress" style="display: none; border-color: #3b82f6; color: #93c5fd;">Drop: --</span>
+          <span class="miner-stat-pill" id="miner-stream-progress">Session: 0/60 mins (1h rotation)</span>
+          <span class="miner-stat-pill" id="miner-stream-viewers">0 Viewers</span>
+          <button class="btn btn-sm" id="btn-refresh-progress" onclick="refreshMiningProgress()" style="border-color: #10b981; color: #34d399; background: rgba(16, 185, 129, 0.12); font-weight: 600;" title="Refresh live Twitch drop progress and session minutes on this page">&#8635; Refresh Progress</button>
+          <button class="btn btn-sm" id="btn-switch-channel" onclick="switchWatchedChannel()" style="border-color: #38bdf8; color: #7dd3fc; background: rgba(56, 189, 248, 0.12); font-weight: 600;" title="Skip current channel and switch to the next live Drops-enabled channel">&#8644; Next Channel</button>
+          <button class="btn btn-sm" id="btn-pick-channel" onclick="openChannelSwitcherModal()" style="border-color: #6366f1; color: #a5b4fc; background: rgba(99, 102, 241, 0.12); font-weight: 600;" title="Choose a specific live Drops channel or enter a streamer username">&#9776; Pick Channel</button>
+          <button class="btn btn-sm" id="btn-restart-mining" onclick="restartSelectedMining()" style="border-color: #f59e0b; color: #fbbf24; background: rgba(245, 158, 11, 0.12); font-weight: 600;" title="Fully restart mining for the selected game (reconnects to live stream and resets watchdog)">&#8635; Restart Mining</button>
+          <button class="btn btn-sm" id="btn-toggle-miniviewer" onclick="toggleMiniViewer()" style="border-color: #8b5cf6; color: #c084fc; display: none;">&#128065; Show Mini-Viewer</button>
+          <button class="btn btn-sm" id="btn-copy-diagnostics-banner" onclick="openDiagnosticsModal(true)" style="border-color: #22c55e; color: #4ade80; background: rgba(34, 197, 94, 0.12); font-weight: 600;" title="Copy full sanitized diagnostic report & button/API logs to paste for AI troubleshooting">&#128203; Copy Diagnostic Logs (For AI)</button>
+          <a href="#" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-primary" id="miner-stream-link" style="display: none;">Open Watched Stream</a>
+        </div>
+
+        <!-- Embedded Mini-Viewer for Active Stream -->
+        <div class="mini-viewer-card" id="mini-viewer-card">
+          <div class="mini-viewer-header">
+            <div class="mini-viewer-title">
+              <img id="mini-viewer-game-icon" src="" alt="Game Icon" style="width: 20px; height: 26px; border-radius: 3px; object-fit: cover; display: none; margin-right: 4px;" referrerpolicy="no-referrer">
+              <span class="live-indicator-dot" style="width: 6px; height: 6px;"></span>
+              <span id="mini-viewer-channel-label">Active Stream Preview</span>
+            </div>
+            <div style="display: flex; gap: 8px; align-items: center;">
+              <span style="font-size: 0.72rem; color: #94a3b8;">Single-viewing protected</span>
+              <button class="btn btn-sm" style="padding: 2px 8px; font-size: 0.72rem;" onclick="closeMiniViewer()">Close Preview</button>
+            </div>
+          </div>
+          <div class="mini-viewer-frame-wrap" id="mini-viewer-frame-wrap">
+            <div class="mini-viewer-warn-overlay" id="mini-viewer-warn-overlay">
+              <div style="font-size: 1.5rem;">&#9888;</div>
+              <strong style="color: #f87171; font-size: 0.92rem;">Stream Open Elsewhere Detected!</strong>
+              <p>Twitch rules only allow <strong>1 stream</strong> to earn drops per account. To ensure your drops progress is never paused, this preview has been automatically suspended while you watch elsewhere.</p>
+              <button class="btn btn-sm btn-primary" style="margin-top: 6px;" onclick="resumeMiniViewer()">Resume Preview Here</button>
+            </div>
+            <iframe id="mini-viewer-iframe" src="" allowfullscreen="true" scrolling="no"></iframe>
+          </div>
+        </div>
+      </div>
+
+      <!-- Mining Mode & Ordered Queue Control (Strictly 1 Active Stream at a Time) -->
+      <div class="target-bar">
+        <div class="target-bar-top">
+          <div>
+            <span style="font-weight: 700; font-size: 0.95rem;">Mining Queue & Single-Stream Control (Strictly 1 Mined at a Time)</span>
+            <p style="font-size: 0.8rem; color: var(--text-muted); margin-top: 2px;" id="mining-mode-desc">
+              Strictly 1 stream is mined at a time (#1 in your queue). When a game's drops finish, it automatically advances and swaps to the next game in your queue!
+            </p>
+          </div>
+          <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+            <div class="mode-switch-box">
+              <button class="mode-btn active" id="btn-mode-default" onclick="setMiningMode('default')">Default (Queue + Auto-Mine)</button>
+              <button class="mode-btn" id="btn-mode-selective" onclick="setMiningMode('selective')">Selective (Queue Only)</button>
+              <button class="mode-btn" id="btn-mode-stopped" style="color: #f87171;" onclick="setMiningMode('stopped')">&#9632; Fully Stop Miner</button>
+            </div>
+            <button class="btn btn-sm btn-danger" onclick="deactivateAllGames()">Clear Queue</button>
+            <button class="btn btn-sm" onclick="resetToDefaultMode()">Reset to Auto-Mine</button>
+          </div>
+        </div>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px; font-size: 0.78rem; color: var(--text-muted); flex-wrap: wrap; gap: 6px;">
+          <span>Mining Queue (<span id="activated-count">0</span> Queued — Strictly 1 Active at a Time):</span>
+          <span id="mode-badge-label" style="font-weight: 600; color: #a855f7;">[MODE: DEFAULT - 1 STREAM AT A TIME]</span>
+        </div>
+        <div class="target-chips" id="selected-targets-chips">
+          <span style="font-size: 0.8rem; color: #94a3b8;">Queue is empty (auto-selecting 1 active drop stream at a time)</span>
+        </div>
+      </div>
+
+      <!-- Campaign Controls: Category Filters, Search & Daily Refresh -->
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; flex-wrap: wrap; gap: 10px;">
+        <div class="filter-group" style="margin-bottom: 0;">
+          <button class="filter-btn active" data-filter="all" onclick="setDropsFilter('all', event)">All Campaigns (<span id="flt-all-count">0</span>)</button>
+          <button class="filter-btn" data-filter="needs_collection" onclick="setDropsFilter('needs_collection', event)">Needs Collection (<span id="flt-needs-count">0</span>)</button>
+          <button class="filter-btn" data-filter="in_progress" onclick="setDropsFilter('in_progress', event)">In Progress (<span id="flt-prog-count">0</span>)</button>
+          <button class="filter-btn" data-filter="ready" onclick="setDropsFilter('ready', event)">Ready to Collect (<span id="flt-ready-count">0</span>)</button>
+          <button class="filter-btn" data-filter="collected" onclick="setDropsFilter('collected', event)">Collected Items (<span id="flt-collected-count">0</span>)</button>
+          <button class="filter-btn" data-filter="unavailable" onclick="setDropsFilter('unavailable', event)">Unavailable (<span id="flt-unavail-count">0</span>)</button>
+          <button class="filter-btn" data-filter="activated" onclick="setDropsFilter('activated', event)">Queued / Active (<span id="flt-act-count">0</span>)</button>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+          <input type="text" id="drops-search-input" class="form-input" style="width: 210px; padding: 5px 10px; font-size: 0.8rem;" placeholder="Search game or drop item..." oninput="onDropsSearchInput()">
+          <span style="font-size: 0.78rem; color: var(--text-muted);" id="campaigns-last-refreshed">Daily Refresh: Active</span>
+          <button class="btn btn-sm btn-primary" id="btn-refresh-campaigns" onclick="refreshLiveCampaigns()">Refresh Campaigns</button>
+        </div>
+      </div>
+
+      <!-- Drops Campaigns Grid -->
+      <div class="grid" id="drops-grid">
+        <div class="empty-state">Loading your personal Twitch drops inventory and cross-referencing active campaigns...</div>
+      </div>
+    </div>
+
+    <!-- TAB 2: EPIC GAMES STORE -->
+    <div id="tab-epic" class="tab-content" style="display: none;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 8px;">
+        <div>
+          <h2 style="font-size: 1.15rem; font-weight: 700;">Epic Games Store Giveaways</h2>
+          <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 2px;">
+            Weekly 100% off promotional giveaways tracked and claimed automatically.
+          </p>
+        </div>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+          <a href="https://store.epicgames.com/free-games" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-primary">[Open Free Games Hub]</a>
+          <a href="https://www.epicgames.com/account/transactions" target="_blank" rel="noopener noreferrer" class="btn btn-sm">[Open Account Transactions]</a>
+          <button class="btn btn-sm" onclick="triggerGamesCheck('epic')">Claim Epic Freebies Now</button>
+          <button class="btn btn-sm" onclick="promptAddClaimed('epic')">+ Record Claimed Title</button>
+        </div>
+      </div>
+
+      <h3 style="font-size: 0.95rem; margin-bottom: 12px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em;">Current Weekly Freebies (100% Off)</h3>
+      <div class="grid" id="epic-active-grid"></div>
+      
+      <h3 style="font-size: 0.95rem; margin: 28px 0 12px 0; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em;">Upcoming Next Week</h3>
+      <div class="grid" id="epic-upcoming-grid"></div>
+
+      <h3 style="font-size: 0.95rem; margin: 28px 0 12px 0; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em;">Claimed Library History</h3>
+      <div id="epic-claimed-list" style="background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 8px; padding: 16px;"></div>
+    </div>
+
+    <!-- TAB 3: OTHER STORES (AMAZON & GOG) -->
+    <div id="tab-stores" class="tab-content" style="display: none;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 8px;">
+        <div>
+          <h2 style="font-size: 1.15rem; font-weight: 700;">Amazon Prime Gaming & GOG Loot</h2>
+          <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 2px;">
+            Monthly Prime loot, weekly DRM-free GOG game licenses, and recorded inventory.
+          </p>
+        </div>
+        <div style="display: flex; gap: 8px;">
+          <button class="btn btn-sm btn-primary" onclick="triggerGamesCheck('all')">Check All Storefronts</button>
+        </div>
+      </div>
+      <div class="grid" id="stores-grid"></div>
+    </div>
+
+    <!-- TAB 4: ACCOUNTS & LOGINS MANAGER -->
+    <div id="tab-accounts" class="tab-content" style="display: none;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; flex-wrap: wrap; gap: 12px;">
+        <div>
+          <h2 style="font-size: 1.15rem; font-weight: 700;">Account Credentials & Settings</h2>
+          <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 2px;">
+            Configure your storefront logins and credentials directly from the web interface. Credentials are saved locally to your .env file.
+          </p>
+        </div>
+        <button class="btn btn-success" onclick="saveAllAccounts()">Save All Credentials</button>
+      </div>
+
+      <div class="accounts-container">
+        <!-- 1. Web Dashboard Security -->
+        <div class="account-section">
+          <h3>[Dashboard] Web Login Credentials</h3>
+          <p>Login credentials for accessing this web dashboard.</p>
+          <div class="form-group">
+            <label for="acc-dash-user">Username</label>
+            <input type="text" id="acc-dash-user" class="form-input" placeholder="admin">
+          </div>
+          <div class="form-group">
+            <label for="acc-dash-pass">New Password (leave blank to keep current)</label>
+            <input type="password" id="acc-dash-pass" class="form-input" placeholder="Leave blank to keep unchanged">
+          </div>
+        </div>
+
+        <!-- 2. Twitch Account -->
+        <div class="account-section">
+          <h3>[Twitch] Drops Miner Authentication</h3>
+          <p>Your Twitch auth-token cookie (zero password needed, zero telemetry).</p>
+          <div class="form-group">
+            <label for="acc-twitch-token">Twitch auth-token</label>
+            <input type="password" id="acc-twitch-token" class="form-input" placeholder="Leave blank to keep saved token">
+          </div>
+          <div class="form-group">
+            <label for="acc-twitch-priorities">Priority Games (comma-separated)</label>
+            <input type="text" id="acc-twitch-priorities" class="form-input" placeholder="World of Warcraft, Rust, Rainbow Six Siege">
+          </div>
+          <div class="form-row-actions">
+            <button class="btn btn-sm btn-primary" onclick="testService('twitch')">Test Twitch Token</button>
+          </div>
+        </div>
+
+        <!-- 3. Epic Games Store -->
+        <div class="account-section">
+          <h3>[Epic Games] Store Auto-Claimer</h3>
+          <p>Credentials for claiming 100% off weekly freebies.</p>
+          <div class="form-group">
+            <label for="acc-eg-email">Email Address</label>
+            <input type="email" id="acc-eg-email" class="form-input" placeholder="you@example.com">
+          </div>
+          <div class="form-group">
+            <label for="acc-eg-pass">Password</label>
+            <input type="password" id="acc-eg-pass" class="form-input" placeholder="Leave blank to keep unchanged">
+          </div>
+          <div class="form-group">
+            <label for="acc-eg-otp">2FA Backup Code or Base32 OTP Secret</label>
+            <input type="password" id="acc-eg-otp" class="form-input" placeholder="Leave blank to keep saved 2FA/OTP">
+          </div>
+          <div class="form-row-actions">
+            <button class="btn btn-sm" onclick="testService('epic')">Check Store Reachability</button>
+          </div>
+        </div>
+
+        <!-- 4. Amazon Prime Gaming -->
+        <div class="account-section">
+          <h3>[Amazon] Prime Gaming Auto-Claimer</h3>
+          <p>Credentials for monthly Prime Gaming loot and free games.</p>
+          <div class="form-group">
+            <label for="acc-pg-email">Email Address</label>
+            <input type="email" id="acc-pg-email" class="form-input" placeholder="you@example.com">
+          </div>
+          <div class="form-group">
+            <label for="acc-pg-pass">Password</label>
+            <input type="password" id="acc-pg-pass" class="form-input" placeholder="Leave blank to keep unchanged">
+          </div>
+          <div class="form-group">
+            <label for="acc-pg-otp">Amazon OTP Secret (optional)</label>
+            <input type="password" id="acc-pg-otp" class="form-input" placeholder="Leave blank to keep saved 2FA/OTP">
+          </div>
+        </div>
+
+        <!-- 5. GOG Giveaways -->
+        <div class="account-section">
+          <h3>[GOG] DRM-Free Giveaways</h3>
+          <p>Credentials for claiming GOG giveaway promotions.</p>
+          <div class="form-group">
+            <label for="acc-gog-email">Email Address</label>
+            <input type="email" id="acc-gog-email" class="form-input" placeholder="you@example.com">
+          </div>
+          <div class="form-group">
+            <label for="acc-gog-pass">Password</label>
+            <input type="password" id="acc-gog-pass" class="form-input" placeholder="Leave blank to keep unchanged">
+          </div>
+        </div>
+
+        <!-- 6. Notifications -->
+        <div class="account-section">
+          <h3>[Notifications] Discord / Webhook Alerts</h3>
+          <p>Receive notifications whenever games or drops are claimed.</p>
+          <div class="form-group">
+            <label for="acc-discord-url">Discord Webhook URL</label>
+            <input type="password" id="acc-discord-url" class="form-input" placeholder="Leave blank to keep saved Discord webhook URL">
+          </div>
+          <div class="form-row-actions">
+            <button class="btn btn-sm" onclick="testService('discord')">Send Test Ping</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 5: LIVE LOGS -->
+    <div id="tab-logs" class="tab-content" style="display: none;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; flex-wrap: wrap; gap: 8px;">
+        <span style="font-size: 0.9rem; color: #94a3b8;">Auto Loot Claimer Live Log Stream (Detailed Actions & Twitch Requests)</span>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+          <button class="btn btn-sm" id="btn-copy-logs-raw" onclick="copyTextWithFallback(document.getElementById('log-view').innerText, 'Logs copied!')">&#128203; Copy Visible Logs</button>
+          <button class="btn btn-sm btn-primary" id="btn-copy-diagnostics-tab" onclick="openDiagnosticsModal(true)" style="background: rgba(34, 197, 94, 0.2); border-color: #22c55e; color: #4ade80;">&#128203; Copy Diagnostic Logs (For AI)</button>
+          <button class="btn btn-sm" id="btn-refresh-logs" onclick="fetchLogs()">&#8635; Refresh Logs</button>
+        </div>
+      </div>
+      <div id="logs-category-filters" style="display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px;">
+        <button class="btn btn-sm btn-primary" data-log-cat="" onclick="setLogFilter('', this)">All Logs</button>
+        <button class="btn btn-sm" data-log-cat="UI_BUTTON" onclick="setLogFilter('UI_BUTTON', this)">UI_BUTTON</button>
+        <button class="btn btn-sm" data-log-cat="MINER_LOOP" onclick="setLogFilter('MINER_LOOP', this)">MINER_LOOP</button>
+        <button class="btn btn-sm" data-log-cat="TWITCH_SPADE" onclick="setLogFilter('TWITCH_SPADE', this)">TWITCH_SPADE</button>
+        <button class="btn btn-sm" data-log-cat="TWITCH_HLS" onclick="setLogFilter('TWITCH_HLS', this)">TWITCH_HLS</button>
+        <button class="btn btn-sm" data-log-cat="TWITCH_GQL" onclick="setLogFilter('TWITCH_GQL', this)">TWITCH_GQL</button>
+        <button class="btn btn-sm" data-log-cat="API_ACTION" onclick="setLogFilter('API_ACTION', this)">API_ACTION</button>
+      </div>
+      <div class="log-container" id="log-view" style="user-select: text; -webkit-user-select: text;">Loading logs...</div>
+    </div>
+
+    <!-- TAB 6: SYSTEM & GITHUB -->
+    <div id="tab-system" class="tab-content" style="display: none;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 8px;">
+        <div>
+          <h2 style="font-size: 1.15rem; font-weight: 700;">System, GitHub Updates & Diagnostics</h2>
+          <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 2px;">
+            Manage updates directly from GitHub, monitor single-viewing bot processes, and synchronize claimed loot.
+          </p>
+        </div>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+          <a href="https://github.com/IAndrexI/dropsClaim" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-primary">[Open GitHub Repository]</a>
+          <button class="btn btn-sm" onclick="checkGitUpdates()">Check for Updates</button>
+        </div>
+      </div>
+
+      <div class="accounts-grid">
+        <!-- GitHub Version & Updater Card -->
+        <div class="account-card">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <h3 style="margin-bottom: 0;">[GitHub] Repository Updates</h3>
+            <span id="git-status-badge" class="badge" style="background: rgba(34, 197, 94, 0.15); color: #4ade80;">[CHECKING...]</span>
+          </div>
+          <p style="font-size: 0.82rem; color: #94a3b8; margin-bottom: 12px;">
+            Repository: <a href="https://github.com/IAndrexI/dropsClaim" target="_blank" rel="noopener noreferrer" style="color: #60a5fa;">IAndrexI/dropsClaim (main)</a>
+          </p>
+
+          <div style="background: rgba(15, 23, 42, 0.6); padding: 12px; border-radius: 8px; border: 1px solid #334155; margin-bottom: 14px; font-size: 0.82rem; line-height: 1.6;">
+            <div><strong>Installed Commit:</strong> <code id="git-local-hash" style="color: #38bdf8;">--</code></div>
+            <div><strong>Commit Message:</strong> <span id="git-local-msg" style="color: #cbd5e1;">--</span></div>
+            <div><strong>Last Updated:</strong> <span id="git-local-date" style="color: #94a3b8;">--</span></div>
+            <div id="git-remote-info" style="margin-top: 6px; padding-top: 6px; border-top: 1px solid #1e293b; display: none;">
+              <strong>Remote GitHub HEAD:</strong> <code id="git-remote-hash" style="color: #facc15;">--</code>
+            </div>
+          </div>
+
+          <div class="form-row-actions">
+            <button class="btn btn-sm btn-primary" id="btn-git-update" onclick="runGitUpdate()">Update Now from GitHub</button>
+            <button class="btn btn-sm" onclick="checkGitUpdates()">Check Updates</button>
+          </div>
+          <div style="margin-top: 10px; font-size: 0.78rem; color: #94a3b8;">
+            Terminal Command: You can also update anytime from your server terminal by running <code>bash /opt/auto-loot-claimer/update.sh</code>.
+          </div>
+          <div id="git-update-output" style="display: none; margin-top: 12px; padding: 10px; background: #0f172a; border-radius: 6px; font-family: monospace; font-size: 0.78rem; white-space: pre-wrap; max-height: 150px; overflow-y: auto; color: #cbd5e1; border: 1px solid #334155;"></div>
+        </div>
+
+        <!-- Bot Process Guard & Single Viewing Card -->
+        <div class="account-card">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <h3 style="margin-bottom: 0;">[Twitch] Single Viewing Process Guard</h3>
+            <span id="bot-guard-badge" class="badge" style="background: rgba(34, 197, 94, 0.15); color: #4ade80;">[1 ACTIVE]</span>
+          </div>
+          <p style="font-size: 0.82rem; color: #94a3b8; margin-bottom: 12px;">
+            Twitch rules require strictly only 1 stream earning drops per account. Process Guard blocks duplicates.
+          </p>
+
+          <div id="bots-list-box" style="background: rgba(15, 23, 42, 0.6); padding: 12px; border-radius: 8px; border: 1px solid #334155; margin-bottom: 14px; font-size: 0.82rem; line-height: 1.6;">
+            <div><strong>Running Bot Processes:</strong> <span id="bots-count-label">Loading...</span></div>
+            <div id="bots-details" style="font-family: monospace; font-size: 0.78rem; color: #94a3b8; margin-top: 6px;"></div>
+          </div>
+
+          <div class="form-row-actions">
+            <button class="btn btn-sm" onclick="fetchBotsStatus()">Scan Processes</button>
+            <button class="btn btn-sm" style="border-color: #ef4444; color: #f87171;" onclick="killConflictingBots()">Terminate Conflicting Bots</button>
+          </div>
+        </div>
+
+        <!-- Sync Claimed Loot to GitHub Card -->
+        <div class="account-card">
+          <h3>[Sync] Export Claimed Loot to GitHub</h3>
+          <p style="font-size: 0.82rem; color: #94a3b8; margin-bottom: 12px;">
+            Generates <code>CLAIMED_LOOT.md</code> records and commits/pushes confirmed free games and drops to your GitHub repository.
+          </p>
+
+          <div style="background: rgba(15, 23, 42, 0.6); padding: 12px; border-radius: 8px; border: 1px solid #334155; margin-bottom: 14px; font-size: 0.82rem; line-height: 1.6;">
+            <div>Target File: <code>CLAIMED_LOOT.md</code></div>
+            <div>GitHub Target: <code>origin/main</code></div>
+          </div>
+
+          <div class="form-row-actions">
+            <button class="btn btn-sm btn-success" onclick="syncLootToGitHub()">Sync & Push to GitHub</button>
+          </div>
+          <div id="sync-loot-output" style="display: none; margin-top: 12px; padding: 10px; background: #0f172a; border-radius: 6px; font-family: monospace; font-size: 0.78rem; white-space: pre-wrap; max-height: 120px; overflow-y: auto; color: #cbd5e1; border: 1px solid #334155;"></div>
+        </div>
+
+        <!-- Automated Alpine Schedule Card -->
+        <div class="account-card">
+          <h3>[Alpine Linux] Auto-Update Schedule</h3>
+          <p style="font-size: 0.82rem; color: #94a3b8; margin-bottom: 12px;">
+            Set up automatic daily background updates so your server automatically syncs with GitHub changes.
+          </p>
+
+          <div style="background: rgba(15, 23, 42, 0.6); padding: 12px; border-radius: 8px; border: 1px solid #334155; margin-bottom: 14px; font-size: 0.82rem; line-height: 1.6; font-family: monospace;">
+            <div style="color: #94a3b8;"># Enable automatic daily updates in Alpine:</div>
+            <div style="color: #38bdf8;">bash scripts/update_from_github.sh --install-cron</div>
+          </div>
+        </div>
+
+        <!-- System Reboot Autostart Card -->
+        <div class="account-card">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <h3 style="margin-bottom: 0;">[Autostart] Boot & Reboot Persistence</h3>
+            <span id="autostart-badge" class="badge" style="background: rgba(34, 197, 94, 0.15); color: #4ade80;">[CHECKING...]</span>
+          </div>
+          <p style="font-size: 0.82rem; color: #94a3b8; margin-bottom: 12px;">
+            Ensures Twitch Drops Miner, Web Dashboard, and cron claimers automatically start when Alpine Linux or your LXC container reboots.
+          </p>
+
+          <div style="background: rgba(15, 23, 42, 0.6); padding: 12px; border-radius: 8px; border: 1px solid #334155; margin-bottom: 14px; font-size: 0.82rem; line-height: 1.6;">
+            <div><strong>Init System:</strong> <span id="autostart-init" style="color: #38bdf8;">Loading...</span></div>
+            <div><strong>Twitch Drops Miner:</strong> <span id="autostart-twitch-status" style="color: #cbd5e1;">--</span></div>
+            <div><strong>Web Dashboard:</strong> <span id="autostart-web-status" style="color: #cbd5e1;">--</span></div>
+            <div><strong>Free Games Cron/Timer:</strong> <span id="autostart-cron-status" style="color: #cbd5e1;">--</span></div>
+          </div>
+
+          <div class="form-row-actions">
+            <button class="btn btn-sm btn-primary" id="btn-enable-autostart" onclick="enableAutostartOnBoot()">Enable Autostart on Reboot</button>
+            <button class="btn btn-sm" onclick="fetchAutostartStatus()">Refresh Status</button>
+          </div>
+          <div id="autostart-output" style="display: none; margin-top: 12px; padding: 10px; background: #0f172a; border-radius: 6px; font-family: monospace; font-size: 0.78rem; white-space: pre-wrap; max-height: 140px; overflow-y: auto; color: #cbd5e1; border: 1px solid #334155;"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Direct Method Update Modal -->
+  <div id="direct-update-modal" class="update-modal-backdrop" onclick="if(event.target === this) closeDirectUpdateModal()">
+    <div class="update-modal-content">
+      <div class="update-modal-header">
+        <h3><span>&#8635;</span> Direct System Update</h3>
+        <button class="btn btn-sm" onclick="closeDirectUpdateModal()" style="padding: 2px 8px; font-size: 0.8rem;">&#10006;</button>
+      </div>
+      <div class="update-modal-body">
+        <p style="margin: 0; line-height: 1.5;">
+          Directly execute <code>bash /opt/auto-loot-claimer/update.sh</code> on your server to pull the latest GitHub commits, update background services, and restart cleanly.
+        </p>
+
+        <div style="background: rgba(15, 23, 42, 0.8); border: 1px solid #1e293b; border-radius: 8px; padding: 12px; font-size: 0.84rem; line-height: 1.6;">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <span><strong>Installed Commit:</strong> <code id="modal-git-local-hash" style="color: #38bdf8;">--</code></span>
+            <span id="modal-git-status-badge" class="badge" style="background: rgba(34, 197, 94, 0.15); color: #4ade80;">[READY]</span>
+          </div>
+          <div><strong>Latest GitHub Remote:</strong> <code id="modal-git-remote-hash" style="color: #facc15;">--</code></div>
+          <div id="modal-git-diff-status" style="margin-top: 4px; font-size: 0.78rem; color: #94a3b8;">Status: Checking GitHub for updates...</div>
+        </div>
+
+        <div id="modal-update-log" class="update-log-terminal"></div>
+
+        <div style="display: flex; gap: 10px; justify-content: flex-end; align-items: center; margin-top: 4px;">
+          <button class="btn" onclick="closeDirectUpdateModal()" id="btn-modal-cancel-update">Close</button>
+          <button class="btn btn-primary" id="btn-modal-run-update" onclick="executeDirectModalUpdate()" style="display: inline-flex; align-items: center; gap: 6px;">
+            &#8635; Run Update Now
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Switch Watched Channel Modal -->
+  <div id="channel-switcher-modal" class="update-modal-backdrop" onclick="if(event.target === this) closeChannelSwitcherModal()">
+    <div class="update-modal-content" style="max-width: 600px;">
+      <div class="update-modal-header">
+        <h3><span>&#8644;</span> Switch Watched Channel</h3>
+        <button class="btn btn-sm" onclick="closeChannelSwitcherModal()" style="padding: 2px 8px; font-size: 0.8rem;">&#10006;</button>
+      </div>
+      <div class="update-modal-body">
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; background: rgba(15, 23, 42, 0.8); border: 1px solid #1e293b; border-radius: 8px; padding: 10px 12px; font-size: 0.84rem;">
+          <div>
+            <div><strong>Active Game:</strong> <span id="modal-channel-game" style="color: #a855f7; font-weight: 700;">--</span></div>
+            <div><strong>Currently Watching:</strong> <span id="modal-channel-current" style="color: #38bdf8;">--</span></div>
+          </div>
+          <button class="btn btn-sm" style="border-color: #38bdf8; color: #7dd3fc; background: rgba(56, 189, 248, 0.14); font-weight: 600;" onclick="switchWatchedChannel(currentModalChannelGame)">
+            &#8644; Rotate to Next Channel
+          </button>
+        </div>
+
+        <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid #334155; border-radius: 8px; padding: 10px 12px;">
+          <label for="custom-channel-input" style="display: block; font-size: 0.78rem; color: #94a3b8; margin-bottom: 6px;">
+            Watch Specific Streamer (enter Twitch username or URL, e.g. <code>dani_aetherwolf</code>):
+          </label>
+          <div style="display: flex; gap: 8px;">
+            <input type="text" id="custom-channel-input" class="form-input" placeholder="e.g. dani_aetherwolf or https://www.twitch.tv/dani_aetherwolf" style="flex: 1; padding: 6px 10px; font-size: 0.84rem;" onkeydown="if(event.key==='Enter') submitCustomChannelSwitch()">
+            <button class="btn btn-sm btn-primary" onclick="submitCustomChannelSwitch()">Watch Streamer</button>
+          </div>
+        </div>
+
+        <div>
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+            <strong style="font-size: 0.84rem; color: #e2e8f0;">Live Participating Drops Channels:</strong>
+            <button class="btn btn-sm" style="padding: 2px 8px; font-size: 0.74rem;" onclick="loadModalEligibleChannels(currentModalChannelGame)">&#8635; Refresh List</button>
+          </div>
+          <div id="modal-channels-list" style="max-height: 290px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; padding-right: 2px;">
+            <div style="padding: 14px; text-align: center; color: #94a3b8; font-size: 0.84rem;">Loading live Drops-enabled channels...</div>
+          </div>
+        </div>
+
+        <div style="display: flex; justify-content: flex-end; margin-top: 4px;">
+          <button class="btn" onclick="closeChannelSwitcherModal()">Close</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Sanitized Diagnostic Bundle Modal (1-Click Copy for AI Troubleshooting) -->
+  <div id="diagnostics-modal" class="update-modal-backdrop" onclick="if(event.target === this) closeDiagnosticsModal()">
+    <div class="update-modal-content" style="max-width: 780px;">
+      <div class="update-modal-header">
+        <h3><span>&#128203;</span> Copy Diagnostic Report (For AI Breakdown)</h3>
+        <button class="btn btn-sm" onclick="closeDiagnosticsModal()" style="padding: 2px 8px; font-size: 0.8rem;">&#10006;</button>
+      </div>
+      <div class="update-modal-body">
+        <p style="font-size: 0.82rem; color: #94a3b8; margin: 0;">
+          All passwords, tokens, and secrets are automatically redacted. Click <strong>Copy All to Clipboard</strong> or press <code>Ctrl+C</code> inside the box below.
+        </p>
+        <textarea id="diagnostics-textarea" readonly style="width: 100%; height: 340px; background: #020617; color: #e2e8f0; border: 1px solid #334155; border-radius: 8px; padding: 10px; font-family: monospace; font-size: 0.78rem; line-height: 1.45; resize: vertical;"></textarea>
+        <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap;">
+          <span id="diagnostics-copy-status" style="font-size: 0.8rem; color: #4ade80;"></span>
+          <div style="display: flex; gap: 8px;">
+            <button class="btn btn-sm" onclick="openDiagnosticsModal(false)">&#8635; Refresh</button>
+            <button class="btn btn-sm btn-primary" onclick="copyDiagnosticsReport()">&#128203; Copy All to Clipboard</button>
+            <button class="btn btn-sm" onclick="closeDiagnosticsModal()">Close</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+
+  <script>
+    let currentData = null;
+    let lastTwitchData = null;
+    let selectedPriorityGames = [];
+    let currentMiningMode = "default";
+    let currentDropsFilter = "all";
+
+    function showToast(message) {
+      const toast = document.getElementById("toast");
+      toast.innerText = message;
+      toast.style.display = "block";
+      setTimeout(() => { toast.style.display = "none"; }, 4000);
+    }
+
+    function switchTab(name, evt) {
+      document.querySelectorAll(".tab-content").forEach(el => el.style.display = "none");
+      document.querySelectorAll(".tab-btn").forEach(el => el.classList.remove("active"));
+      document.getElementById(`tab-${name}`).style.display = "block";
+      if (evt && evt.target) evt.target.classList.add("active");
+      if (name === "logs") fetchLogs();
+      if (name === "accounts") fetchAccounts();
+      if (name === "system") { checkGitUpdates(); fetchBotsStatus(); fetchAutostartStatus(); }
+    }
+
+    async function refreshLiveCampaigns() {
+      const btn = document.getElementById("btn-refresh-campaigns");
+      if (btn) {
+        btn.disabled = true;
+        btn.innerText = "Refreshing...";
+      }
+      try {
+        const res = await fetch("/api/campaigns/refresh", { method: "POST" });
+        const d = await res.json();
+        if (d.success) {
+          showToast(d.message || "Live campaigns refreshed!");
+          await fetchData();
+          broadcastSyncEvent("campaigns");
+        } else {
+          showToast("Failed to refresh campaigns: " + (d.error || "Unknown error"));
+        }
+      } catch (err) {
+        showToast("Error refreshing campaigns: " + err.message);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerText = "Refresh Campaigns";
+        }
+      }
+    }
+
+    function setDropsFilter(filterName, evt) {
+      currentDropsFilter = filterName;
+      document.querySelectorAll(".filter-btn").forEach(b => {
+        b.classList.toggle("active", b.getAttribute("data-filter") === filterName);
+      });
+      if (evt && evt.currentTarget) evt.currentTarget.classList.add("active");
+      if (currentData) renderDropsGrid(currentData.twitch || {});
+    }
+
+    function setDropsFilterByName(filterName) {
+      switchTab("drops");
+      document.querySelectorAll(".tab-btn").forEach(el => {
+        if (el.innerText.includes("Twitch Drops")) el.classList.add("active");
+      });
+      currentDropsFilter = filterName;
+      document.querySelectorAll(".filter-btn").forEach(b => {
+        b.classList.toggle("active", b.getAttribute("data-filter") === filterName);
+      });
+      if (currentData) renderDropsGrid(currentData.twitch || {});
+    }
+
+    function onDropsSearchInput() {
+      if (currentData) renderDropsGrid(currentData.twitch || {});
+    }
+
+    async function fetchData(silent = false) {
+      try {
+        const res = await fetch("/api/status?t=" + Date.now(), { cache: "no-store" });
+        if (res.status === 401) {
+          window.location.href = "/login";
+          return;
+        }
+        currentData = await res.json();
+        renderDashboard(currentData);
+        pulseSyncIndicator();
+      } catch (err) {
+        if (!silent) {
+          showToast("Error connecting to server API: " + err.message);
+        }
+      }
+    }
+
+    async function refreshMiningProgress() {
+      const btnBanner = document.getElementById("btn-refresh-progress");
+      const btnHeader = document.getElementById("btn-header-refresh-progress");
+      if (btnBanner) {
+        btnBanner.disabled = true;
+        btnBanner.innerHTML = "&#8635; Refreshing...";
+      }
+      if (btnHeader) {
+        btnHeader.disabled = true;
+        btnHeader.innerHTML = "&#8635; Refreshing...";
+      }
+      try {
+        await fetchData(false);
+        const ms = (currentData && currentData.twitch && currentData.twitch.miner_status) || {};
+        if (ms.active && ms.current_drop_name && ms.current_drop_required > 0) {
+          showToast(`Mining progress refreshed: ${ms.current_drop_name} (${ms.current_drop_watched || 0}/${ms.current_drop_required}m — ${ms.current_drop_percent || 0}%)`);
+        } else if (ms.active) {
+          showToast(`Mining progress refreshed: watching ${ms.channel_name || ms.channel_login || 'stream'} (Session: ${ms.minutes_watched || 1}/${ms.cycle_minutes || 60}m)`);
+        } else {
+          showToast("Page mining status and drop progress refreshed.");
+        }
+      } finally {
+        if (btnBanner) {
+          btnBanner.disabled = false;
+          btnBanner.innerHTML = "&#8635; Refresh Progress";
+        }
+        if (btnHeader) {
+          btnHeader.disabled = false;
+          btnHeader.innerHTML = "&#8635; Refresh Progress";
+        }
+      }
+    }
+
+    function tickLocalSessionTimer() {
+      if (!currentData || !currentData.twitch || !currentData.twitch.miner_status) return;
+      const minerStat = currentData.twitch.miner_status;
+      if (!minerStat.active || !minerStat.switched_at) return;
+      let switchedMs = Number(minerStat.switched_at);
+      if (Number.isFinite(switchedMs) && switchedMs > 0) {
+        if (switchedMs < 1e11) switchedMs *= 1000;
+      } else {
+        switchedMs = Date.parse(minerStat.switched_at);
+      }
+      if (!Number.isFinite(switchedMs)) return;
+      const elapsedMins = Math.max(1, Math.floor((Date.now() - switchedMs) / 60000) + 1);
+      const cycleTotal = minerStat.cycle_minutes || 60;
+      const clampedMins = Math.min(cycleTotal, Math.max(minerStat.minutes_watched || 1, elapsedMins));
+      if (clampedMins !== minerStat.minutes_watched) {
+        minerStat.minutes_watched = clampedMins;
+        const progressPill = document.getElementById("miner-stream-progress");
+        if (progressPill) {
+          progressPill.innerText = minerStat.progress_verified
+            ? `Session: ${clampedMins}/${cycleTotal}m (Verified)`
+            : `Session: ${clampedMins}/${cycleTotal}m (Check: ${minerStat.minutes_without_progress || 0}/${minerStat.progress_check_minutes || 15}m)`;
+        }
+      }
+    }
+
+    function renderDashboard(data) {
+      const twitch = data.twitch || {};
+      lastTwitchData = twitch;
+      
+      // App Mode vs Browser Detection
+      const isApp = isStandaloneApp();
+      const appBadge = document.getElementById("app-mode-badge");
+      const installBtn = document.getElementById("btn-install-app");
+      if (appBadge) appBadge.style.display = isApp ? "inline-flex" : "none";
+      if (installBtn && isApp) installBtn.style.display = "none";
+
+      // 1. Stats bar
+      const twitchUserEl = document.getElementById("stat-twitch-user");
+      if (twitchUserEl) {
+        if (twitch.username) {
+          twitchUserEl.innerHTML = `<span style="color: #a855f7;">@${escapeHtml(twitch.username)}</span> <span style="font-size: 0.72rem; color: #34d399; font-weight: 600;">[TOKEN OK]</span>`;
+        } else if (twitch.token_error) {
+          twitchUserEl.innerHTML = `<span style="color: #f59e0b; cursor: pointer;" onclick="switchTab('accounts')" title="${escapeHtml(twitch.token_error)}">Token Expired (Re-link)</span>`;
+        } else {
+          twitchUserEl.innerHTML = `<span style="color: #ef4444; cursor: pointer;" onclick="switchTab('accounts')">Not Connected</span>`;
+        }
+      }
+      const statTwitchSub = document.getElementById("stat-twitch-sub");
+      if (statTwitchSub) {
+        statTwitchSub.innerText = `${twitch.active_campaigns_count || 0} Active Campaigns (${twitch.total_campaigns || (twitch.campaigns || []).length} Total)`;
+      }
+
+      const twitchCollectedCount = (twitch.collected_items && twitch.collected_items.length)
+        ? twitch.collected_items.length
+        : (twitch.claimed_history_count || 0);
+      const storeClaimedCount =
+        ((data.epic && data.epic.claimed_titles) ? data.epic.claimed_titles.length : 0) + 
+        ((data.amazon && data.amazon.claimed_items) ? data.amazon.claimed_items.length : 0) + 
+        ((data.gog && data.gog.claimed_items) ? data.gog.claimed_items.length : 0);
+      const totalClaimedCount = twitchCollectedCount + storeClaimedCount;
+
+      document.getElementById("stat-inventory-count").innerText = `${totalClaimedCount} Collected`;
+      const statInvSub = document.getElementById("stat-inventory-sub");
+      if (statInvSub) {
+        statInvSub.innerText = `${twitchCollectedCount} Twitch Drops | ${storeClaimedCount} Store Items`;
+      }
+
+      const needsCollectionCount = twitch.needs_collection_count !== undefined
+        ? twitch.needs_collection_count
+        : ((twitch.in_progress_count || 0) + (twitch.ready_to_claim_count || 0) + (twitch.available_count || 0));
+      document.getElementById("stat-active-campaigns").innerText = `${needsCollectionCount} Drops`;
+      const statNeedsSub = document.getElementById("stat-needs-sub");
+      if (statNeedsSub) {
+        statNeedsSub.innerText = `${twitch.in_progress_count || 0} In Progress | ${twitch.ready_to_claim_count || 0} Ready to Collect`;
+      }
+
+      const unavailCount = twitch.unavailable_count || 0;
+      document.getElementById("stat-ready-count").innerText = `${unavailCount} Unavailable`;
+      const statUnavailSub = document.getElementById("stat-unavail-sub");
+      if (statUnavailSub) {
+        statUnavailSub.innerText = unavailCount > 0
+          ? `${unavailCount} Expired or Sub-Only Drops`
+          : `All Active Drops Available`;
+      }
+
+      if (twitch.last_refreshed_at) {
+        const refElem = document.getElementById("campaigns-last-refreshed");
+        if (refElem) {
+          try {
+            const d = new Date(twitch.last_refreshed_at);
+            refElem.innerText = "Refreshed: " + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          } catch(e) {
+            refElem.innerText = "Refreshed: Today";
+          }
+        }
+      }
+
+      // 2. Mining Mode & Ordered Queue (Strictly 1 Active Mined at a Time)
+      const miningCfg = twitch.mining_config || { mode: "default", queue: [], activated_games: [] };
+      currentMiningMode = miningCfg.mode || "default";
+      const rawQueue = miningCfg.queue || miningCfg.activated_games || twitch.queue || [];
+      selectedPriorityGames = rawQueue.map(g => String(g).trim()).filter(Boolean);
+
+      const btnDefault = document.getElementById("btn-mode-default");
+      const btnSelective = document.getElementById("btn-mode-selective");
+      const btnStopped = document.getElementById("btn-mode-stopped");
+      if (btnDefault && btnSelective) {
+        btnDefault.classList.toggle("active", currentMiningMode === "default");
+        btnSelective.classList.toggle("active", currentMiningMode === "selective");
+        if (btnStopped) btnStopped.classList.toggle("active", currentMiningMode === "stopped");
+      }
+
+      const modeBadge = document.getElementById("mode-badge-label");
+      if (modeBadge) {
+        if (currentMiningMode === "stopped") {
+          modeBadge.innerText = "[MINER FULLY STOPPED]";
+          modeBadge.style.color = "#ef4444";
+        } else if (currentMiningMode === "selective") {
+          modeBadge.innerText = "[MODE: SELECTIVE - QUEUE ONLY (1 AT A TIME)]";
+          modeBadge.style.color = "#38bdf8";
+        } else {
+          modeBadge.innerText = "[MODE: DEFAULT - QUEUE + AUTO-MINE (1 AT A TIME)]";
+          modeBadge.style.color = "#a855f7";
+        }
+      }
+
+      // Update Git status in System tab automatically if data present
+      if (data.system && data.system.git) {
+        const g = data.system.git;
+        const badge = document.getElementById("git-status-badge");
+        if (badge) {
+          if (g.updates_available) {
+            badge.innerText = "[UPDATE AVAILABLE]";
+            badge.style.color = "#facc15";
+            badge.style.background = "rgba(250, 204, 21, 0.15)";
+            const remoteInfo = document.getElementById("git-remote-info");
+            const remoteHash = document.getElementById("git-remote-hash");
+            if (remoteInfo) remoteInfo.style.display = "block";
+            if (remoteHash) remoteHash.innerText = g.remote_commit || "Newer commit on GitHub";
+          } else {
+            badge.innerText = "[UP TO DATE]";
+            badge.style.color = "#4ade80";
+            badge.style.background = "rgba(34, 197, 94, 0.15)";
+          }
+        }
+        const lHash = document.getElementById("git-local-hash");
+        if (lHash && g.commit_short) lHash.innerText = g.commit_short;
+        const lMsg = document.getElementById("git-local-msg");
+        if (lMsg && g.commit_message) lMsg.innerText = g.commit_message;
+        const lDate = document.getElementById("git-local-date");
+        if (lDate && g.commit_date) lDate.innerText = g.commit_date;
+      }
+
+      // Update Autostart badge in System tab if present
+      if (data.system && data.system.autostart) {
+        const a = data.system.autostart;
+        const autoBadge = document.getElementById("autostart-badge");
+        if (autoBadge) {
+          if (a.enabled) {
+            autoBadge.innerText = "[ENABLED ON REBOOT]";
+            autoBadge.style.color = "#4ade80";
+            autoBadge.style.background = "rgba(34, 197, 94, 0.15)";
+          } else {
+            autoBadge.innerText = "[NOT CONFIGURED]";
+            autoBadge.style.color = "#facc15";
+            autoBadge.style.background = "rgba(250, 204, 21, 0.15)";
+          }
+        }
+      }
+
+      const modeDesc = document.getElementById("mining-mode-desc");
+      if (modeDesc) {
+        if (currentMiningMode === "stopped") {
+          modeDesc.innerText = "Miner is Fully Stopped: No streams are being watched or mined under your account. Click 'Default' or 'Selective' anytime to resume.";
+        } else if (currentMiningMode === "selective") {
+          modeDesc.innerText = "Selective Mode: strictly watches ONLY 1 stream at a time (#1 in your queue). When #1 finishes all drops, it automatically advances and swaps to #2 in your queue.";
+        } else {
+          modeDesc.innerText = "Default Mode: mines your queued games 1 at a time in exact queue order, then auto-picks remaining active drops when the queue finishes.";
+        }
+      }
+
+      const actCountElem = document.getElementById("activated-count");
+      if (actCountElem) actCountElem.innerText = selectedPriorityGames.length;
+
+      renderTargetChips();
+
+      // 3. Live Miner Telemetry Card (strictly 1 stream at a time under account)
+      renderMinerTelemetry(twitch);
+
+      // 4. Update Filter counts
+      updateFilterCounts(twitch);
+
+      // 5. Render Twitch Drops Tab
+      renderDropsGrid(twitch);
+
+      // 6. Render Epic Games Store Tab
+      renderEpicGrid(data.epic || {});
+
+      // 7. Render Other Stores Tab
+      renderStoresGrid(data.amazon || {}, data.gog || {});
+    }
+
+    // Official Verified Twitch Box-Art & Game Logos
+    const KNOWN_GAME_LOGOS = {
+      "evolutions": "https://static-cdn.jtvnw.net/ttv-boxart/1982936547_IGDB-285x380.jpg",
+      "pokémon community game": "https://static-cdn.jtvnw.net/ttv-boxart/329951934_IGDB-285x380.jpg",
+      "pokémon trading card game pocket": "https://static-cdn.jtvnw.net/ttv-boxart/375403621_IGDB-285x380.jpg",
+      "pokémon trading card game live": "https://static-cdn.jtvnw.net/ttv-boxart/155409827-285x380.jpg",
+      "pokémon": "https://static-cdn.jtvnw.net/ttv-boxart/1982936547_IGDB-285x380.jpg",
+      "pokemon": "https://static-cdn.jtvnw.net/ttv-boxart/1982936547_IGDB-285x380.jpg",
+      "wardogs": "https://static-cdn.jtvnw.net/ttv-boxart/743893402_IGDB-285x380.jpg",
+      "rust": "https://static-cdn.jtvnw.net/ttv-boxart/263490_IGDB-285x380.jpg",
+      "world of warcraft": "https://static-cdn.jtvnw.net/ttv-boxart/18122-285x380.jpg",
+      "overwatch 2": "https://static-cdn.jtvnw.net/ttv-boxart/515025-285x380.jpg",
+      "overwatch": "https://static-cdn.jtvnw.net/ttv-boxart/488552-285x380.jpg",
+      "marvel rivals": "https://static-cdn.jtvnw.net/ttv-boxart/1476685419_IGDB-285x380.jpg",
+      "escape from tarkov": "https://static-cdn.jtvnw.net/ttv-boxart/491931-285x380.jpg",
+      "warframe": "https://static-cdn.jtvnw.net/ttv-boxart/66170-285x380.jpg",
+      "rainbow six siege": "https://static-cdn.jtvnw.net/ttv-boxart/460630-285x380.jpg",
+      "apex legends": "https://static-cdn.jtvnw.net/ttv-boxart/511224-285x380.jpg",
+      "grand theft auto v": "https://static-cdn.jtvnw.net/ttv-boxart/32982_IGDB-285x380.jpg",
+      "dead by daylight": "https://static-cdn.jtvnw.net/ttv-boxart/491487-285x380.jpg",
+      "fortnite": "https://static-cdn.jtvnw.net/ttv-boxart/33214-285x380.jpg",
+      "valorant": "https://static-cdn.jtvnw.net/ttv-boxart/516575-285x380.jpg",
+      "sea of thieves": "https://static-cdn.jtvnw.net/ttv-boxart/490377-285x380.jpg",
+      "once human": "https://static-cdn.jtvnw.net/ttv-boxart/1283626244_IGDB-285x380.jpg",
+      "delta force": "https://static-cdn.jtvnw.net/ttv-boxart/1568265005_IGDB-285x380.jpg",
+      "the finals": "https://static-cdn.jtvnw.net/ttv-boxart/1709407338_IGDB-285x380.jpg",
+      "arc raiders": "https://static-cdn.jtvnw.net/ttv-boxart/1709407338_IGDB-285x380.jpg",
+      "path of exile": "https://static-cdn.jtvnw.net/ttv-boxart/29307_IGDB-285x380.jpg",
+      "path of exile 2": "https://static-cdn.jtvnw.net/ttv-boxart/518184_IGDB-285x380.jpg",
+      "diablo iv": "https://static-cdn.jtvnw.net/ttv-boxart/515024-285x380.jpg",
+      "just chatting": "https://static-cdn.jtvnw.net/ttv-boxart/509658-285x380.jpg"
+    };
+
+    function getGameCoverFallback(gameName, existingUrl) {
+      if (existingUrl && String(existingUrl).trim()) return existingUrl;
+      const gLow = String(gameName || "").toLowerCase().trim();
+      if (KNOWN_GAME_LOGOS[gLow]) return KNOWN_GAME_LOGOS[gLow];
+      for (const [k, v] of Object.entries(KNOWN_GAME_LOGOS)) {
+        if (k === gLow || k.includes(gLow) || gLow.includes(k)) return v;
+      }
+      if (lastTwitchData && Array.isArray(lastTwitchData.campaigns)) {
+        const found = lastTwitchData.campaigns.find(c => {
+          const cg = String(c.game || "").toLowerCase().trim();
+          return cg === gLow || cg.includes(gLow) || gLow.includes(cg);
+        });
+        if (found && found.cover_url) return found.cover_url;
+      }
+      return "";
+    }
+
+    // Live Stream Mini-Viewer State
+    let isMiniViewerOpen = false;
+    let currentPreviewChannel = "";
+    let isPreviewSuspendedDueToUserActive = false;
+
+    function getTwitchParentDomain() {
+      const host = window.location.hostname;
+      return host || "localhost";
+    }
+
+    function toggleMiniViewer() {
+      if (isMiniViewerOpen) {
+        closeMiniViewer();
+      } else {
+        openMiniViewer();
+      }
+    }
+
+    function openMiniViewer() {
+      const card = document.getElementById("mini-viewer-card");
+      const btn = document.getElementById("btn-toggle-miniviewer");
+      const label = document.getElementById("mini-viewer-channel-label");
+      const miniGameIcon = document.getElementById("mini-viewer-game-icon");
+      const iframe = document.getElementById("mini-viewer-iframe");
+      const overlay = document.getElementById("mini-viewer-warn-overlay");
+
+      const lastTwitch = (window.lastTelemetryData && window.lastTelemetryData.twitch) || {};
+      const minerStat = lastTwitch.miner_status || {};
+      const channelLogin = minerStat.channel_login || "";
+      const gameTitle = minerStat.game || "Twitch Drops";
+
+      if (!channelLogin) {
+        showToast("No active stream currently being watched to preview.");
+        return;
+      }
+
+      isMiniViewerOpen = true;
+      if (card) card.style.display = "flex";
+      if (btn) btn.innerHTML = "&#10006; Hide Mini-Viewer";
+      
+      const cover = minerStat.game_cover_url || getGameCoverFallback(gameTitle);
+      if (miniGameIcon) {
+        if (cover) {
+          miniGameIcon.src = cover;
+          miniGameIcon.style.display = "inline-block";
+        } else {
+          miniGameIcon.style.display = "none";
+        }
+      }
+      if (label) label.innerText = `Watching: @${minerStat.channel_name || channelLogin} • Game: ${gameTitle}`;
+
+      if (minerStat.user_active) {
+        suspendMiniViewerForExternalViewing();
+      } else {
+        isPreviewSuspendedDueToUserActive = false;
+        if (overlay) overlay.style.display = "none";
+        currentPreviewChannel = channelLogin;
+        const parent = getTwitchParentDomain();
+        if (iframe) {
+          iframe.src = `https://player.twitch.tv/?channel=${encodeURIComponent(channelLogin)}&parent=${parent}&muted=true&autoplay=true`;
+        }
+      }
+    }
+
+    function closeMiniViewer() {
+      isMiniViewerOpen = false;
+      const card = document.getElementById("mini-viewer-card");
+      const btn = document.getElementById("btn-toggle-miniviewer");
+      const iframe = document.getElementById("mini-viewer-iframe");
+      const overlay = document.getElementById("mini-viewer-warn-overlay");
+
+      if (card) card.style.display = "none";
+      if (iframe) iframe.src = "";
+      if (overlay) overlay.style.display = "none";
+      if (btn) btn.innerHTML = "&#128065; Show Mini-Viewer";
+      currentPreviewChannel = "";
+      isPreviewSuspendedDueToUserActive = false;
+    }
+
+    function suspendMiniViewerForExternalViewing() {
+      isPreviewSuspendedDueToUserActive = true;
+      const iframe = document.getElementById("mini-viewer-iframe");
+      const overlay = document.getElementById("mini-viewer-warn-overlay");
+      if (iframe) iframe.src = "";
+      if (overlay) overlay.style.display = "flex";
+      showToast("Twitch stream open elsewhere detected! Mini-viewer preview automatically suspended to protect drop mining.");
+    }
+
+    function resumeMiniViewer() {
+      const overlay = document.getElementById("mini-viewer-warn-overlay");
+      const iframe = document.getElementById("mini-viewer-iframe");
+      const lastTwitch = (window.lastTelemetryData && window.lastTelemetryData.twitch) || {};
+      const minerStat = lastTwitch.miner_status || {};
+      const channelLogin = minerStat.channel_login || currentPreviewChannel;
+
+      if (!channelLogin) {
+        closeMiniViewer();
+        return;
+      }
+
+      isPreviewSuspendedDueToUserActive = false;
+      if (overlay) overlay.style.display = "none";
+      const parent = getTwitchParentDomain();
+      currentPreviewChannel = channelLogin;
+      if (iframe) {
+        iframe.src = `https://player.twitch.tv/?channel=${encodeURIComponent(channelLogin)}&parent=${parent}&muted=true&autoplay=true`;
+      }
+      showToast("Mini-viewer preview resumed.");
+    }
+
+    function updateMiniViewerFrame(minerStat) {
+      if (!isMiniViewerOpen) return;
+      const iframe = document.getElementById("mini-viewer-iframe");
+      const overlay = document.getElementById("mini-viewer-warn-overlay");
+      const label = document.getElementById("mini-viewer-channel-label");
+
+      // Auto-suspend if user activity detected elsewhere on Twitch
+      if (minerStat.user_active) {
+        if (!isPreviewSuspendedDueToUserActive) {
+          suspendMiniViewerForExternalViewing();
+        }
+        return;
+      }
+
+      // If channel changed, update iframe
+      if (minerStat.channel_login && minerStat.channel_login !== currentPreviewChannel && !isPreviewSuspendedDueToUserActive) {
+        currentPreviewChannel = minerStat.channel_login;
+        const parent = getTwitchParentDomain();
+        if (iframe) {
+          iframe.src = `https://player.twitch.tv/?channel=${encodeURIComponent(minerStat.channel_login)}&parent=${parent}&muted=true&autoplay=true`;
+        }
+        if (label) {
+          label.innerText = `Previewing: ${minerStat.channel_name || minerStat.channel_login} (${minerStat.game || 'Drops'})`;
+        }
+      }
+    }
+
+    function renderMinerTelemetry(twitch) {
+      const minerStat = twitch.miner_status || {};
+      const minerDot = document.getElementById("miner-dot");
+      const minerHeading = document.getElementById("miner-status-heading");
+      const minerBadge = document.getElementById("miner-stream-badge");
+      const minerSub = document.getElementById("miner-status-sub");
+      const channelPill = document.getElementById("miner-stream-channel");
+      const dropLivePill = document.getElementById("miner-drop-live-progress");
+      const progressPill = document.getElementById("miner-stream-progress");
+      const viewersPill = document.getElementById("miner-stream-viewers");
+      const streamLink = document.getElementById("miner-stream-link");
+
+      // Update Master Light Switch Card
+      const masterCard = document.getElementById("master-switch-card");
+      const masterToggle = document.getElementById("master-mining-toggle");
+      const masterHeading = document.getElementById("master-switch-heading");
+      const masterSub = document.getElementById("master-switch-sub");
+      const masterPill = document.getElementById("toggle-state-pill");
+      const masterIcon = document.getElementById("master-switch-icon");
+      const isStopped = (currentMiningMode === "stopped" || minerStat.mode === "stopped");
+
+      if (masterToggle) masterToggle.checked = !isStopped;
+      if (masterCard) masterCard.classList.toggle("disconnected", isStopped);
+      if (masterPill) {
+        masterPill.className = "toggle-state-pill " + (isStopped ? "offline" : "online");
+        masterPill.innerText = isStopped ? "DISCONNECTED / OFF" : "CONNECTED / ON";
+      }
+      if (masterIcon) masterIcon.innerHTML = isStopped ? "&#9888;" : "&#9889;";
+      if (masterHeading) {
+        masterHeading.innerText = isStopped 
+          ? "Twitch Drops Mining: Completely Disconnected" 
+          : "Twitch Drops Mining: Connected & Active";
+      }
+      if (masterSub) {
+        masterSub.innerText = isStopped
+          ? "Twitch access is switched OFF. No streams will be watched or mined until you flip this switch back on."
+          : "Twitch access is switched ON. Actively monitoring drops and verifying real-time progress.";
+      }
+
+      const gameCoverImg = document.getElementById("miner-game-cover");
+      const gameBadgeWrap = document.getElementById("miner-game-badge-wrap");
+      const gameTag = document.getElementById("miner-game-tag");
+      const campTag = document.getElementById("miner-campaign-tag");
+
+      if (!minerDot) return;
+
+      if (currentMiningMode === "stopped" || minerStat.mode === "stopped") {
+        if (gameCoverImg) gameCoverImg.style.display = "none";
+        if (gameBadgeWrap) gameBadgeWrap.style.display = "none";
+        minerDot.className = "live-indicator-dot idle";
+        minerHeading.innerText = "Twitch Drops Miner (Fully Stopped)";
+        minerBadge.innerText = "STOPPED";
+        minerBadge.style.background = "rgba(239, 68, 68, 0.15)";
+        minerBadge.style.color = "#f87171";
+        minerBadge.style.borderColor = "#ef4444";
+        minerBadge.style.display = "inline-flex";
+
+        minerSub.innerText = "Miner is completely stopped. Zero stream viewing, zero heartbeats. Click 'Default' or 'Selective' anytime to resume.";
+        channelPill.innerText = "Channel: None (Stopped)";
+        if (dropLivePill) dropLivePill.style.display = "none";
+        progressPill.innerText = "Status: Stopped";
+        viewersPill.innerText = "0 Viewers";
+        streamLink.style.display = "none";
+      } else if (minerStat.active) {
+        minerDot.className = "live-indicator-dot";
+        const cname = minerStat.channel_name || minerStat.channel_login || "Live Streamer";
+        const gname = minerStat.game || "Live Drop";
+        minerHeading.innerText = `Watching: @${cname} • Game: ${gname}`;
+        minerBadge.innerText = "1 STREAM ACTIVE";
+        minerBadge.style.display = "inline-flex";
+
+        const cover = minerStat.game_cover_url || getGameCoverFallback(gname);
+        if (gameCoverImg) {
+          if (cover) {
+            gameCoverImg.src = cover;
+            gameCoverImg.alt = gname;
+            gameCoverImg.style.display = "block";
+          } else {
+            gameCoverImg.style.display = "none";
+          }
+        }
+
+        if (gameBadgeWrap && gameTag) {
+          gameBadgeWrap.style.display = "flex";
+          gameTag.innerText = `GAME: ${gname.toUpperCase()}`;
+          if (campTag) {
+            const cTitle = minerStat.campaign && minerStat.campaign.toLowerCase() !== gname.toLowerCase()
+              ? `Campaign: ${minerStat.campaign}`
+              : "Active Drop Campaign";
+            campTag.innerText = cTitle;
+          }
+        }
+
+        const ulogin = minerStat.user_login || twitch.username || "twitch_viewer";
+        const dropTagInfo = minerStat.verified_drops
+          ? (minerStat.has_drops_in_title ? "Drops Verified (API + Title)" : "Drops Verified (API)")
+          : "Drops in Channel Title";
+        const progCheckInfo = minerStat.progress_verified
+          ? "Progress Confirmed (+1m)"
+          : `Progress Watchdog (${minerStat.minutes_without_progress || 0}/${minerStat.progress_check_minutes || 5}m check)`;
+        const cycleTotal = minerStat.cycle_minutes || 60;
+        minerSub.innerText = `Watching under @${ulogin} — strictly 1 stream at a time [${dropTagInfo} | ${progCheckInfo}]. Automatically switches channels after 1 hour and checks drops availability every 5 mins.`;
+
+        channelPill.innerText = `Channel: ${cname} (Drops Enabled)`;
+        if (dropLivePill) {
+          if (minerStat.current_drop_name && minerStat.current_drop_required > 0) {
+            dropLivePill.innerText = `Active Drop: ${minerStat.current_drop_name} (${minerStat.current_drop_watched || 0}/${minerStat.current_drop_required}m - ${minerStat.current_drop_percent || 0}%)`;
+            dropLivePill.style.display = "inline-flex";
+          } else {
+            dropLivePill.style.display = "none";
+          }
+        }
+        progressPill.innerText = minerStat.progress_verified
+          ? `Session: ${minerStat.minutes_watched || 1}/${cycleTotal}m (Verified)`
+          : `Session: ${minerStat.minutes_watched || 1}/${cycleTotal}m (Check: ${minerStat.minutes_without_progress || 0}/${minerStat.progress_check_minutes || 5}m)`;
+        viewersPill.innerText = `${(minerStat.viewers || 0).toLocaleString()} Viewers`;
+        
+        const targetUrl = minerStat.stream_url || `https://www.twitch.tv/${minerStat.channel_login || ''}`;
+        streamLink.href = targetUrl;
+        streamLink.innerText = `Open Stream (${minerStat.channel_login || 'Twitch'})`;
+        streamLink.style.display = "inline-flex";
+      } else if (minerStat.switching) {
+        if (gameCoverImg) gameCoverImg.style.display = "none";
+        if (gameBadgeWrap) gameBadgeWrap.style.display = "none";
+        minerDot.className = "live-indicator-dot";
+        const selGame = minerStat.selected_game || minerStat.game || "Auto-Mine";
+        minerHeading.innerText = `Switching Stream -> ${selGame}`;
+        minerBadge.innerText = "SWITCHING TARGET";
+        minerBadge.style.display = "inline-flex";
+        minerSub.innerText = minerStat.message || `Cancelled previous stream and switching immediately to ${selGame} (strictly 1 stream at a time).`;
+        channelPill.innerText = `Target: ${selGame}`;
+        if (dropLivePill) dropLivePill.style.display = "none";
+        progressPill.innerText = "Session: Switching...";
+        viewersPill.innerText = "--";
+        streamLink.style.display = "none";
+      } else {
+        if (gameCoverImg) gameCoverImg.style.display = "none";
+        if (gameBadgeWrap) gameBadgeWrap.style.display = "none";
+        minerDot.className = "live-indicator-dot idle";
+        minerHeading.innerText = "Twitch Drops Miner (Idle / Between Cycles)";
+        minerBadge.innerText = "STANDBY";
+        minerBadge.style.display = "inline-flex";
+
+        const msg = minerStat.message || "Miner is standing by. Prepares to watch 1 stream at a time when eligible drops are available.";
+        minerSub.innerText = `${msg} Strictly 1 stream at a time.`;
+
+        channelPill.innerText = "Channel: None";
+        if (dropLivePill) dropLivePill.style.display = "none";
+        progressPill.innerText = "Session: Idle";
+        viewersPill.innerText = "0 Viewers";
+        streamLink.style.display = "none";
+      }
+
+      // Concurrent viewing / user active conflict warning banner
+      const conflictBanner = document.getElementById("miner-conflict-banner");
+      const conflictText = document.getElementById("miner-conflict-text");
+      if (conflictBanner) {
+        if (!isStopped && (minerStat.user_active || minerStat.presence_conflict)) {
+          conflictBanner.style.display = "flex";
+          if (conflictText && minerStat.conflict_warning) {
+            conflictText.innerText = minerStat.conflict_warning;
+          }
+        } else {
+          conflictBanner.style.display = "none";
+        }
+      }
+
+      const restartBtn = document.getElementById("btn-restart-mining");
+      const switchChBtn = document.getElementById("btn-switch-channel");
+      const pickChBtn = document.getElementById("btn-pick-channel");
+      if (restartBtn) {
+        if (minerStat.active && minerStat.game) {
+          restartBtn.style.display = "inline-flex";
+          restartBtn.disabled = false;
+          restartBtn.innerHTML = `&#8635; Restart Mining (${escapeHtml(minerStat.game)})`;
+          restartBtn.title = `Force reconnect, clear stream stalls, and restart mining for ${escapeHtml(minerStat.game)}`;
+        } else if (minerStat.switching) {
+          restartBtn.style.display = "inline-flex";
+          restartBtn.disabled = true;
+          restartBtn.innerHTML = `&#8635; Restarting Stream...`;
+          restartBtn.title = "Reconnecting to live stream...";
+        } else {
+          const topG = (selectedPriorityGames && selectedPriorityGames[0]) || minerStat.selected_game || "";
+          restartBtn.style.display = "inline-flex";
+          restartBtn.disabled = false;
+          restartBtn.innerHTML = topG ? `&#8635; Restart Mining (${escapeHtml(topG)})` : `&#8635; Restart Mining`;
+          restartBtn.title = topG ? `Start or restart mining ${escapeHtml(topG)}` : "Start or restart mining selected game";
+        }
+      }
+      if (switchChBtn) {
+        switchChBtn.style.display = isStopped ? "none" : "inline-flex";
+        switchChBtn.disabled = Boolean(minerStat.switching);
+      }
+      if (pickChBtn) {
+        pickChBtn.style.display = isStopped ? "none" : "inline-flex";
+        pickChBtn.disabled = Boolean(minerStat.switching);
+      }
+
+      // Mini-Viewer Controls & Protection (Enforce single viewing at all times)
+      const btnMini = document.getElementById("btn-toggle-miniviewer");
+      if (isStopped || !minerStat.active || !minerStat.channel_login) {
+        if (btnMini) btnMini.style.display = "none";
+        if (isMiniViewerOpen) closeMiniViewer();
+      } else {
+        if (btnMini) btnMini.style.display = "inline-flex";
+        if (isMiniViewerOpen) updateMiniViewerFrame(minerStat);
+      }
+
+      if (streamLink) {
+        streamLink.onclick = function() {
+          if (isMiniViewerOpen) {
+            suspendMiniViewerForExternalViewing();
+          }
+        };
+      }
+    }
+
+    function updateFilterCounts(twitch) {
+      const campaigns = twitch.campaigns || [];
+      const collectedItems = twitch.collected_items || [];
+      const totalCount = campaigns.length;
+      const needsCount = campaigns.filter(c => (c.needs_collection_count || 0) > 0 || (c.in_progress_count || 0) > 0 || (c.ready_count || 0) > 0 || (c.available_count || 0) > 0).length;
+      const progCount = campaigns.filter(c => (c.in_progress_count || 0) > 0).length;
+      const readyCount = campaigns.filter(c => (c.ready_count || 0) > 0).length;
+      const collectedCount = collectedItems.length || twitch.claimed_history_count || 0;
+      const unavailCount = campaigns.filter(c => (c.unavailable_count || 0) > 0 || c.status === "EXPIRED" || c.status === "UNAVAILABLE").length;
+      const actCount = campaigns.filter(c => Boolean(c.is_activated || c.is_queued)).length;
+
+      const elAll = document.getElementById("flt-all-count");
+      const elNeeds = document.getElementById("flt-needs-count");
+      const elProg = document.getElementById("flt-prog-count");
+      const elReady = document.getElementById("flt-ready-count");
+      const elColl = document.getElementById("flt-collected-count");
+      const elUnavail = document.getElementById("flt-unavail-count");
+      const elAct = document.getElementById("flt-act-count");
+
+      if (elAll) elAll.innerText = totalCount;
+      if (elNeeds) elNeeds.innerText = needsCount;
+      if (elProg) elProg.innerText = progCount;
+      if (elReady) elReady.innerText = readyCount;
+      if (elColl) elColl.innerText = collectedCount;
+      if (elUnavail) elUnavail.innerText = unavailCount;
+      if (elAct) elAct.innerText = actCount;
+    }
+
+    function renderTargetChips() {
+      const container = document.getElementById("selected-targets-chips");
+      if (!container) return;
+      const actCountElem = document.getElementById("activated-count");
+      if (actCountElem) actCountElem.innerText = selectedPriorityGames.length;
+
+      if (selectedPriorityGames.length === 0) {
+        if (currentMiningMode === "stopped") {
+          container.innerHTML = `<span style="font-size: 0.8rem; color: #f87171;">Miner is completely stopped. No stream is being watched.</span>`;
+        } else if (currentMiningMode === "selective") {
+          container.innerHTML = `<span style="font-size: 0.8rem; color: #94a3b8;">Queue is empty. Click "Mine Now (#1)" or "+ Add to Queue" on any campaign below to start mining.</span>`;
+        } else {
+          container.innerHTML = `<span style="font-size: 0.8rem; color: #94a3b8;">Queue is empty (Auto-selecting 1 active drop campaign at a time). Click "Mine Now (#1)" or "+ Add to Queue" below to prioritize games.</span>`;
+        }
+      } else {
+        container.innerHTML = selectedPriorityGames.map((gName, idx) => {
+          const isFirst = idx === 0;
+          const cover = getGameCoverFallback(gName);
+          const logoHtml = cover 
+            ? `<img src="${cover}" class="chip-game-logo" alt="${escapeHtml(gName)}" referrerpolicy="no-referrer">` 
+            : `<span style="margin-right: 4px;">🎮</span>`;
+          const upBtn = idx > 0
+            ? `<span class="chip-remove" style="color: #60a5fa; margin-left: 2px;" title="Move Up in Queue" onclick="queueGameAction('${escapeJsAttr(gName)}', 'move_up')">&uarr;</span>`
+            : "";
+          const downBtn = idx < selectedPriorityGames.length - 1
+            ? `<span class="chip-remove" style="color: #60a5fa;" title="Move Down in Queue" onclick="queueGameAction('${escapeJsAttr(gName)}', 'move_down')">&darr;</span>`
+            : "";
+          const mineNowBtn = !isFirst
+            ? `<span class="chip-remove" style="color: #34d399; font-size: 0.72rem;" title="Promote to #1 & Mine Immediately" onclick="queueGameAction('${escapeJsAttr(gName)}', 'mine_now')">[Mine #1]</span>`
+            : "";
+          return `
+            <div class="chip ${isFirst ? 'active' : ''}" style="${!isFirst ? 'border-color: #3b82f6; background: rgba(59, 130, 246, 0.14); color: #bfdbfe;' : ''}; display: inline-flex; align-items: center;">
+              ${logoHtml}
+              <span style="font-weight: 600;">${isFirst ? `[#1 MINING NOW]: ${escapeHtml(gName)}` : `[#${idx + 1} IN QUEUE]: ${escapeHtml(gName)}`}</span>
+              ${mineNowBtn}
+              ${upBtn}
+              ${downBtn}
+              <span class="chip-remove" title="Remove from Queue" onclick="queueGameAction('${escapeJsAttr(gName)}', 'remove')">&times;</span>
+            </div>
+          `;
+        }).join("");
+      }
+    }
+
+    function isGameTargeted(gameName) {
+      if (!gameName || selectedPriorityGames.length === 0) return false;
+      const lower = gameName.toLowerCase().trim();
+      const pg = selectedPriorityGames[0].toLowerCase().trim();
+      return pg === lower;
+    }
+
+    function getGameQueuePosition(gameName) {
+      if (!gameName || selectedPriorityGames.length === 0) return null;
+      const lower = gameName.toLowerCase().trim();
+      for (let i = 0; i < selectedPriorityGames.length; i++) {
+        const q = selectedPriorityGames[i].toLowerCase().trim();
+        if (q === lower || lower.includes(q) || q.includes(lower)) return i + 1;
+      }
+      return null;
+    }
+
+    function applyImmediateMinerStatus(minerStatus, mode, queueList) {
+      if (mode) currentMiningMode = mode;
+      if (Array.isArray(queueList)) {
+        selectedPriorityGames = queueList.map(g => String(g).trim()).filter(Boolean);
+      }
+      renderTargetChips();
+      if (minerStatus) {
+        if (lastTwitchData) {
+          lastTwitchData.miner_status = minerStatus;
+          if (mode) lastTwitchData.mining_mode = mode;
+          if (Array.isArray(queueList)) {
+            lastTwitchData.activated_games = selectedPriorityGames;
+            lastTwitchData.queue = selectedPriorityGames;
+          }
+        }
+        renderMinerTelemetry({ ...(lastTwitchData || {}), miner_status: minerStatus });
+      }
+      if (lastTwitchData && lastTwitchData.campaigns) {
+        const topLow = (selectedPriorityGames[0] || "").toLowerCase();
+        let markedFirst = false;
+        lastTwitchData.campaigns.forEach(c => {
+          const cg = (c.game || "").toLowerCase();
+          const qPos = getGameQueuePosition(c.game);
+          c.queue_position = qPos;
+          c.is_queued = qPos !== null;
+          if (!markedFirst && topLow && !c.is_expired && c.status !== "UNAVAILABLE" && c.status !== "COMPLETED" && (cg === topLow || cg.includes(topLow) || topLow.includes(cg))) {
+            c.is_activated = true;
+            markedFirst = true;
+          } else {
+            c.is_activated = false;
+          }
+        });
+        updateFilterCounts(lastTwitchData);
+        renderDropsGrid(lastTwitchData);
+      }
+    }
+
+    async function onMasterToggleChange(isConnected) {
+      if (!isConnected) {
+        setMiningMode("stopped");
+      } else {
+        const nextMode = selectedPriorityGames.length > 0 ? "selective" : "default";
+        setMiningMode(nextMode);
+      }
+    }
+
+    async function setMiningMode(mode) {
+      const targetQueue = selectedPriorityGames.slice();
+      applyImmediateMinerStatus(
+        {
+          active: false,
+          switching: true,
+          game: targetQueue[0] || "Auto-Select",
+          selected_game: targetQueue[0] || "",
+          queue: targetQueue,
+          message: `Switching stream immediately to ${mode.toUpperCase()} mode...`
+        },
+        mode,
+        targetQueue
+      );
+      showToast(`Switching stream immediately to ${mode.toUpperCase()} mode...`);
+      try {
+        const res = await fetch("/api/twitch/mining-config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: jsonStringify({ mode: mode, queue: targetQueue, activated_games: targetQueue })
+        });
+        const data = await res.json();
+        const returnedQueue = data.queue || (data.mining_config && data.mining_config.queue) || data.activated_games || targetQueue;
+        const returnedMode = data.mode || (data.mining_config && data.mining_config.mode) || mode;
+        if (data.miner_status) {
+          applyImmediateMinerStatus(data.miner_status, returnedMode, returnedQueue);
+        }
+        showToast(data.message || `Switched to ${mode} mode.`);
+        fetchData(true);
+        broadcastSyncEvent("mining_mode");
+      } catch (err) {
+        showToast("Error updating mining mode: " + err.message);
+      }
+    }
+
+    async function queueGameAction(gameName, action) {
+      if (!gameName && action !== "clear") return;
+      let optimisticQueue = selectedPriorityGames.slice();
+      const gLow = (gameName || "").toLowerCase().trim();
+      const prevTop = (optimisticQueue[0] || "").toLowerCase().trim();
+
+      if (action === "clear") {
+        optimisticQueue = [];
+      } else if (action === "mine_now" || action === "front") {
+        optimisticQueue = [gameName, ...optimisticQueue.filter(g => g.toLowerCase().trim() !== gLow)];
+      } else if (action === "enqueue" || action === "add") {
+        if (!optimisticQueue.some(g => g.toLowerCase().trim() === gLow)) {
+          optimisticQueue.push(gameName);
+        }
+      } else if (action === "move_up") {
+        const idx = optimisticQueue.findIndex(g => g.toLowerCase().trim() === gLow);
+        if (idx > 0) {
+          const tmp = optimisticQueue[idx - 1];
+          optimisticQueue[idx - 1] = optimisticQueue[idx];
+          optimisticQueue[idx] = tmp;
+        }
+      } else if (action === "move_down") {
+        const idx = optimisticQueue.findIndex(g => g.toLowerCase().trim() === gLow);
+        if (idx >= 0 && idx < optimisticQueue.length - 1) {
+          const tmp = optimisticQueue[idx + 1];
+          optimisticQueue[idx + 1] = optimisticQueue[idx];
+          optimisticQueue[idx] = tmp;
+        }
+      } else if (action === "remove") {
+        optimisticQueue = optimisticQueue.filter(g => g.toLowerCase().trim() !== gLow);
+      }
+
+      const newTop = (optimisticQueue[0] || "").toLowerCase().trim();
+      const topChanged = newTop !== prevTop;
+
+      applyImmediateMinerStatus(
+        topChanged
+          ? {
+              active: false,
+              switching: true,
+              game: optimisticQueue[0] || "Auto-Select",
+              selected_game: optimisticQueue[0] || "",
+              queue: optimisticQueue,
+              message: optimisticQueue[0]
+                ? `Switching active stream immediately to #1 '${optimisticQueue[0]}'...`
+                : `Queue cleared, switching stream...`
+            }
+          : (lastTwitchData ? lastTwitchData.miner_status : null),
+        currentMiningMode,
+        optimisticQueue
+      );
+
+      if (action === "mine_now") {
+        showToast(`Switching watched stream immediately to #1 '${gameName}'...`);
+      } else if (action === "enqueue") {
+        showToast(`Adding '${gameName}' to mining queue (#${optimisticQueue.length})...`);
+      } else if (action === "remove") {
+        showToast(`Removing '${gameName}' from mining queue...`);
+      }
+
+      try {
+        const res = await fetch("/api/twitch/queue", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: jsonStringify({ game: gameName, action: action, activated: action !== "remove" })
+        });
+        const data = await res.json();
+        const returnedQueue = data.queue || (data.mining_config && data.mining_config.queue) || data.activated_games || optimisticQueue;
+        const returnedMode = data.mode || (data.mining_config && data.mining_config.mode) || currentMiningMode;
+        applyImmediateMinerStatus(data.miner_status, returnedMode, returnedQueue);
+        showToast(data.message || `Updated queue for ${gameName}.`);
+        fetchData(true);
+        broadcastSyncEvent("queue_action");
+      } catch (err) {
+        showToast("Error updating queue: " + err.message);
+      }
+    }
+
+    async function toggleGameActivation(gameName, activated) {
+      return queueGameAction(gameName, activated ? "mine_now" : "remove");
+    }
+
+    async function deactivateAllGames() {
+      return queueGameAction("", "clear");
+    }
+
+    async function resetToDefaultMode() {
+      applyImmediateMinerStatus(
+        {
+          active: false,
+          switching: true,
+          game: "Auto-Select",
+          selected_game: "",
+          queue: [],
+          message: "Resetting to Default auto-mine & switching stream immediately..."
+        },
+        "default",
+        []
+      );
+      showToast("Resetting to Default auto-mine & switching stream immediately...");
+      try {
+        const res = await fetch("/api/twitch/mining-config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: jsonStringify({ mode: "default", queue: [], activated_games: [] })
+        });
+        const data = await res.json();
+        if (data.miner_status) {
+          applyImmediateMinerStatus(data.miner_status, "default", []);
+        }
+        showToast(data.message || "Reset to Default mode.");
+        fetchData(true);
+        broadcastSyncEvent("reset_mode");
+      } catch (err) {
+        showToast("Error resetting mode: " + err.message);
+      }
+    }
+
+    async function restartSelectedMining(gameName) {
+      const g = gameName || (lastTwitchData && lastTwitchData.miner_status ? (lastTwitchData.miner_status.game || lastTwitchData.miner_status.selected_game) : "") || (selectedPriorityGames && selectedPriorityGames[0]) || "";
+      const btn = document.getElementById("btn-restart-mining");
+      const prevText = btn ? btn.innerHTML : "";
+      if (btn) {
+        btn.innerHTML = "&#8635; Restarting...";
+        btn.disabled = true;
+      }
+      applyImmediateMinerStatus(
+        {
+          active: false,
+          switching: true,
+          game: g || "Selected Game",
+          selected_game: g || "",
+          queue: selectedPriorityGames,
+          message: `Restarting mining for '${g || 'selected game'}'... Connecting to fresh stream.`
+        },
+        currentMiningMode,
+        selectedPriorityGames
+      );
+      showToast(`Restarting stream mining for ${g ? `'${g}'` : 'selected game'}...`);
+
+      try {
+        const res = await fetch("/api/twitch/restart-mining", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: jsonStringify({ game: g })
+        });
+        const data = await res.json();
+        if (data.success) {
+          const returnedQueue = data.queue || selectedPriorityGames;
+          const returnedMode = data.mode || currentMiningMode;
+          applyImmediateMinerStatus(data.miner_status, returnedMode, returnedQueue);
+          showToast(data.message || `Mining successfully restarted!`);
+          fetchData(true);
+          broadcastSyncEvent("restart_mining");
+        } else {
+          showToast("Failed to restart mining: " + (data.error || "Unknown error"));
+        }
+      } catch (err) {
+        showToast("Error restarting mining: " + err.message);
+      } finally {
+        if (btn) {
+          btn.innerHTML = prevText || "&#8635; Restart Mining";
+          btn.disabled = false;
+        }
+      }
+    }
+
+    let currentModalChannelGame = "";
+
+    async function switchWatchedChannel(gameName, channelLogin) {
+      const g = gameName || (lastTwitchData && lastTwitchData.miner_status ? (lastTwitchData.miner_status.game || lastTwitchData.miner_status.selected_game) : "") || (selectedPriorityGames && selectedPriorityGames[0]) || "";
+      const btn = document.getElementById("btn-switch-channel");
+      const prevText = btn ? btn.innerHTML : "";
+      if (btn) {
+        btn.innerHTML = "&#8644; Switching...";
+        btn.disabled = true;
+      }
+      const targetDesc = channelLogin ? `@${channelLogin}` : `next live channel for '${g || 'active game'}'`;
+      applyImmediateMinerStatus(
+        {
+          active: false,
+          switching: true,
+          game: g || "Selected Game",
+          selected_game: g || "",
+          queue: selectedPriorityGames,
+          message: `Switching watched stream to ${targetDesc}...`
+        },
+        currentMiningMode,
+        selectedPriorityGames
+      );
+      showToast(`Switching watched stream to ${targetDesc}...`);
+
+      try {
+        const res = await fetch("/api/twitch/switch-channel", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: jsonStringify({ game: g, channel_login: channelLogin || "" })
+        });
+        const data = await res.json();
+        if (data.success) {
+          const returnedQueue = data.queue || selectedPriorityGames;
+          const returnedMode = data.mode || currentMiningMode;
+          applyImmediateMinerStatus(data.miner_status, returnedMode, returnedQueue);
+          showToast(data.message || "Switched watched channel!");
+          const modal = document.getElementById("channel-switcher-modal");
+          if (modal && modal.style.display === "flex") {
+            closeChannelSwitcherModal();
+          }
+          fetchData(true);
+          broadcastSyncEvent("switch_channel");
+        } else {
+          showToast(data.error || "Could not switch channel.");
+          fetchData(true);
+        }
+      } catch (err) {
+        showToast("Error switching channel: " + err.message);
+      } finally {
+        if (btn) {
+          btn.innerHTML = prevText || "&#8644; Next Channel";
+          btn.disabled = false;
+        }
+      }
+    }
+
+    function openChannelSwitcherModal(gameName) {
+      const g = gameName || (lastTwitchData && lastTwitchData.miner_status ? (lastTwitchData.miner_status.game || lastTwitchData.miner_status.selected_game) : "") || (selectedPriorityGames && selectedPriorityGames[0]) || "";
+      currentModalChannelGame = g;
+      const modal = document.getElementById("channel-switcher-modal");
+      const gameEl = document.getElementById("modal-channel-game");
+      const currEl = document.getElementById("modal-channel-current");
+      const inputEl = document.getElementById("custom-channel-input");
+      const ms = (lastTwitchData && lastTwitchData.miner_status) || {};
+      if (gameEl) gameEl.innerText = g || ms.game || "Auto-Selected Game";
+      if (currEl) {
+        currEl.innerText = ms.channel_name
+          ? `${ms.channel_name} (@${ms.channel_login || ""})`
+          : (ms.channel_login ? `@${ms.channel_login}` : "None");
+      }
+      if (inputEl) inputEl.value = "";
+      if (modal) modal.style.display = "flex";
+      loadModalEligibleChannels(g);
+    }
+
+    function closeChannelSwitcherModal() {
+      const modal = document.getElementById("channel-switcher-modal");
+      if (modal) modal.style.display = "none";
+    }
+
+    function submitCustomChannelSwitch() {
+      const inputEl = document.getElementById("custom-channel-input");
+      const val = inputEl ? inputEl.value.trim() : "";
+      if (!val) {
+        showToast("Enter a Twitch streamer username or URL first.");
+        return;
+      }
+      switchWatchedChannel(currentModalChannelGame, val);
+    }
+
+    async function loadModalEligibleChannels(gameName) {
+      const listEl = document.getElementById("modal-channels-list");
+      const gameEl = document.getElementById("modal-channel-game");
+      const currEl = document.getElementById("modal-channel-current");
+      if (!listEl) return;
+      listEl.innerHTML = `<div style="padding: 14px; text-align: center; color: #94a3b8; font-size: 0.84rem;">Fetching live Drops-enabled channels from Twitch...</div>`;
+      try {
+        const q = gameName ? `?game=${encodeURIComponent(gameName)}` : "";
+        const res = await fetch(`/api/twitch/channels${q}`);
+        const data = await res.json();
+        const chs = data.channels || [];
+        const activeLogin = String(data.current_channel || "").toLowerCase();
+        if (data.game) {
+          currentModalChannelGame = data.game;
+          if (gameEl) gameEl.innerText = data.game;
+        }
+        if (currEl && data.current_channel) {
+          currEl.innerText = `${data.current_channel_name || data.current_channel} (@${data.current_channel})`;
+        }
+        if (chs.length === 0) {
+          listEl.innerHTML = `<div style="padding: 14px; text-align: center; color: #94a3b8; font-size: 0.84rem;">No live participating channels found right now. You can still enter a streamer username above.</div>`;
+          return;
+        }
+        listEl.innerHTML = chs.map((ch, idx) => {
+          const isCurrent = activeLogin && String(ch.channel_login || "").toLowerCase() === activeLogin;
+          const rankLabel = idx === 0 ? "#1 Top-Left" : `#${idx + 1}`;
+          const badgeHtml = isCurrent
+            ? `<span class="badge" style="background: rgba(34, 197, 94, 0.2); color: #4ade80; font-size: 0.7rem;">WATCHING NOW</span>`
+            : (ch.verified_drops
+                ? `<span class="badge" style="background: rgba(59, 130, 246, 0.18); color: #93c5fd; font-size: 0.7rem;">DROPS VERIFIED</span>`
+                : `<span class="badge" style="background: rgba(148, 163, 184, 0.18); color: #cbd5e1; font-size: 0.7rem;">DROPS TAG</span>`);
+          return `
+            <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 6px; background: ${isCurrent ? 'rgba(34, 197, 94, 0.08)' : 'rgba(15, 23, 42, 0.75)'}; border: 1px solid ${isCurrent ? '#22c55e' : '#1e293b'};">
+              <div style="min-width: 0; flex: 1;">
+                <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+                  <span style="font-size: 0.72rem; font-weight: 700; color: #facc15;">[${rankLabel}]</span>
+                  <strong style="font-size: 0.88rem; color: #f8fafc;">${escapeHtml(ch.channel_name || ch.channel_login)}</strong>
+                  <span style="font-size: 0.76rem; color: #94a3b8;">@${escapeHtml(ch.channel_login)}</span>
+                  <span style="font-size: 0.75rem; color: #38bdf8;">&bull; ${(ch.viewers || 0).toLocaleString()} viewers</span>
+                  ${badgeHtml}
+                </div>
+                <div style="font-size: 0.76rem; color: #94a3b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px;" title="${escapeHtml(ch.stream_title || '')}">
+                  ${escapeHtml(ch.stream_title || "Live stream")}
+                </div>
+              </div>
+              <div>
+                ${isCurrent
+                  ? `<button class="btn btn-sm" disabled style="opacity: 0.65; font-size: 0.75rem;">Active</button>`
+                  : `<button class="btn btn-sm btn-primary" style="font-size: 0.76rem;" onclick="switchWatchedChannel('${escapeJsAttr(currentModalChannelGame)}', '${escapeJsAttr(ch.channel_login)}')">Watch Channel</button>`
+                }
+              </div>
+            </div>
+          `;
+        }).join("");
+      } catch (err) {
+        listEl.innerHTML = `<div style="padding: 14px; text-align: center; color: #f87171; font-size: 0.84rem;">Failed to load channels: ${escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    function renderCollectedItemsSection(twitch, searchQuery) {
+      const items = twitch.collected_items || [];
+      const filteredItems = searchQuery
+        ? items.filter(it =>
+            (it.name || "").toLowerCase().includes(searchQuery) ||
+            (it.game || "").toLowerCase().includes(searchQuery) ||
+            (it.campaign_name || "").toLowerCase().includes(searchQuery)
+          )
+        : items;
+
+      if (filteredItems.length === 0) {
+        return `<div class="collected-section"><div style="font-size: 0.9rem; color: #94a3b8;">No collected Twitch drops match your search filter.</div></div>`;
+      }
+
+      const cardsHtml = filteredItems.map(item => {
+        const thumb = item.image_url
+          ? `<img src="${item.image_url}" alt="${escapeHtml(item.name)}" class="collected-item-thumb" referrerpolicy="no-referrer" onerror="this.style.display='none'">`
+          : `<div class="collected-item-thumb" style="display:flex;align-items:center;justify-content:center;font-size:0.7rem;color:#34d399;font-weight:700;">DROP</div>`;
+        let dateStr = "Collected";
+        if (item.last_awarded_at) {
+          try {
+            dateStr = new Date(item.last_awarded_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+          } catch (e) {}
+        }
+        const countBadge = (item.total_count && item.total_count > 1) ? ` (x${item.total_count})` : "";
+        const connLabel = item.is_connected
+          ? `<span style="color: #34d399;">[Account Linked]</span>`
+          : (item.required_account_link
+              ? `<a href="${item.required_account_link}" target="_blank" rel="noopener noreferrer" style="color: #fbbf24; text-decoration: underline;">[Link Game Account]</a>`
+              : `<span style="color: #94a3b8;">[In Twitch Inventory]</span>`);
+
+        return `
+          <div class="collected-item-card">
+            ${thumb}
+            <div class="collected-item-info">
+              <div style="display: flex; justify-content: space-between; align-items: center; gap: 4px;">
+                <span style="font-size: 0.7rem; font-weight: 700; color: #c084fc; text-transform: uppercase;">${escapeHtml(item.game || "Twitch Drop")}</span>
+                <span class="badge badge-claimed" style="padding: 2px 7px; font-size: 0.66rem;">[COLLECTED]</span>
+              </div>
+              <div class="collected-item-name" title="${escapeHtml(item.name)}${countBadge}">${escapeHtml(item.name)}${countBadge}</div>
+              <div class="collected-item-meta">
+                <span>${escapeHtml(dateStr)}</span>
+                ${connLabel}
+              </div>
+            </div>
+          </div>
+        `;
+      }).join("");
+
+      return `
+        <div class="collected-section">
+          <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+            <div>
+              <h3 style="font-size: 1.05rem; font-weight: 700; color: #34d399;">Collected Twitch Drops Inventory (${filteredItems.length} Items)</h3>
+              <p style="font-size: 0.8rem; color: var(--text-muted); margin-top: 2px;">
+                Verified rewards collected in your Twitch Drops Inventory and active campaigns.
+              </p>
+            </div>
+            <a href="https://www.twitch.tv/drops/inventory" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-primary">[Open Twitch Inventory]</a>
+          </div>
+          <div class="collected-grid">
+            ${cardsHtml}
+          </div>
+        </div>
+      `;
+    }
+
+    function renderDropsGrid(twitch) {
+      const dropsGrid = document.getElementById("drops-grid");
+      const campaigns = twitch.campaigns || [];
+      const searchInput = document.getElementById("drops-search-input");
+      const searchQuery = searchInput ? searchInput.value.trim().toLowerCase() : "";
+
+      if (campaigns.length === 0 && (!twitch.collected_items || twitch.collected_items.length === 0)) {
+        dropsGrid.innerHTML = `<div class="empty-state">No drop campaigns found right now. Verify your Twitch auth-token in Accounts tab or check DropHunter.</div>`;
+        return;
+      }
+
+      let collectedBannerHtml = "";
+      if (currentDropsFilter === "collected") {
+        collectedBannerHtml = renderCollectedItemsSection(twitch, searchQuery);
+      }
+
+      // Filter campaigns based on current active filter and search query
+      const filtered = campaigns.filter(camp => {
+        if (searchQuery) {
+          const matchGame = (camp.game || "").toLowerCase().includes(searchQuery);
+          const matchCamp = (camp.name || "").toLowerCase().includes(searchQuery);
+          const matchDrop = (camp.drops || []).some(d => (d.name || "").toLowerCase().includes(searchQuery));
+          if (!matchGame && !matchCamp && !matchDrop) return false;
+        }
+
+        const isTargeted = Boolean(camp.is_activated || camp.is_queued);
+        const needsCount = (camp.needs_collection_count !== undefined)
+          ? camp.needs_collection_count
+          : ((camp.in_progress_count || 0) + (camp.ready_count || 0) + (camp.available_count || 0));
+        const unavailCount = camp.unavailable_count || 0;
+
+        if (currentDropsFilter === "activated") return isTargeted;
+        if (currentDropsFilter === "needs_collection") return needsCount > 0;
+        if (currentDropsFilter === "in_progress") return (camp.in_progress_count || 0) > 0;
+        if (currentDropsFilter === "ready") return (camp.ready_count || 0) > 0;
+        if (currentDropsFilter === "collected") return (camp.claimed_count || 0) > 0;
+        if (currentDropsFilter === "unavailable") return unavailCount > 0 || camp.status === "EXPIRED" || camp.status === "UNAVAILABLE";
+        return true;
+      });
+
+      if (filtered.length === 0) {
+        if (collectedBannerHtml) {
+          dropsGrid.innerHTML = collectedBannerHtml;
+        } else {
+          dropsGrid.innerHTML = `<div class="empty-state">No campaigns match the selected filter "${escapeHtml(currentDropsFilter)}".</div>`;
+        }
+        return;
+      }
+
+      const cardsHtml = filtered.map(camp => {
+        const isTarget = Boolean(camp.is_activated);
+        const qPos = camp.queue_position || getGameQueuePosition(camp.game);
+        const isQueued = qPos !== null && qPos !== undefined;
+        const needsCount = (camp.needs_collection_count !== undefined)
+          ? camp.needs_collection_count
+          : ((camp.in_progress_count || 0) + (camp.ready_count || 0) + (camp.available_count || 0));
+        const unavailCount = camp.unavailable_count || 0;
+
+        let campStatusBadge = `<span class="badge badge-needs">[NEEDS COLLECTION]</span>`;
+        if (camp.status === "COMPLETED") {
+          campStatusBadge = `<span class="badge badge-claimed">[ALL COLLECTED]</span>`;
+        } else if (camp.ready_count > 0) {
+          campStatusBadge = `<span class="badge badge-ready">[READY TO COLLECT]</span>`;
+        } else if (camp.in_progress_count > 0) {
+          campStatusBadge = `<span class="badge badge-progress">[IN PROGRESS]</span>`;
+        } else if (camp.status === "EXPIRED") {
+          campStatusBadge = `<span class="badge badge-unavailable">[EXPIRED - UNAVAILABLE]</span>`;
+        } else if (camp.status === "UNAVAILABLE") {
+          campStatusBadge = `<span class="badge badge-unavailable">[UNAVAILABLE]</span>`;
+        }
+
+        const actBadge = camp.is_expired || camp.status === "UNAVAILABLE" || camp.status === "COMPLETED"
+          ? ""
+          : (isTarget
+              ? `<span class="badge badge-target">[#1 MINING NOW]</span>`
+              : (isQueued
+                  ? `<span class="badge badge-progress">[QUEUED #${qPos}]</span>`
+                  : (currentMiningMode === 'selective'
+                      ? `<span class="badge badge-available">[STANDBY]</span>`
+                      : `<span class="badge badge-available">[STANDBY - AUTO QUEUE]</span>`)));
+
+        const timeBadge = camp.time_left 
+          ? `<span class="badge ${camp.is_expired ? 'badge-unavailable' : 'badge-upcoming'}">${escapeHtml(camp.time_left)}</span>`
+          : '';
+
+        const coverUrl = camp.cover_url || getGameCoverFallback(camp.game);
+        const coverHtml = coverUrl
+          ? `<img src="${coverUrl}" alt="${escapeHtml(camp.game)}" class="camp-cover" referrerpolicy="no-referrer" onerror="this.onerror=null; this.src='https://static-cdn.jtvnw.net/ttv-boxart/1982936547_IGDB-285x380.jpg';">`
+          : `<div class="camp-cover-fallback"><span>🎮</span><small>${escapeHtml(camp.game || "Game")}</small></div>`;
+
+        const dropsHtml = (camp.drops || []).map(drop => {
+          let badge = `<span class="badge badge-needs">[NEEDS COLLECTION]</span>`;
+          let entryClass = "drop-entry";
+          let actionBtn = "";
+
+          if (drop.status === "CLAIMED") {
+            badge = `<span class="badge badge-claimed">[COLLECTED]</span>`;
+            entryClass = "drop-entry drop-claimed";
+          } else if (drop.status === "READY_TO_CLAIM") {
+            badge = `<span class="badge badge-ready">[READY TO COLLECT]</span>`;
+            entryClass = "drop-entry drop-ready";
+            if (drop.drop_instance_id) {
+              actionBtn = `<button class="btn btn-sm btn-primary" onclick="claimSingleDrop('${escapeJsAttr(drop.drop_instance_id)}')">Collect Now</button>`;
+            }
+          } else if (drop.status === "IN_PROGRESS") {
+            badge = `<span class="badge badge-progress">[IN PROGRESS - ${drop.progress_percent}%]</span>`;
+            entryClass = "drop-entry drop-in-progress";
+          } else if (drop.status === "UNAVAILABLE") {
+            badge = `<span class="badge badge-unavailable">[UNAVAILABLE]</span>`;
+            entryClass = "drop-entry drop-unavailable";
+            if (drop.can_try_claim && drop.drop_instance_id) {
+              actionBtn = `<button class="btn btn-sm" onclick="claimSingleDrop('${escapeJsAttr(drop.drop_instance_id)}')">Try Claim</button>`;
+            }
+          }
+
+          const isMystery = Boolean(drop.is_mystery || (drop.name && drop.name.includes("???")));
+          let dropTitle = (drop.name && String(drop.name).trim()) ? drop.name : `${camp.game} Drop Reward`;
+          if (isMystery && dropTitle === "???") {
+            dropTitle = drop.tier_label ? `??? (${drop.tier_label})` : "??? (Mystery Reward)";
+          }
+          const thumbHtml = drop.image_url
+            ? `<img src="${drop.image_url}" alt="${escapeHtml(dropTitle)}" class="drop-thumb" referrerpolicy="no-referrer" onerror="this.onerror=null; this.src='https://static-cdn.jtvnw.net/custom-reward-images/default-4.png';">`
+            : (isMystery 
+                ? `<span class="drop-thumb-fallback" title="Mystery Drop Reward" style="background: rgba(145, 70, 255, 0.2); border-color: #9146ff; color: #a970ff;">❓</span>`
+                : `<span class="drop-thumb-fallback" title="Drop Reward">🎁</span>`);
+
+          const unavailReasonHtml = (drop.status === "UNAVAILABLE" && drop.unavailable_reason)
+            ? `<div class="drop-unavail-reason">Unavailable for Collection: ${escapeHtml(drop.unavailable_reason)}</div>`
+            : '';
+
+          const hasProgress = drop.required_minutes > 0;
+          const tierStr = drop.tier_label ? ` (${escapeHtml(drop.tier_label)})` : '';
+          const minsWatchedLabel = `${drop.watched_minutes}/${drop.required_minutes}m${tierStr}`;
+          const remainingText = (drop.status === "IN_PROGRESS" || drop.status === "AVAILABLE") && drop.remaining_minutes > 0
+            ? ` (${drop.remaining_minutes}m needed)`
+            : '';
+          const fillClass = drop.status === "CLAIMED"
+            ? "complete"
+            : (drop.status === "UNAVAILABLE" ? "unavailable" : "");
+
+          return `
+            <div class="${entryClass}">
+              <div class="drop-header">
+                <div class="drop-title-wrap">
+                  ${thumbHtml}
+                  <span class="drop-name" style="font-weight: 600; color: #f1f5f9;">${escapeHtml(dropTitle)}</span>
+                </div>
+                <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
+                  ${badge}
+                  ${actionBtn}
+                </div>
+              </div>
+              ${unavailReasonHtml}
+              ${hasProgress ? `
+                <div class="progress-box">
+                  <div class="progress-label">
+                    <span>${minsWatchedLabel}${remainingText}</span>
+                    <span>${drop.progress_percent}%</span>
+                  </div>
+                  <div class="progress-track">
+                    <div class="progress-fill ${fillClass}" style="width: ${drop.progress_percent}%;"></div>
+                  </div>
+                </div>
+              ` : ''}
+            </div>
+          `;
+        }).join("");
+
+        const streamUrl = camp.stream_url || `https://www.twitch.tv/directory/category/${encodeURIComponent(camp.game)}?filter=drops`;
+        const campaignUrl = camp.campaigns_url || "https://www.twitch.tv/drops/campaigns";
+        const totalDrops = camp.total_drops || (camp.drops ? camp.drops.length : 0);
+
+        return `
+          <div class="card" style="${isTarget ? 'border-color: #9146ff; box-shadow: 0 0 12px rgba(145, 70, 255, 0.25);' : ''}">
+            <div>
+              <div class="card-top">
+                <div class="camp-game-badge-group">
+                  <span class="store-tag store-twitch">${escapeHtml(camp.game || "Twitch Game")}</span>
+                  <span class="camp-game-fullname">${escapeHtml(camp.game || "Twitch Game")}</span>
+                </div>
+                <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: flex-end;">
+                  ${timeBadge}
+                  ${actBadge}
+                  ${campStatusBadge}
+                </div>
+              </div>
+              <div class="camp-card-body">
+                ${coverHtml}
+                <div class="camp-info">
+                  <div class="item-title" style="font-size: 1.05rem; font-weight: 700; color: #f8fafc; margin-bottom: 2px;">
+                    ${escapeHtml(camp.name)}
+                  </div>
+                  <div style="font-size: 0.8rem; color: #94a3b8; margin-bottom: 6px;">
+                    <strong style="color: #cbd5e1;">Game Category:</strong> ${escapeHtml(camp.game || "Twitch Game")}
+                  </div>
+                  <div class="item-sub" style="display: flex; gap: 10px; align-items: center; margin-bottom: 6px; flex-wrap: wrap;">
+                    <span style="color: #34d399;">Collected: ${camp.claimed_count || 0}/${totalDrops}</span>
+                    <span style="color: #60a5fa;">Needs Collection: ${needsCount}</span>
+                    ${unavailCount > 0 ? `<span style="color: #f87171;">Unavailable: ${unavailCount}</span>` : ''}
+                  </div>
+                  <div class="camp-actions">
+                    ${(!camp.is_expired && camp.status !== "UNAVAILABLE" && camp.status !== "COMPLETED") ? `
+                      ${isTarget ? `
+                        <button class="btn btn-sm" style="border-color: #38bdf8; color: #7dd3fc; background: rgba(56, 189, 248, 0.12); font-weight: 600;" onclick="switchWatchedChannel('${escapeJsAttr(camp.game)}')" title="Switch to the next live Drops channel for ${escapeJsAttr(camp.game)}">
+                          &#8644; Next Channel
+                        </button>
+                        <button class="btn btn-sm" style="border-color: #6366f1; color: #a5b4fc; background: rgba(99, 102, 241, 0.12); font-weight: 600;" onclick="openChannelSwitcherModal('${escapeJsAttr(camp.game)}')" title="Pick which live channel to watch for ${escapeJsAttr(camp.game)}">
+                          &#9776; Pick Channel
+                        </button>
+                        <button class="btn btn-sm" style="border-color: #f59e0b; color: #fbbf24; background: rgba(245, 158, 11, 0.12); font-weight: 600;" onclick="restartSelectedMining('${escapeJsAttr(camp.game)}')" title="Fully restart mining for ${escapeJsAttr(camp.game)}">
+                          &#8635; Restart Mining
+                        </button>
+                        <button class="btn btn-sm btn-danger" onclick="queueGameAction('${escapeJsAttr(camp.game)}', 'remove')">
+                          Stop &amp; Remove (#1)
+                        </button>
+                      ` : `
+                        <button class="btn btn-sm btn-primary" onclick="queueGameAction('${escapeJsAttr(camp.game)}', 'mine_now')">
+                          Mine Now (#1)
+                        </button>
+                        ${isQueued ? `
+                          <button class="btn btn-sm btn-danger" onclick="queueGameAction('${escapeJsAttr(camp.game)}', 'remove')">
+                            Remove (#${qPos} in Queue)
+                          </button>
+                        ` : `
+                          <button class="btn btn-sm" style="border-color: #3b82f6; color: #93c5fd;" onclick="queueGameAction('${escapeJsAttr(camp.game)}', 'enqueue')">
+                            + Add to Queue
+                          </button>
+                        `}
+                      `}
+                    ` : ''}
+                    <a href="${streamUrl}" target="_blank" rel="noopener noreferrer" class="btn-link">[Watch Streams with Drops]</a>
+                    <a href="${campaignUrl}" target="_blank" rel="noopener noreferrer" class="btn-link" style="color: var(--text-muted);">[Campaign Info]</a>
+                  </div>
+                </div>
+              </div>
+              <div class="drops-list">
+                ${dropsHtml}
+              </div>
+            </div>
+          </div>
+        `;
+      }).join("");
+
+      dropsGrid.innerHTML = collectedBannerHtml + cardsHtml;
+    }
+
+    function escapeHtml(str) {
+      if (!str) return "";
+      return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function escapeJsAttr(str) {
+      if (!str) return "";
+      return String(str)
+        .replace(/\\/g, "\\\\")
+        .replace(/'/g, "\\'")
+        .replace(/"/g, "&quot;");
+    }
+
+    async function toggleClaimItem(store, title, isClaimed) {
+      showToast(`${isClaimed ? "Marking" : "Unmarking"} ${title} as claimed...`);
+      try {
+        const res = await fetch("/api/claim-item", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: jsonStringify({ store: store, title: title, claimed: isClaimed })
+        });
+        const data = await res.json();
+        showToast(data.message || `Updated ${title}`);
+        fetchData();
+        broadcastSyncEvent("toggle_claim_item");
+      } catch (err) {
+        showToast("Error updating claim status: " + err.message);
+      }
+    }
+
+    function promptAddClaimed(store) {
+      const storeName = store === "epic" ? "Epic Games Store" : store === "amazon" ? "Amazon Prime Gaming" : "GOG";
+      const title = prompt(`Enter the game or loot title to record as [CLAIMED] for ${storeName}:`);
+      if (title && title.trim()) {
+        toggleClaimItem(store, title.trim(), true);
+      }
+    }
+
+    function renderEpicGrid(epic) {
+      const activeGrid = document.getElementById("epic-active-grid");
+      const upcomingGrid = document.getElementById("epic-upcoming-grid");
+      const claimedList = document.getElementById("epic-claimed-list");
+
+      const activeFreebies = epic.active_freebies || [];
+      const upcomingFreebies = epic.upcoming_freebies || [];
+      const claimedTitles = epic.claimed_titles || [];
+
+      activeGrid.innerHTML = activeFreebies.map(game => {
+        const isClaimed = claimedTitles.some(t => t.toLowerCase().trim() === (game.title || "").toLowerCase().trim());
+        const badge = isClaimed 
+          ? `<span class="badge badge-claimed">[CLAIMED TO LIBRARY]</span>`
+          : `<span class="badge badge-available">[FREE NOW]</span>`;
+        const actionBtn = isClaimed
+          ? `<button class="btn btn-sm" onclick="toggleClaimItem('epic', '${escapeJsAttr(game.title)}', false)">Unmark Claimed</button>`
+          : `<button class="btn btn-sm btn-success" onclick="toggleClaimItem('epic', '${escapeJsAttr(game.title)}', true)">Mark as Claimed</button>`;
+
+        const storeLink = game.store_url 
+          ? `<a href="${game.store_url}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-primary">[View on Epic Store]</a>`
+          : `<a href="https://store.epicgames.com/free-games" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-primary">[View on Epic Store]</a>`;
+
+        return `
+          <div class="card">
+            <div>
+              <div class="card-top">
+                <span class="store-tag store-epic">Epic Games Store</span>
+                ${badge}
+              </div>
+              <div class="item-title">${escapeHtml(game.title)}</div>
+              <div class="item-sub">Ends: ${new Date(game.end).toLocaleDateString()}</div>
+            </div>
+            <div style="margin-top: 14px; display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap;">
+              ${storeLink}
+              ${actionBtn}
+            </div>
+          </div>
+        `;
+      }).join("") || `<div class="empty-state">No free games active at this moment.</div>`;
+
+      upcomingGrid.innerHTML = upcomingFreebies.map(game => `
+        <div class="card">
+          <div>
+            <div class="card-top">
+              <span class="store-tag store-epic">Upcoming Freebie</span>
+              <span class="badge badge-upcoming">Next Week</span>
+            </div>
+            <div class="item-title">${escapeHtml(game.title)}</div>
+            <div class="item-sub">Available starting: ${new Date(game.start).toLocaleDateString()}</div>
+          </div>
+        </div>
+      `).join("") || `<div class="empty-state">No upcoming announcements right now.</div>`;
+
+      if (claimedList) {
+        if (claimedTitles.length === 0) {
+          claimedList.innerHTML = `<span style="font-size: 0.85rem; color: #94a3b8;">No Epic Games marked as claimed yet. Click "Claim Epic Freebies Now" or use "+ Record Claimed Title" to record library items.</span>`;
+        } else {
+          claimedList.innerHTML = `
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+              <span style="font-size: 0.88rem; font-weight: 600; color: #34d399;">${claimedTitles.length} Titles Claimed in Epic Library</span>
+            </div>
+            <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+              ${claimedTitles.map(t => `
+                <div class="chip active">
+                  <span>${escapeHtml(t)}</span>
+                  <span class="chip-remove" title="Unmark" onclick="toggleClaimItem('epic', '${escapeJsAttr(t)}', false)">&times;</span>
+                </div>
+              `).join("")}
+            </div>
+          `;
+        }
+      }
+    }
+
+    function renderStoresGrid(amazon, gog) {
+      const storesGrid = document.getElementById("stores-grid");
+      const amazonItems = amazon.claimed_items || [];
+      const gogItems = gog.claimed_items || [];
+
+      const amazonItemsHtml = amazonItems.length > 0 ? `
+        <div style="margin-top: 12px; border-top: 1px solid #1e293b; padding-top: 10px;">
+          <div style="font-size: 0.8rem; font-weight: 600; color: #34d399; margin-bottom: 8px;">
+            Claimed Loot & Games (${amazonItems.length}):
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto;">
+            ${amazonItems.map(item => `
+              <div style="display: flex; justify-content: space-between; align-items: center; background: #0c1322; border: 1px solid #1e293b; padding: 6px 10px; border-radius: 6px;">
+                <span style="font-size: 0.85rem; font-weight: 500;">${escapeHtml(item)}</span>
+                <div style="display: flex; gap: 6px; align-items: center;">
+                  <span class="badge badge-claimed">[CLAIMED]</span>
+                  <span class="chip-remove" title="Unmark" onclick="toggleClaimItem('amazon', '${escapeJsAttr(item)}', false)">&times;</span>
+                </div>
+              </div>
+            `).join("")}
+          </div>
+        </div>
+      ` : `
+        <p style="font-size: 0.8rem; color: #94a3b8; margin-top: 10px;">
+          No items recorded as claimed yet. Automated runner checks monthly loot.
+        </p>
+      `;
+
+      const gogItemsHtml = gogItems.length > 0 ? `
+        <div style="margin-top: 12px; border-top: 1px solid #1e293b; padding-top: 10px;">
+          <div style="font-size: 0.8rem; font-weight: 600; color: #34d399; margin-bottom: 8px;">
+            Claimed DRM-Free Giveaways (${gogItems.length}):
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto;">
+            ${gogItems.map(item => `
+              <div style="display: flex; justify-content: space-between; align-items: center; background: #0c1322; border: 1px solid #1e293b; padding: 6px 10px; border-radius: 6px;">
+                <span style="font-size: 0.85rem; font-weight: 500;">${escapeHtml(item)}</span>
+                <div style="display: flex; gap: 6px; align-items: center;">
+                  <span class="badge badge-claimed">[CLAIMED]</span>
+                  <span class="chip-remove" title="Unmark" onclick="toggleClaimItem('gog', '${escapeJsAttr(item)}', false)">&times;</span>
+                </div>
+              </div>
+            `).join("")}
+          </div>
+        </div>
+      ` : `
+        <p style="font-size: 0.8rem; color: #94a3b8; margin-top: 10px;">
+          No items recorded as claimed yet. Automated runner claims DRM-free licenses.
+        </p>
+      `;
+
+      storesGrid.innerHTML = `
+        <div class="card">
+          <div>
+            <div class="card-top">
+              <span class="store-tag store-amazon">Amazon Prime Gaming</span>
+              <span class="badge ${amazon.has_saved_session ? 'badge-claimed' : 'badge-available'}">
+                ${amazon.has_saved_session ? 'Connected' : 'Configured'}
+              </span>
+            </div>
+            <div class="item-title">Prime Monthly Games & Loot</div>
+            <div class="item-sub">Account: ${escapeHtml(amazon.email || 'Not configured')}</div>
+            <div style="display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap;">
+              <a href="https://gaming.amazon.com/home" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-primary">[Open Prime Gaming]</a>
+              <a href="https://gaming.amazon.com/loot" target="_blank" rel="noopener noreferrer" class="btn btn-sm">[Open Claimed Loot]</a>
+              <button class="btn btn-sm" onclick="triggerGamesCheck('prime')">Check Prime Loot</button>
+              <button class="btn btn-sm" onclick="promptAddClaimed('amazon')">+ Mark Claimed</button>
+            </div>
+            ${amazonItemsHtml}
+          </div>
+        </div>
+        <div class="card">
+          <div>
+            <div class="card-top">
+              <span class="store-tag store-gog">GOG Giveaways</span>
+              <span class="badge ${gog.has_saved_session ? 'badge-claimed' : 'badge-available'}">
+                ${gog.has_saved_session ? 'Connected' : 'Configured'}
+              </span>
+            </div>
+            <div class="item-title">DRM-Free Giveaways</div>
+            <div class="item-sub">Account: ${escapeHtml(gog.email || 'Not configured')}</div>
+            <div style="display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap;">
+              <a href="https://www.gog.com" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-primary">[Open GOG.com]</a>
+              <a href="https://www.gog.com/account" target="_blank" rel="noopener noreferrer" class="btn btn-sm">[Open GOG Library]</a>
+              <button class="btn btn-sm" onclick="triggerGamesCheck('gog')">Check GOG Games</button>
+              <button class="btn btn-sm" onclick="promptAddClaimed('gog')">+ Mark Claimed</button>
+            </div>
+            ${gogItemsHtml}
+          </div>
+        </div>
+      `;
+    }
+
+    // Accounts & Logins Tab Logic
+    async function fetchAccounts() {
+      try {
+        const res = await fetch("/api/accounts");
+        if (res.status === 401) { window.location.href = "/login"; return; }
+        const data = await res.json();
+
+        document.getElementById("acc-dash-user").value = data.dashboard_username || "";
+        const twTokEl = document.getElementById("acc-twitch-token");
+        twTokEl.value = "";
+        twTokEl.placeholder = data.has_twitch_auth_token
+          ? "(Saved - leave blank to keep unchanged)"
+          : "Leave blank to keep saved token";
+
+        document.getElementById("acc-twitch-priorities").value = data.twitch_priority_games || "";
+        document.getElementById("acc-eg-email").value = data.eg_email || "";
+
+        const egOtpEl = document.getElementById("acc-eg-otp");
+        egOtpEl.value = "";
+        egOtpEl.placeholder = data.has_eg_otp_secret
+          ? "(Saved - leave blank to keep unchanged)"
+          : "Leave blank to keep saved 2FA/OTP";
+
+        document.getElementById("acc-pg-email").value = data.pg_email || "";
+        const pgOtpEl = document.getElementById("acc-pg-otp");
+        pgOtpEl.value = "";
+        pgOtpEl.placeholder = data.has_pg_otp_secret
+          ? "(Saved - leave blank to keep unchanged)"
+          : "Leave blank to keep saved 2FA/OTP";
+
+        document.getElementById("acc-gog-email").value = data.gog_email || "";
+        const discEl = document.getElementById("acc-discord-url");
+        discEl.value = "";
+        discEl.placeholder = data.has_discord_webhook
+          ? "(Saved - leave blank to keep unchanged)"
+          : "Leave blank to keep saved Discord webhook URL";
+      } catch (err) {
+        showToast("Error loading account settings: " + err.message);
+      }
+    }
+
+    async function saveAllAccounts() {
+      const payload = {
+        dashboard_username: document.getElementById("acc-dash-user").value,
+        dashboard_password: document.getElementById("acc-dash-pass").value,
+        twitch_auth_token: document.getElementById("acc-twitch-token").value,
+        twitch_priority_games: document.getElementById("acc-twitch-priorities").value,
+        eg_email: document.getElementById("acc-eg-email").value,
+        eg_password: document.getElementById("acc-eg-pass").value,
+        eg_otp_secret: document.getElementById("acc-eg-otp").value,
+        pg_email: document.getElementById("acc-pg-email").value,
+        pg_password: document.getElementById("acc-pg-pass").value,
+        pg_otp_secret: document.getElementById("acc-pg-otp").value,
+        gog_email: document.getElementById("acc-gog-email").value,
+        gog_password: document.getElementById("acc-gog-pass").value,
+        discord_webhook_url: document.getElementById("acc-discord-url").value,
+      };
+
+      try {
+        const res = await fetch("/api/accounts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: jsonStringify(payload)
+        });
+        const data = await res.json();
+        showToast(data.message || "All credentials saved successfully!");
+        fetchData();
+        broadcastSyncEvent("save_accounts");
+      } catch (err) {
+        showToast("Error saving credentials: " + err.message);
+      }
+    }
+
+    async function testService(serviceName) {
+      showToast(`Testing connection for ${serviceName}...`);
+      let extra = {};
+      if (serviceName === "twitch") extra.token = document.getElementById("acc-twitch-token").value;
+      if (serviceName === "discord") extra.url = document.getElementById("acc-discord-url").value;
+
+      try {
+        const res = await fetch("/api/test-service", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: jsonStringify({ service: serviceName, ...extra })
+        });
+        const data = await res.json();
+        showToast(`[${serviceName.toUpperCase()}]: ${data.message}`);
+      } catch (err) {
+        showToast(`Test failed: ${err.message}`);
+      }
+    }
+
+    // Drop claiming actions
+    async function claimSingleDrop(dropInstanceId) {
+      showToast("Claiming drop reward...");
+      try {
+        const res = await fetch("/api/claim-drops", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: jsonStringify({ drop_instance_id: dropInstanceId })
+        });
+        const data = await res.json();
+        showToast(data.message || "Drop claimed!");
+        fetchData();
+        broadcastSyncEvent("claim_drop");
+      } catch (err) {
+        showToast("Claim request failed: " + err.message);
+      }
+    }
+
+    async function claimDropsNow() {
+      showToast("Claiming all ready drops in inventory...");
+      try {
+        const res = await fetch("/api/claim-drops", { method: "POST" });
+        const data = await res.json();
+        showToast(data.message || `Claimed ${data.claimed || 0} completed drops!`);
+        fetchData();
+        broadcastSyncEvent("claim_all_drops");
+      } catch (err) {
+        showToast("Claim request failed: " + err.message);
+      }
+    }
+
+    async function triggerGamesCheck(targetStore = "all") {
+      const storeLabel = targetStore === "all" ? "all storefronts" : targetStore.toUpperCase();
+      showToast(`Triggering ${storeLabel} check in background...`);
+      try {
+        const res = await fetch("/api/trigger-games", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: jsonStringify({ store: targetStore })
+        });
+        const data = await res.json();
+        showToast(data.message || "Game claim check initiated!");
+        broadcastSyncEvent("trigger_games");
+      } catch (err) {
+        showToast("Error triggering game check: " + err.message);
+      }
+    }
+
+    let activeLogCategory = "";
+
+    function setLogFilter(category, btnEl) {
+      activeLogCategory = category || "";
+      document.querySelectorAll("#logs-category-filters button").forEach(b => {
+        b.classList.remove("btn-primary");
+      });
+      if (btnEl) btnEl.classList.add("btn-primary");
+      fetchLogs();
+    }
+
+    async function fetchLogs() {
+      try {
+        const url = activeLogCategory
+          ? `/api/logs?category=${encodeURIComponent(activeLogCategory)}`
+          : "/api/logs";
+        const res = await fetch(url);
+        const data = await res.json();
+        const logBox = document.getElementById("log-view");
+        logBox.innerText = data.logs || "No logs available yet.";
+        logBox.scrollTop = logBox.scrollHeight;
+      } catch (e) {
+        document.getElementById("log-view").innerText = "Could not fetch logs.";
+      }
+    }
+
+    async function copyTextWithFallback(text, successMsg) {
+      const content = String(text || "");
+      if (!content) {
+        showToast("Nothing to copy yet.");
+        return false;
+      }
+      try {
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(content);
+          showToast(successMsg || "Copied to clipboard!");
+          return true;
+        }
+      } catch (e) {}
+
+      // Fallback for LAN HTTP origins where navigator.clipboard is unavailable
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = content;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.top = "0";
+        ta.style.left = "-9999px";
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        const ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+        if (ok) {
+          showToast(successMsg || "Copied to clipboard!");
+          return true;
+        }
+      } catch (e) {}
+      return false;
+    }
+
+    function closeDiagnosticsModal() {
+      const modal = document.getElementById("diagnostics-modal");
+      if (modal) modal.style.display = "none";
+    }
+
+    async function copyDiagnosticsReport() {
+      const ta = document.getElementById("diagnostics-textarea");
+      const statusEl = document.getElementById("diagnostics-copy-status");
+      if (!ta || !ta.value) return;
+      ta.focus();
+      ta.select();
+      const copied = await copyTextWithFallback(ta.value, "Diagnostic report copied! Paste it directly to AI for analysis.");
+      if (statusEl) {
+        statusEl.innerText = copied
+          ? "Copied to clipboard! Paste directly to AI."
+          : "Press Ctrl+C (Cmd+C) to copy the selected report above.";
+      }
+    }
+
+    async function openDiagnosticsModal(autoCopy = true) {
+      const modal = document.getElementById("diagnostics-modal");
+      const ta = document.getElementById("diagnostics-textarea");
+      const statusEl = document.getElementById("diagnostics-copy-status");
+      if (!modal || !ta) return;
+      modal.style.display = "flex";
+      ta.value = "Collecting sanitized diagnostic report, UI button events, and live miner logs...";
+      if (statusEl) statusEl.innerText = "";
+      try {
+        const res = await fetch("/api/diagnostics");
+        const data = await res.json();
+        ta.value = data.report || JSON.stringify(data, null, 2);
+        ta.scrollTop = ta.scrollHeight;
+        if (autoCopy) {
+          await copyDiagnosticsReport();
+        }
+      } catch (err) {
+        ta.value = "Failed to fetch /api/diagnostics: " + err.message;
+      }
+    }
+
+    async function checkGitUpdates() {
+      const badge = document.getElementById("git-status-badge");
+      const headerBtn = document.getElementById("btn-header-direct-update");
+      if (badge) {
+        badge.innerText = "[CHECKING...]";
+        badge.style.color = "#38bdf8";
+        badge.style.background = "rgba(56, 189, 248, 0.15)";
+      }
+      try {
+        const res = await fetch("/api/system/git-status");
+        const data = await res.json();
+        const localHash = document.getElementById("git-local-hash");
+        const localMsg = document.getElementById("git-local-msg");
+        const localDate = document.getElementById("git-local-date");
+        if (localHash) localHash.innerText = data.commit_short || "Unknown";
+        if (localMsg) localMsg.innerText = data.commit_message || "Unknown";
+        if (localDate) localDate.innerText = data.commit_date || "Unknown";
+        
+        const remoteInfo = document.getElementById("git-remote-info");
+        const remoteHash = document.getElementById("git-remote-hash");
+
+        if (headerBtn) {
+          if (data.updates_available) {
+            headerBtn.innerHTML = "&#8635; Update App (New Commit!)";
+            headerBtn.style.borderColor = "#facc15";
+            headerBtn.style.color = "#facc15";
+            headerBtn.style.background = "rgba(250, 204, 21, 0.12)";
+          } else {
+            headerBtn.innerHTML = "&#8635; Update App";
+            headerBtn.style.borderColor = "#38bdf8";
+            headerBtn.style.color = "#38bdf8";
+            headerBtn.style.background = "transparent";
+          }
+        }
+
+        if (badge) {
+          if (data.updates_available) {
+            badge.innerText = "[UPDATE AVAILABLE]";
+            badge.style.color = "#facc15";
+            badge.style.background = "rgba(250, 204, 21, 0.15)";
+            if (remoteInfo) remoteInfo.style.display = "block";
+            if (remoteHash) remoteHash.innerText = data.remote_commit || "Newer commit on GitHub";
+          } else {
+            badge.innerText = "[UP TO DATE]";
+            badge.style.color = "#4ade80";
+            badge.style.background = "rgba(34, 197, 94, 0.15)";
+            if (remoteInfo) remoteInfo.style.display = "none";
+          }
+        }
+      } catch (err) {
+        if (badge) {
+          badge.innerText = "[OFFLINE/ERROR]";
+          badge.style.color = "#f87171";
+        }
+      }
+    }
+
+    async function openDirectUpdateModal() {
+      const modal = document.getElementById("direct-update-modal");
+      if (modal) modal.style.display = "flex";
+      const log = document.getElementById("modal-update-log");
+      if (log) {
+        log.style.display = "none";
+        log.innerText = "";
+      }
+      const runBtn = document.getElementById("btn-modal-run-update");
+      const cancelBtn = document.getElementById("btn-modal-cancel-update");
+      if (runBtn) {
+        runBtn.disabled = false;
+        runBtn.innerHTML = "&#8635; Run Update Now";
+      }
+      if (cancelBtn) cancelBtn.disabled = false;
+
+      // Populate current status
+      try {
+        const res = await fetch("/api/system/git-status");
+        const data = await res.json();
+        const localHash = document.getElementById("modal-git-local-hash");
+        const remoteHash = document.getElementById("modal-git-remote-hash");
+        const statusBadge = document.getElementById("modal-git-status-badge");
+        const diffStatus = document.getElementById("modal-git-diff-status");
+
+        if (localHash) localHash.innerText = data.commit_short || "Unknown";
+        if (remoteHash) remoteHash.innerText = data.remote_commit || (data.commit_short || "Latest on main");
+        
+        if (statusBadge) {
+          if (data.updates_available) {
+            statusBadge.innerText = "[UPDATE AVAILABLE]";
+            statusBadge.style.color = "#facc15";
+            statusBadge.style.background = "rgba(250, 204, 21, 0.15)";
+            if (diffStatus) diffStatus.innerText = "Newer commits available on GitHub origin/main. Click 'Run Update Now' to deploy directly.";
+          } else {
+            statusBadge.innerText = "[UP TO DATE]";
+            statusBadge.style.color = "#4ade80";
+            statusBadge.style.background = "rgba(34, 197, 94, 0.15)";
+            if (diffStatus) diffStatus.innerText = "Your server is on the latest commit. You can still re-run the update script anytime to refresh services.";
+          }
+        }
+      } catch (e) {
+        console.debug("Modal status check note:", e);
+      }
+    }
+
+    function closeDirectUpdateModal() {
+      const modal = document.getElementById("direct-update-modal");
+      if (modal) modal.style.display = "none";
+    }
+
+    async function executeDirectModalUpdate() {
+      const runBtn = document.getElementById("btn-modal-run-update");
+      const cancelBtn = document.getElementById("btn-modal-cancel-update");
+      const logBox = document.getElementById("modal-update-log");
+      const statusBadge = document.getElementById("modal-git-status-badge");
+      const diffStatus = document.getElementById("modal-git-diff-status");
+
+      if (runBtn) {
+        runBtn.disabled = true;
+        runBtn.innerHTML = `<span class="live-indicator-dot" style="width: 8px; height: 8px;"></span> Executing bash /opt/auto-loot-claimer/update.sh...`;
+      }
+      if (cancelBtn) cancelBtn.disabled = true;
+      if (logBox) {
+        logBox.style.display = "block";
+        logBox.innerText = "[INIT] Calling server update script...\n[EXEC] bash /opt/auto-loot-claimer/update.sh\nPulling commits from GitHub, reconciling files, and restarting background services...\n\n";
+      }
+
+      try {
+        const res = await fetch("/api/system/git-update", { method: "POST" });
+        const data = await res.json();
+        const output = data.output || "";
+        if (logBox) logBox.innerText += output + "\n";
+        
+        if (data.success) {
+          if (statusBadge) {
+            statusBadge.innerText = "[UPDATE COMPLETED]";
+            statusBadge.style.color = "#4ade80";
+            statusBadge.style.background = "rgba(34, 197, 94, 0.15)";
+          }
+          if (diffStatus) {
+            diffStatus.innerText = "Update applied successfully! Services restarting. Reloading page in 3 seconds...";
+          }
+          showToast("Update applied successfully! Reloading page...");
+          
+          let count = 3;
+          if (runBtn) runBtn.innerHTML = `Reloading in ${count}s...`;
+          const countdown = setInterval(() => {
+            count--;
+            if (runBtn) runBtn.innerHTML = `Reloading in ${count}s...`;
+            if (count <= 0) {
+              clearInterval(countdown);
+              window.location.reload();
+            }
+          }, 1000);
+        } else {
+          if (statusBadge) {
+            statusBadge.innerText = "[UPDATE FAILED]";
+            statusBadge.style.color = "#f87171";
+            statusBadge.style.background = "rgba(239, 68, 68, 0.15)";
+          }
+          if (diffStatus) diffStatus.innerText = "Update encountered an error. Check terminal logs above.";
+          showToast("Update encountered an error. See log output.");
+          if (runBtn) {
+            runBtn.disabled = false;
+            runBtn.innerHTML = "&#8635; Retry Update";
+          }
+          if (cancelBtn) cancelBtn.disabled = false;
+        }
+      } catch (err) {
+        if (logBox) logBox.innerText += `\n[NOTICE] Server service restarting: ${err.message}\nReloading page in 3 seconds...`;
+        showToast("Server restarting. Reloading in 3 seconds...");
+        setTimeout(() => window.location.reload(), 3000);
+      }
+    }
+
+    async function runGitUpdate() {
+      const btn = document.getElementById("btn-git-update");
+      const outBox = document.getElementById("git-update-output");
+      btn.disabled = true;
+      btn.innerText = "Updating...";
+      outBox.style.display = "block";
+      outBox.innerText = "Connecting to GitHub and pulling latest commits...";
+
+      try {
+        const res = await fetch("/api/system/git-update", { method: "POST" });
+        const data = await res.json();
+        outBox.innerText = data.output || (data.success ? "Update applied successfully!" : "Update failed.");
+        if (data.success) {
+          showToast("Successfully updated from GitHub!");
+          checkGitUpdates();
+          broadcastSyncEvent("git_update");
+        } else {
+          showToast("Update encountered an error.");
+        }
+      } catch (err) {
+        outBox.innerText = "Error triggering update: " + err.message;
+        showToast("Error updating from GitHub: " + err.message);
+      } finally {
+        btn.disabled = false;
+        btn.innerText = "Update Now from GitHub";
+      }
+    }
+
+    async function fetchBotsStatus() {
+      const botsBox = document.getElementById("bots-details");
+      const botsCountLabel = document.getElementById("bots-count-label");
+      const botBadge = document.getElementById("bot-guard-badge");
+      if (!botsBox || !botsCountLabel) return;
+      try {
+        const res = await fetch("/api/system/bots");
+        const data = await res.json();
+        const bots = data.bots || [];
+        botsCountLabel.innerText = `${bots.length} active process(es)`;
+        if (bots.length === 0) {
+          botBadge.innerText = "[0 ACTIVE (IDLE)]";
+          botBadge.style.color = "#94a3b8";
+          botBadge.style.background = "rgba(148, 163, 184, 0.15)";
+          botsBox.innerText = "No bot processes currently running.";
+        } else if (bots.length === 1) {
+          botBadge.innerText = "[1 ACTIVE (OPTIMAL)]";
+          botBadge.style.color = "#4ade80";
+          botBadge.style.background = "rgba(34, 197, 94, 0.15)";
+          botsBox.innerText = `PID: ${bots[0].pid} | Command: ${bots[0].cmdline}`;
+        } else {
+          botBadge.innerText = `[${bots.length} RUNNING - CONFLICT!]`;
+          botBadge.style.color = "#f87171";
+          botBadge.style.background = "rgba(239, 68, 68, 0.15)";
+          botsBox.innerText = bots.map((b, i) => `[${i+1}] PID: ${b.pid}\n    ${b.cmdline}`).join("\n\n");
+        }
+      } catch (e) {
+        botsCountLabel.innerText = "Error loading";
+      }
+    }
+
+    async function killConflictingBots() {
+      if (!confirm("Terminate all running Twitch miner bot processes and clear PID lock?")) return;
+      try {
+        const res = await fetch("/api/system/kill-bots", { method: "POST" });
+        const data = await res.json();
+        showToast(data.message || "Bots terminated.");
+        fetchBotsStatus();
+        broadcastSyncEvent("kill_bots");
+      } catch (err) {
+        showToast("Error killing bots: " + err.message);
+      }
+    }
+
+    async function syncLootToGitHub() {
+      const outBox = document.getElementById("sync-loot-output");
+      outBox.style.display = "block";
+      outBox.innerText = "Generating CLAIMED_LOOT.md and syncing to GitHub origin/main...";
+      try {
+        const res = await fetch("/api/system/sync-github", { method: "POST" });
+        const data = await res.json();
+        outBox.innerText = data.output || "Completed.";
+        if (data.success) {
+          showToast("Claimed loot synced and pushed to GitHub!");
+          broadcastSyncEvent("sync_github");
+        } else {
+          showToast("Sync finished with notes (see output box).");
+        }
+      } catch (err) {
+        outBox.innerText = "Error syncing to GitHub: " + err.message;
+        showToast("Sync error: " + err.message);
+      }
+    }
+
+    async function fetchAutostartStatus() {
+      const badge = document.getElementById("autostart-badge");
+      const initEl = document.getElementById("autostart-init");
+      const tdEl = document.getElementById("autostart-twitch-status");
+      const webEl = document.getElementById("autostart-web-status");
+      const cronEl = document.getElementById("autostart-cron-status");
+      if (!badge || !initEl) return;
+
+      try {
+        const res = await fetch("/api/system/autostart");
+        const data = await res.json();
+        const initName = data.init_system === "openrc" ? "OpenRC (Alpine Linux)" : (data.init_system === "systemd" ? "systemd (Debian/Ubuntu)" : "Custom / Unknown");
+        initEl.innerText = initName;
+
+        const svcs = data.services || {};
+        if (tdEl) tdEl.innerHTML = svcs["twitch-drops"] ? '<span style="color: #4ade80;">[ENABLED - Boots on reboot]</span>' : '<span style="color: #f87171;">[DISABLED - Not in default runlevel]</span>';
+        if (webEl) webEl.innerHTML = svcs["auto-loot-web"] ? '<span style="color: #4ade80;">[ENABLED - Boots on reboot]</span>' : '<span style="color: #f87171;">[DISABLED - Not in default runlevel]</span>';
+        if (cronEl) {
+          const cronActive = svcs["crond"] || svcs["free-games.timer"];
+          cronEl.innerHTML = cronActive ? '<span style="color: #4ade80;">[ENABLED - Boots on reboot]</span>' : '<span style="color: #f87171;">[DISABLED]</span>';
+        }
+
+        if (data.enabled) {
+          badge.innerText = "[ENABLED ON REBOOT]";
+          badge.style.color = "#4ade80";
+          badge.style.background = "rgba(34, 197, 94, 0.15)";
+        } else {
+          badge.innerText = "[NOT CONFIGURED]";
+          badge.style.color = "#facc15";
+          badge.style.background = "rgba(250, 204, 21, 0.15)";
+        }
+      } catch (e) {
+        if (badge) badge.innerText = "[ERROR CHECKING]";
+      }
+    }
+
+    async function enableAutostartOnBoot() {
+      const btn = document.getElementById("btn-enable-autostart");
+      const outBox = document.getElementById("autostart-output");
+      btn.disabled = true;
+      btn.innerText = "Configuring...";
+      outBox.style.display = "block";
+      outBox.innerText = "Running enable_autostart.sh to register OpenRC / systemd boot services...";
+
+      try {
+        const res = await fetch("/api/system/autostart", { method: "POST" });
+        const data = await res.json();
+        outBox.innerText = data.output || "Completed.";
+        if (data.success) {
+          showToast("Autostart successfully enabled on system reboot!");
+          fetchAutostartStatus();
+          broadcastSyncEvent("enable_autostart");
+        } else {
+          showToast("Autostart configuration finished with notes.");
+        }
+      } catch (err) {
+        outBox.innerText = "Error enabling autostart: " + err.message;
+        showToast("Error: " + err.message);
+      } finally {
+        btn.disabled = false;
+        btn.innerText = "Enable Autostart on Reboot";
+      }
+    }
+
+    async function signOut() {
+      try {
+        await fetch("/api/logout", { method: "POST" });
+      } catch (e) {}
+      window.location.href = "/login";
+    }
+
+    function jsonStringify(obj) {
+      return JSON.stringify(obj);
+    }
+
+    // ==========================================
+    // Real-Time Synchronization Bus (App <-> Website)
+    // ==========================================
+    let syncChannel = null;
+    try {
+      syncChannel = new BroadcastChannel("autoloot_sync_channel");
+      syncChannel.onmessage = (event) => {
+        if (event.data && event.data.action === "SYNC") {
+          pulseSyncIndicator();
+          fetchData(true);
+        }
+      };
+    } catch (e) {}
+
+    window.addEventListener("storage", (e) => {
+      if (e.key === "autoloot_sync_timestamp") {
+        pulseSyncIndicator();
+        fetchData(true);
+      }
+    });
+
+    function broadcastSyncEvent(source = "action") {
+      try {
+        localStorage.setItem("autoloot_sync_timestamp", Date.now().toString());
+        if (syncChannel) syncChannel.postMessage({ action: "SYNC", source });
+        if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+          navigator.serviceWorker.controller.postMessage({ type: "SYNC_NOW" });
+        }
+      } catch (e) {}
+    }
+
+    // Auto re-sync when window gains focus or switches to foreground
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) {
+        pulseSyncIndicator();
+        fetchData(true);
+      }
+    });
+    window.addEventListener("focus", () => {
+      pulseSyncIndicator();
+      fetchData(true);
+    });
+
+    function pulseSyncIndicator() {
+      const dot = document.querySelector(".sync-dot");
+      const text = document.getElementById("sync-text");
+      if (dot) dot.classList.add("pulsing");
+      if (text) text.innerText = "SYNCING...";
+      setTimeout(() => {
+        if (dot) dot.classList.remove("pulsing");
+        if (text) text.innerText = "LIVE SYNCED";
+      }, 700);
+    }
+
+    // ==========================================
+    // PWA & Standalone App Installation
+    // ==========================================
+    let deferredInstallPrompt = null;
+    window.addEventListener("beforeinstallprompt", (e) => {
+      e.preventDefault();
+      deferredInstallPrompt = e;
+      const btn = document.getElementById("btn-install-app");
+      if (btn && !isStandaloneApp()) {
+        btn.style.display = "inline-flex";
+      }
+    });
+
+    window.addEventListener("appinstalled", () => {
+      showToast("App installed successfully! Running in synchronized app mode.");
+      deferredInstallPrompt = null;
+      const btn = document.getElementById("btn-install-app");
+      if (btn) btn.style.display = "none";
+      const badge = document.getElementById("app-mode-badge");
+      if (badge) badge.style.display = "inline-flex";
+    });
+
+    function isStandaloneApp() {
+      return window.matchMedia("(display-mode: standalone)").matches ||
+             window.navigator.standalone === true ||
+             document.referrer.includes("android-app://");
+    }
+
+    async function installAppPrompt() {
+      if (deferredInstallPrompt) {
+        deferredInstallPrompt.prompt();
+        const choice = await deferredInstallPrompt.userChoice;
+        if (choice && choice.outcome === "accepted") {
+          showToast("Auto Loot Claimer app installed successfully!");
+        }
+        deferredInstallPrompt = null;
+        const btn = document.getElementById("btn-install-app");
+        if (btn) btn.style.display = "none";
+      } else {
+        showToast("To install: On Chrome/Edge click the Install button in the address bar; on iOS tap Share -> 'Add to Home Screen'.");
+      }
+    }
+
+    // Service Worker Registration
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => {
+        navigator.serviceWorker.register("/sw.js").then(() => {
+          navigator.serviceWorker.addEventListener("message", (event) => {
+            if (event.data && event.data.type === "SYNC_TRIGGERED") {
+              pulseSyncIndicator();
+              fetchData(true);
+            }
+          });
+        }).catch((err) => {
+          console.debug("ServiceWorker registration note:", err);
+        });
+      });
+    }
+
+    // Global UI button press / control click logger for step-by-step diagnostics
+    document.addEventListener("click", (evt) => {
+      try {
+        const target = evt.target && evt.target.closest("button, a.btn, .tab-btn");
+        if (!target) return;
+        const activeTabEl = document.querySelector(".tab-btn.active");
+        const payload = {
+          action: "button_click",
+          element_id: target.id || "",
+          label: (target.innerText || target.title || target.getAttribute("aria-label") || "").trim().slice(0, 100),
+          tab: activeTabEl ? activeTabEl.innerText.trim() : "",
+          context: { tag: target.tagName.toLowerCase(), classes: target.className || "" },
+        };
+        fetch("/api/log-action", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+          keepalive: true,
+        }).catch(() => {});
+      } catch (e) {}
+    });
+
+    // Initial load & continuous 10s synchronization heartbeat
+    fetchData();
+    setInterval(() => fetchData(true), 10000);
+    setInterval(tickLocalSessionTimer, 5000);
+  </script>
+</body>
+</html>

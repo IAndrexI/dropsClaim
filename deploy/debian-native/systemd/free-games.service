@@ -1,0 +1,15 @@
+[Unit]
+Description=Free Games Auto-Claimer (Epic, Amazon, GOG)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/auto-loot-claimer
+EnvironmentFile=-/opt/auto-loot-claimer/.env
+ExecStart=/opt/auto-loot-claimer/scripts/run_games_claimer.sh
+StandardOutput=journal
+StandardError=journal
+
+# Hardened security sandbox
+NoNewPrivileges=true

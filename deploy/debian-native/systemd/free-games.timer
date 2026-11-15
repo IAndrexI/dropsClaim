@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily Timer for Free Games Auto-Claimer
+
+[Timer]
+# Run daily at 18:00 UTC (Epic store updates Thursdays at 15:00 UTC)
+OnCalendar=*-*-* 18:00:00
+# Run 5 minutes after boot if a scheduled run was missed
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

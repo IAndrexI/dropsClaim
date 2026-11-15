@@ -1,0 +1,63 @@
+version: "3.8"
+
+services:
+  # =========================================================================
+  # Service 1: Free Games Claimer (Epic Games, Amazon Prime Gaming, GOG)
+  # Uses audited open-source project ghcr.io/vogler/free-games-claimer
+  # Handles store logic, weekly freebies, and monthly Prime loot
+  # =========================================================================
+  free-games-claimer:
+    container_name: free-games-claimer
+    image: ghcr.io/vogler/free-games-claimer:latest
+    restart: unless-stopped
+    ports:
+      # noVNC browser interface: Open http://<lxc-ip>:6080 if 2FA/Captcha is needed on first login
+      - "6080:6080"
+    volumes:
+      # Persists authentication tokens, cookies, and claim history
+      - ./data/fgc:/fgc/data
+    environment:
+      - TZ=UTC
+      # Epic Games Credentials (or use browser session cookies)
+      - EG_EMAIL=${EG_EMAIL:-}
+      - EG_PASSWORD=${EG_PASSWORD:-}
+      - EG_OTP_SECRET=${EG_OTP_SECRET:-} # Optional 2FA secret for auto-login
+      # Amazon Prime Gaming Credentials
+      - PG_EMAIL=${PG_EMAIL:-}
+      - PG_PASSWORD=${PG_PASSWORD:-}
+      - PG_OTP_SECRET=${PG_OTP_SECRET:-}
+      # GOG Credentials (optional)
+      - GOG_EMAIL=${GOG_EMAIL:-}
+      - GOG_PASSWORD=${GOG_PASSWORD:-}
+      # Webhook Notifications (Discord, Telegram, Pushover, etc.)
+      - NOTIFY=${DISCORD_WEBHOOK_URL:-}
+      # Schedule: Run checks daily at 18:00 UTC (Epic rotates every Thursday 15:00 UTC)
+      - CRON=0 18 * * *
+    deploy:
+      resources:
+        limits:
+          cpus: "0.75"
+          memory: 512M
+
+  # =========================================================================
+  # Service 2: Twitch Drops Miner & Auto-Claimer
+  # Streamless, zero-telemetry background mining via direct Twitch GraphQL API
+  # Consumes < 40 MB RAM and virtually 0% CPU
+  # =========================================================================
+  twitch-drops-miner:
+    container_name: twitch-drops-miner
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.drops
+    restart: unless-stopped
+    volumes:
+      - ./data/twitch:/app/data
+    environment:
+      - TWITCH_AUTH_TOKEN=${TWITCH_AUTH_TOKEN:-}
+      - TWITCH_PRIORITY_GAMES=${TWITCH_PRIORITY_GAMES:-}
+      - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-}
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M
