@@ -20,13 +20,22 @@ from typing import Any, Dict, List, Optional, Set
 from .activity_logger import log_event
 from .browser_watcher import HeadlessBrowserWatcher
 from .pubsub import TwitchPubSubWatcher
-from .twitch_api import TwitchClient, extract_game_name, is_campaign_expired, is_timestamp_expired
+from .twitch_api import (
+    TwitchClient,
+    extract_game_name,
+    is_campaign_expired,
+    is_timestamp_expired,
+    save_inventory_cache,
+)
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 STATUS_FILE = os.path.join(DATA_DIR, "miner_status.json")
 CONFIG_FILE = os.path.join(DATA_DIR, "mining_config.json")
 PID_FILE = os.path.join(DATA_DIR, "miner.pid")
+CLAIM_REQUEST_FILE = os.path.join(DATA_DIR, "claim_request.json")
+_DEFAULT_DATA_DIR = DATA_DIR
+_DEFAULT_CLAIM_REQUEST_FILE = CLAIM_REQUEST_FILE
 
 logging.basicConfig(
     level=logging.INFO,
@@ -177,6 +186,115 @@ class DropsMiner:
         self.claim_backoff: Dict[str, float] = {}    # drop_id -> next allowed claim time
         self.browser_watcher = HeadlessBrowserWatcher()
         self.pubsub_watcher = TwitchPubSubWatcher(user_agent=getattr(self.client, "user_agent", None))
+        self._last_session_ctx: Optional[Dict[str, Any]] = None
+
+    def _get_claim_request_file(self) -> str:
+        """Return claim_request.json path, honoring either CLAIM_REQUEST_FILE or DATA_DIR patches."""
+        if CLAIM_REQUEST_FILE != _DEFAULT_CLAIM_REQUEST_FILE:
+            return CLAIM_REQUEST_FILE
+        if DATA_DIR != _DEFAULT_DATA_DIR:
+            return os.path.join(DATA_DIR, "claim_request.json")
+        return CLAIM_REQUEST_FILE
+
+    def _bw_or_none(self, channel_login: str = "") -> Optional[Any]:
+        """Return self.browser_watcher when actively watching, else None."""
+        bw = getattr(self, "browser_watcher", None)
+        if bw is None:
+            return None
+        try:
+            is_watching_fn = getattr(bw, "is_watching", None)
+            if callable(is_watching_fn):
+                try:
+                    watching = bool(is_watching_fn(channel_login)) if channel_login else bool(is_watching_fn())
+                except TypeError:
+                    fallback_arg = getattr(bw, "current_channel", "")
+                    watching = bool(is_watching_fn()) if channel_login else bool(is_watching_fn(fallback_arg))
+                if watching:
+                    return bw
+        except Exception:
+            pass
+        return None
+
+    def _fetch_inventory(self) -> Dict[str, Any]:
+        """Fetch inventory through active Chromium when watching, else via direct client."""
+        bw = self._bw_or_none()
+        if bw is not None:
+            try:
+                return self.client.get_inventory(browser_watcher=bw)
+            except TypeError:
+                return self.client.get_inventory()
+        return self.client.get_inventory()
+
+    def _fetch_drop_session(self, channel_id: str, channel_login: str = "") -> Dict[str, Any]:
+        """Fetch DropCurrentSessionContext through active Chromium when watching, else direct client."""
+        bw = self._bw_or_none(channel_login)
+        if bw is not None:
+            try:
+                return self.client.get_drop_current_session(channel_id, channel_login, browser_watcher=bw)
+            except TypeError:
+                return self.client.get_drop_current_session(channel_id, channel_login)
+        return self.client.get_drop_current_session(channel_id, channel_login)
+
+    def _persist_inventory_cache(self, session_ctx: Optional[Dict[str, Any]] = None) -> None:
+        """Persist non-empty inventory/session context to shared disk cache for dashboard reads."""
+        if isinstance(session_ctx, dict) and session_ctx:
+            self._last_session_ctx = session_ctx
+        sess_to_save = session_ctx if session_ctx else self._last_session_ctx
+        if not self.last_inventory and not sess_to_save:
+            return
+        try:
+            save_inventory_cache(self.last_inventory or {}, session_ctx=sess_to_save)
+        except Exception as err:
+            logger.debug("Could not persist inventory cache: %s", err)
+
+    def _is_rate_limited(self, browser_active: bool = False) -> bool:
+        """Return True if either TwitchClient or active Chromium browser is in rate-limit cooldown."""
+        client_rl = False
+        try:
+            fn = getattr(self.client, "is_rate_limited", None)
+            if callable(fn):
+                res = fn()
+                if isinstance(res, (bool, int)) and bool(res):
+                    client_rl = True
+        except Exception:
+            client_rl = False
+
+        browser_rl = False
+        if browser_active:
+            try:
+                bw_fn = getattr(self.browser_watcher, "is_recently_rate_limited", None)
+                if callable(bw_fn):
+                    res = bw_fn()
+                    if isinstance(res, (bool, int)) and bool(res):
+                        browser_rl = True
+            except Exception:
+                browser_rl = False
+
+        return client_rl or browser_rl
+
+    def _rate_limit_cooldown_secs(self, browser_active: bool = False) -> int:
+        """Return remaining Twitch API cooldown seconds."""
+        rem = 0
+        try:
+            fn = getattr(self.client, "rate_limit_remaining", None)
+            if callable(fn):
+                val = fn()
+                if isinstance(val, (int, float)):
+                    rem = max(0, int(val))
+        except Exception:
+            rem = 0
+        if rem > 0:
+            return rem
+        if browser_active:
+            try:
+                last_bw_rl = getattr(self.browser_watcher, "last_gql_rate_limited_time", 0.0)
+                if isinstance(last_bw_rl, (int, float)) and last_bw_rl > 0:
+                    bw_rem = int(max(0.0, 300.0 - (time.time() - float(last_bw_rl))))
+                    if bw_rem > 0:
+                        return bw_rem
+            except Exception:
+                pass
+        return 0
 
     def _stop_watchers(self) -> None:
         """Stop both headless browser watcher and WebSocket PubSub presence client."""
@@ -373,16 +491,101 @@ class DropsMiner:
         """Check if the user changed the selected game/queue or mining mode."""
         return self._get_config_signature() != initial_sig
 
+    def process_external_claim_request(self) -> int:
+        """
+        Atomically read and remove data/claim_request.json written by the dashboard,
+        execute the drop claim (via active Chromium when available), and persist updated cache.
+        """
+        req_file = self._get_claim_request_file()
+        if not os.path.exists(req_file):
+            return 0
+
+        processing_file = f"{req_file}.processing.{os.getpid()}"
+        target_read_file = processing_file
+        try:
+            os.replace(req_file, processing_file)
+        except FileNotFoundError:
+            return 0
+        except Exception:
+            target_read_file = req_file
+
+        payload: Dict[str, Any] = {}
+        try:
+            with open(target_read_file, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    payload = loaded
+        except FileNotFoundError:
+            return 0
+        except Exception as err:
+            logger.debug("Invalid external claim request JSON: %s", err)
+            payload = {}
+        finally:
+            try:
+                if os.path.exists(target_read_file):
+                    os.remove(target_read_file)
+            except OSError:
+                pass
+            if target_read_file != processing_file:
+                try:
+                    if os.path.exists(processing_file):
+                        os.remove(processing_file)
+                except OSError:
+                    pass
+
+        drop_id = str(payload.get("drop_instance_id") or "").strip()
+        claimed = 0
+        bw = self._bw_or_none()
+        if drop_id:
+            try:
+                if self.client.claim_drop(drop_id, browser_watcher=bw):
+                    claimed = 1
+                    if self.last_inventory:
+                        camps = (
+                            self.last_inventory.get("dropCampaignsInProgress")
+                            or self.last_inventory.get("dropCampaignInProgress")
+                            or []
+                        )
+                        if isinstance(camps, dict):
+                            camps = [camps]
+                        for camp in camps:
+                            for d in (camp.get("timeBasedDrops") or []):
+                                s_data = d.get("self") or {}
+                                inst_id = str(s_data.get("dropInstanceID") or s_data.get("dropInstanceId") or "")
+                                d_id = str(d.get("id") or "")
+                                if drop_id in (inst_id, d_id) or (inst_id and drop_id in inst_id):
+                                    s_data["isClaimed"] = True
+            except Exception as err:
+                logger.warning("[MINER] External claim request failed for %s: %s", drop_id, err)
+        else:
+            claimed = self.claim_pending_drops(force=True)
+
+        self._persist_inventory_cache()
+        if claimed > 0:
+            logger.info("[MINER] Processed external claim request: claimed %d drop(s).", claimed)
+        return claimed
+
     def _interruptible_sleep(self, total_seconds: float, initial_sig: tuple) -> bool:
         """
         Sleep up to total_seconds in 0.2-second slices, waking up immediately if
         mining selection/queue/mode changed or daemon stopped.
+        Checks data/claim_request.json roughly every 1s when present.
         Returns True if interrupted by a config change or stop signal.
         """
         end_time = time.time() + total_seconds
+        req_file = self._get_claim_request_file()
+        last_claim_check = 0.0
         while time.time() < end_time:
             if not self.running or self._has_config_changed(initial_sig):
                 return True
+            now = time.time()
+            if (now - last_claim_check) >= 1.0:
+                last_claim_check = now
+                if os.path.exists(req_file):
+                    try:
+                        self.process_external_claim_request()
+                    except Exception as err:
+                        logger.debug("External claim request check error: %s", err)
             remaining = end_time - time.time()
             if remaining > 0:
                 time.sleep(min(0.2, remaining))
@@ -475,14 +678,18 @@ class DropsMiner:
             self.failed_claim_ids.clear()
             self.failed_claim_counts.clear()
             self.claim_backoff.clear()
+        bw = self._bw_or_none()
+        if not force and self._is_rate_limited(browser_active=bool(bw)):
+            return 0
         claimed_count = 0
         try:
             now = time.time()
             if self._should_poll_inventory(live_drop_info=live_drop_info, session_ctx=session_ctx, force=force):
-                inv = self.client.get_inventory()
+                inv = self._fetch_inventory()
                 if inv:
                     self.last_inventory = inv
                     self.last_inventory_time = now
+                    self._persist_inventory_cache(session_ctx=session_ctx)
             else:
                 inv = self.last_inventory or {}
             campaigns = inv.get("dropCampaignsInProgress") or inv.get("dropCampaignInProgress") or []
@@ -518,10 +725,11 @@ class DropsMiner:
                     if watched >= required and required > 0:
                         # If dropInstanceID is missing from cached data, refresh inventory to fetch the authentic instance UUID
                         if not self_data.get("dropInstanceID") and not self_data.get("dropInstanceId"):
-                            fresh_inv = self.client.get_inventory()
+                            fresh_inv = self._fetch_inventory()
                             if fresh_inv:
                                 self.last_inventory = fresh_inv
                                 self.last_inventory_time = time.time()
+                                self._persist_inventory_cache(session_ctx=session_ctx)
                                 for fc in (fresh_inv.get("dropCampaignsInProgress") or []):
                                     for fd in fc.get("timeBasedDrops", []):
                                         if fd.get("id") == drop.get("id"):
@@ -535,11 +743,12 @@ class DropsMiner:
 
                         drop_name = drop.get("name", "Drop Reward")
                         logger.info("Found claimable drop: %s (%s) [%d/%d min]", drop_name, game_name, watched, required)
-                        if self.client.claim_drop(drop_id, browser_watcher=self.browser_watcher):
+                        if self.client.claim_drop(drop_id, browser_watcher=self._bw_or_none()):
                             claimed_count += 1
                             self_data["isClaimed"] = True
                             self.failed_claim_counts.pop(drop_id, None)
                             self.claim_backoff.pop(drop_id, None)
+                            self._persist_inventory_cache(session_ctx=session_ctx)
                             self.notify(f"Successfully claimed **{drop_name}** for **{game_name}**!")
                         else:
                             fail_count = self.failed_claim_counts.get(drop_id, 0) + 1
@@ -1104,9 +1313,6 @@ class DropsMiner:
             self._interruptible_sleep(300, cycle_sig)
             return
 
-        # Rotate client session identity to establish a distinct, dedicated stream viewing session with Twitch
-        self.client.new_session_id()
-
         stream_url = f"https://www.twitch.tv/{channel['channel_login']}"
         log_event(
             "MINER_LOOP",
@@ -1125,7 +1331,7 @@ class DropsMiner:
             len(queue_cfg), stream_url
         )
 
-        # Open real headless Chromium page when available so Twitch's web player natively maintains drops telemetry
+        # Open real headless Chromium page FIRST when available so Twitch's web player natively maintains drops telemetry
         if self.browser_watcher.is_available():
             bw_state = self.browser_watcher.watch_channel(
                 channel["channel_login"],
@@ -1135,37 +1341,48 @@ class DropsMiner:
                 user_id=self.client.user_id,
                 session_id=getattr(self.client, "session_id", ""),
             )
-            logger.info("[MINER] Browser watcher state for @%s: %s", channel["channel_login"], bw_state.get("status"))
-        browser_active = self.browser_watcher.is_watching(channel["channel_login"])
+            logger.info("[MINER] Browser watcher state for @%s: %s", channel["channel_login"], (bw_state or {}).get("status"))
+        browser_active = self._bw_or_none(channel["channel_login"]) is not None
 
-        # Maintain real viewer presence on Twitch PubSub WebSocket (video-playback-by-id)
-        try:
-            self.pubsub_watcher.start(
-                channel["channel_id"],
-                channel_login=channel["channel_login"],
-                auth_token=self.client.auth_token,
-            )
-        except Exception as err:
-            logger.debug("[MINER] PubSub watcher start error: %s", err)
+        # Only rotate Python client session identity & run PubSub when Chromium is NOT active
+        if not browser_active:
+            self.client.new_session_id()
+            try:
+                self.pubsub_watcher.start(
+                    channel["channel_id"],
+                    channel_login=channel["channel_login"],
+                    auth_token=self.client.auth_token,
+                )
+            except Exception as err:
+                logger.debug("[MINER] PubSub watcher start error: %s", err)
+        else:
+            try:
+                self.pubsub_watcher.stop()
+            except Exception:
+                pass
 
-        presence_info = self.client.get_user_presence_info()
-        user_active = bool(presence_info.get("is_active"))
-        presence_conflict = bool(user_active and not browser_active)
+        presence_info: Dict[str, Any] = {}
+        user_active = False
+        presence_conflict = False
         conflict_msg = ""
-        if presence_conflict:
-            avail = presence_info.get("availability") or "ONLINE"
-            act = presence_info.get("activity_type") or "Active"
-            conflict_msg = (
-                f"Twitch detected active viewing on another device/browser ({avail}). "
-                "Twitch only credits drops to 1 stream at a time across your account. "
-                "If drop progress stalls, close other Twitch tabs or mobile apps."
-            )
-            logger.warning(
-                "[MINER] Notice: Twitch detected active user presence/viewing on another session (availability=%s, activity=%s). "
-                "Twitch only credits watch time to 1 stream at a time across your account. "
-                "Close other Twitch tabs or mobile apps to avoid drop progress stalls.",
-                avail, act
-            )
+        if pause_when_user_active:
+            presence_info = self.client.get_user_presence_info()
+            user_active = bool(presence_info.get("is_active"))
+            presence_conflict = bool(user_active and not browser_active)
+            if presence_conflict:
+                avail = presence_info.get("availability") or "ONLINE"
+                act = presence_info.get("activity_type") or "Active"
+                conflict_msg = (
+                    f"Twitch detected active viewing on another device/browser ({avail}). "
+                    "Twitch only credits drops to 1 stream at a time across your account. "
+                    "If drop progress stalls, close other Twitch tabs or mobile apps."
+                )
+                logger.warning(
+                    "[MINER] Notice: Twitch detected active user presence/viewing on another session (availability=%s, activity=%s). "
+                    "Twitch only credits watch time to 1 stream at a time across your account. "
+                    "Close other Twitch tabs or mobile apps to avoid drop progress stalls.",
+                    avail, act
+                )
 
         # Immediately write active stream status BEFORE fetching playback info or sending heartbeat so UI updates with 0 lag
         initial_drop_info = self._get_live_drop_progress(game_name, camp_name, fallback_camp=chosen_campaign)
@@ -1175,6 +1392,9 @@ class DropsMiner:
         last_progress_minute = 0
         progress_verified = False
         baseline_global = self._get_global_watched_total()
+        init_rl = self._is_rate_limited(browser_active=browser_active)
+        init_rl_secs = self._rate_limit_cooldown_secs(browser_active=browser_active) if init_rl else 0
+        init_check_mins = 12 if (browser_active and self.progress_check_minutes == 8) else self.progress_check_minutes
 
         immediate_status = {
             "active": True,
@@ -1186,6 +1406,8 @@ class DropsMiner:
             "browser_active": browser_active,
             "browser_watcher": self.browser_watcher.last_state,
             "pubsub_connected": self.pubsub_watcher.is_connected(),
+            "rate_limited": init_rl,
+            "rate_limit_cooldown_secs": init_rl_secs,
             "game": game_name,
             "game_cover_url": chosen_campaign.get("cover_url") or "",
             "selected_game": selected_game_cfg or game_name,
@@ -1201,7 +1423,7 @@ class DropsMiner:
             "has_drops_in_title": bool(channel.get("has_drops_in_title", False)),
             "progress_verified": False,
             "minutes_without_progress": 0,
-            "progress_check_minutes": self.progress_check_minutes,
+            "progress_check_minutes": init_check_mins,
             "game_id": channel.get("game_id", ""),
             "stream_url": stream_url,
             "viewers": channel["viewers"],
@@ -1217,44 +1439,59 @@ class DropsMiner:
         immediate_status.update(initial_drop_info)
         save_miner_status(immediate_status)
 
-        # Open browser-equivalent stream session (channel page -> Spade URL -> GQL drop context -> Usher m3u8 -> initial HLS chunk)
-        if not self.client.user_id:
-            self.client.validate_session()
-        if not self.client.user_id:
-            logger.warning("[MINER] Twitch user_id is unknown; watch pings cannot be credited to your account. Re-link Twitch in the Accounts tab.")
-        if hasattr(self.client, "open_browser_stream_session"):
-            playback_info = self.client.open_browser_stream_session(
-                channel["channel_login"],
-                channel.get("channel_id", ""),
-                game_name=game_name,
-                game_id=channel.get("game_id", ""),
-            )
+        # Open browser-equivalent stream session only when Chromium is NOT active
+        if browser_active:
+            broadcast_id = channel.get("stream_id", "")
+            sub_playlist_url = ""
         else:
-            playback_info = self.client.get_playback_stream_info(channel["channel_login"])
-        broadcast_id = playback_info.get("broadcast_id") or channel.get("stream_id", "")
-        sub_playlist_url = playback_info.get("sub_playlist_url")
+            if not self.client.user_id:
+                self.client.validate_session()
+            if not self.client.user_id:
+                logger.warning("[MINER] Twitch user_id is unknown; watch pings cannot be credited to your account. Re-link Twitch in the Accounts tab.")
+            if hasattr(self.client, "open_browser_stream_session"):
+                playback_info = self.client.open_browser_stream_session(
+                    channel["channel_login"],
+                    channel.get("channel_id", ""),
+                    game_name=game_name,
+                    game_id=channel.get("game_id", ""),
+                )
+            else:
+                playback_info = self.client.get_playback_stream_info(channel["channel_login"])
+            broadcast_id = playback_info.get("broadcast_id") or channel.get("stream_id", "")
+            sub_playlist_url = playback_info.get("sub_playlist_url")
 
         # 5. Browser-emulated watch loop under user account (sending heartbeat every ~60s)
-        # Watches ONLY this single stream, verifies progress & availability every 5 mins, and rotates channels after 1 hour (60 mins)!
+        # Watches ONLY this single stream, verifies progress & availability calmly, and rotates channels after 1 hour (60 mins)!
         live_drop_info: Optional[Dict[str, Any]] = dict(initial_drop_info) if isinstance(initial_drop_info, dict) else None
+        session_ctx: Optional[Dict[str, Any]] = None
         for minute in range(self.stream_cycle_minutes):
             if self._has_config_changed(cycle_sig):
                 self._handle_mid_cycle_swap(channel["channel_name"], game_name)
                 return
 
-            presence_info = self.client.get_user_presence_info()
-            user_active = bool(presence_info.get("is_active"))
-            browser_active = self.browser_watcher.is_watching(channel["channel_login"])
-            presence_conflict = bool(user_active and not browser_active)
-            conflict_msg = ""
-            if presence_conflict:
-                avail = presence_info.get("availability") or "ONLINE"
-                act = presence_info.get("activity_type") or "Active"
-                conflict_msg = (
-                    f"Twitch detected active viewing on another device/browser ({avail}). "
-                    "Twitch only credits drops to 1 stream at a time across your account. "
-                    "If drop progress stalls, close other Twitch tabs or mobile apps."
-                )
+            browser_active = self._bw_or_none(channel["channel_login"]) is not None
+            if pause_when_user_active and (minute + 1) % 5 == 0:
+                presence_info = self.client.get_user_presence_info()
+                user_active = bool(presence_info.get("is_active"))
+                presence_conflict = bool(user_active and not browser_active)
+                conflict_msg = ""
+                if presence_conflict:
+                    avail = presence_info.get("availability") or "ONLINE"
+                    act = presence_info.get("activity_type") or "Active"
+                    conflict_msg = (
+                        f"Twitch detected active viewing on another device/browser ({avail}). "
+                        "Twitch only credits drops to 1 stream at a time across your account. "
+                        "If drop progress stalls, close other Twitch tabs or mobile apps."
+                    )
+            elif not pause_when_user_active:
+                presence_info = {}
+                user_active = False
+                presence_conflict = False
+                conflict_msg = ""
+            else:
+                presence_conflict = bool(user_active and not browser_active)
+                if not presence_conflict:
+                    conflict_msg = ""
 
             if pause_when_user_active and presence_conflict:
                 self._stop_watchers()
@@ -1276,7 +1513,7 @@ class DropsMiner:
                 })
                 break
 
-            if not broadcast_id or not sub_playlist_url:
+            if not browser_active and (not broadcast_id or not sub_playlist_url):
                 playback_info = self.client.get_playback_stream_info(channel["channel_login"])
                 broadcast_id = playback_info.get("broadcast_id") or broadcast_id or channel.get("stream_id", "")
                 sub_playlist_url = playback_info.get("sub_playlist_url") or sub_playlist_url
@@ -1315,11 +1552,32 @@ class DropsMiner:
                     user_id=self.client.user_id,
                     session_id=getattr(self.client, "session_id", ""),
                 )
+            browser_active = self._bw_or_none(channel["channel_login"]) is not None
 
-            # 1. Fetch real-time DropCurrentSessionContext FIRST so we have the latest drop watch progress
-            session_ctx = self.client.get_drop_current_session(channel["channel_id"], channel["channel_login"])
-            if not session_ctx and isinstance(getattr(self.client, "last_drop_session", None), dict):
-                session_ctx = self.client.last_drop_session
+            # 1. Throttled DropCurrentSessionContext polling (always minute 0, every 3m, or <=2m remaining)
+            est_remaining = (live_drop_info or {}).get("current_drop_remaining")
+            try:
+                est_rem_val = int(est_remaining) if est_remaining is not None else None
+            except (TypeError, ValueError):
+                est_rem_val = None
+            rate_limited_now = self._is_rate_limited(browser_active=browser_active)
+            should_poll_session = (
+                not rate_limited_now
+                and (
+                    minute == 0
+                    or (minute + 1) % 3 == 0
+                    or (est_rem_val is not None and est_rem_val <= 2)
+                    or (not browser_active and self.progress_check_minutes <= 5)
+                )
+            )
+            if should_poll_session:
+                fresh_sess = self._fetch_drop_session(channel["channel_id"], channel["channel_login"])
+                if fresh_sess:
+                    session_ctx = fresh_sess
+                    self._last_session_ctx = session_ctx
+                    self._persist_inventory_cache(session_ctx=session_ctx)
+                elif not session_ctx and isinstance(getattr(self.client, "last_drop_session", None), dict):
+                    session_ctx = self.client.last_drop_session
 
             # 2. Check if the active drop completed during this minute in session context
             sess_w = int((session_ctx or {}).get("currentMinutesWatched") or 0)
@@ -1366,42 +1624,65 @@ class DropsMiner:
                 })
                 return
 
-            # Stream & Drops Availability Check every 5 minutes: verify stream is still live and still broadcasting drops
-            if (minute + 1) % 5 == 0 or (minute + 1) % self.progress_check_minutes == 0 or not success:
+            is_rl = self._is_rate_limited(browser_active=browser_active)
+
+            # Stream & Drops Availability Check: every 15m when Chromium video is actively advancing, else every 5m
+            bw_state = self.browser_watcher.last_state if isinstance(getattr(self.browser_watcher, "last_state", None), dict) else {}
+            vid_adv = bool(
+                browser_active
+                and bw_state.get("video_found")
+                and not bw_state.get("paused")
+                and bw_state.get("playback_advancing", True)
+            )
+            should_check_avail = (
+                ((minute + 1) % 15 == 0 or not success)
+                if vid_adv
+                else ((minute + 1) % 5 == 0 or (minute + 1) % self.progress_check_minutes == 0 or not success)
+            )
+            if should_check_avail and not is_rl:
                 is_avail, avail_reason = self.client.is_stream_and_drops_available(
                     channel_id=channel["channel_id"],
                     channel_login=channel["channel_login"],
                     game_name=game_name,
                 )
                 if not is_avail:
-                    self._stop_watchers()
-                    log_event("MINER_LOOP", "stream_unavailable", {"channel": channel["channel_login"], "game": game_name, "reason": avail_reason}, level="WARNING")
-                    logger.warning(
-                        "[MINER] Mining check: stream or drops no longer available on %s (@%s) for '%s' (%s). "
-                        "Switching immediately to another drops-enabled channel...",
-                        channel["channel_name"], channel["channel_login"], game_name, avail_reason
-                    )
-                    self._mark_channel_unproductive(channel["channel_login"])
-                    self.current_stream = None
-                    save_miner_status({
-                        "active": False,
-                        "switching": True,
-                        "browser_active": False,
-                        "browser_watcher": self.browser_watcher.last_state,
-                        "game": game_name,
-                        "selected_game": selected_game_cfg or game_name,
-                        "channel_name": "",
-                        "channel_login": "",
-                        "channel_id": "",
-                        "stream_id": "",
-                        "stream_url": "",
-                        "viewers": 0,
-                        "queue": queue_cfg,
-                        "mode": mode_cfg,
-                        "message": f"{channel['channel_name']} is no longer available ({avail_reason}). Switching channels...",
-                        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                    })
-                    return
+                    is_rl = self._is_rate_limited(browser_active=browser_active)
+                    if is_rl:
+                        logger.warning(
+                            "[MINER] Twitch API rate-limited during availability check (%ds cooldown); keeping %s (@%s) watching calmly.",
+                            self._rate_limit_cooldown_secs(browser_active=browser_active),
+                            channel["channel_name"],
+                            channel["channel_login"],
+                        )
+                    else:
+                        self._stop_watchers()
+                        log_event("MINER_LOOP", "stream_unavailable", {"channel": channel["channel_login"], "game": game_name, "reason": avail_reason}, level="WARNING")
+                        logger.warning(
+                            "[MINER] Mining check: stream or drops no longer available on %s (@%s) for '%s' (%s). "
+                            "Switching immediately to another drops-enabled channel...",
+                            channel["channel_name"], channel["channel_login"], game_name, avail_reason
+                        )
+                        self._mark_channel_unproductive(channel["channel_login"])
+                        self.current_stream = None
+                        save_miner_status({
+                            "active": False,
+                            "switching": True,
+                            "browser_active": False,
+                            "browser_watcher": self.browser_watcher.last_state,
+                            "game": game_name,
+                            "selected_game": selected_game_cfg or game_name,
+                            "channel_name": "",
+                            "channel_login": "",
+                            "channel_id": "",
+                            "stream_id": "",
+                            "stream_url": "",
+                            "viewers": 0,
+                            "queue": queue_cfg,
+                            "mode": mode_cfg,
+                            "message": f"{channel['channel_name']} is no longer available ({avail_reason}). Switching channels...",
+                            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                        })
+                        return
 
             # 5-Minute Progress Watchdog & Status Refresh: verify drop progress is actively increasing on this channel
             if (minute + 1) % 5 == 0 or (minute + 1) % self.progress_check_minutes == 0:
@@ -1409,11 +1690,14 @@ class DropsMiner:
                     "[MINER] Refreshing stream progress status (5 min check) on %s (@%s) for '%s'...",
                     channel["channel_name"], channel["channel_login"], game_name
                 )
-                # Only poll full inventory on scheduled interval or when drop completion is expected
-                if self._should_poll_inventory(live_drop_info=live_drop_info):
+                # Only poll full inventory on scheduled interval or when drop completion is expected (and not rate-limited)
+                if not is_rl and self._should_poll_inventory(live_drop_info=live_drop_info):
                     try:
-                        self.last_inventory = self.client.get_inventory()
-                        self.last_inventory_time = time.time()
+                        inv_refresh = self._fetch_inventory()
+                        if inv_refresh:
+                            self.last_inventory = inv_refresh
+                            self.last_inventory_time = time.time()
+                            self._persist_inventory_cache(session_ctx=session_ctx)
                     except Exception as inv_err:
                         logger.debug("Inventory refresh during 5m check error: %s", inv_err)
 
@@ -1444,6 +1728,7 @@ class DropsMiner:
                     "claimed_now": claimed_now,
                     "heartbeat_ok": success,
                     "browser_active": browser_active,
+                    "rate_limited": is_rl,
                 },
             )
             if current_watched > baseline_watched or claimed_now > 0 or global_progress:
@@ -1466,23 +1751,39 @@ class DropsMiner:
                 mins_stalled = (minute + 1) - last_progress_minute
                 pref_ch_cfg = str(config.get("preferred_channel") or "").lower().strip()
                 is_preferred = bool(pref_ch_cfg and str(channel.get("channel_login", "")).lower() == pref_ch_cfg)
-                stall_threshold = self.progress_check_minutes
+                if browser_active and self.progress_check_minutes == 8:
+                    stall_threshold = 12
+                    preferred_threshold = 15
+                else:
+                    stall_threshold = self.progress_check_minutes
+                    preferred_threshold = 10
 
-                if is_preferred and mins_stalled < 10:
+                is_rl = self._is_rate_limited(browser_active=browser_active)
+                if is_rl:
+                    logger.info(
+                        "[MINER] Twitch API rate-limit cooldown active (%ds remaining); keeping %s (@%s) watching peacefully without hopping.",
+                        self._rate_limit_cooldown_secs(browser_active=browser_active),
+                        channel["channel_name"],
+                        channel["channel_login"],
+                    )
+                elif is_preferred and mins_stalled < preferred_threshold:
                     if mins_stalled >= 5 and mins_stalled % 5 == 0:
                         logger.info(
-                            "[MINER] User-selected channel %s (@%s) is active; giving up to 10m for Twitch drop progress to register (stalled %dm).",
-                            channel["channel_name"], channel["channel_login"], mins_stalled
+                            "[MINER] User-selected channel %s (@%s) is active; giving up to %dm for Twitch drop progress to register (stalled %dm).",
+                            channel["channel_name"], channel["channel_login"], preferred_threshold, mins_stalled
                         )
-                elif mins_stalled >= (10 if is_preferred else stall_threshold):
+                elif mins_stalled >= (preferred_threshold if is_preferred else stall_threshold):
                     # Cache-busted inventory refresh before declaring stall to prevent false positives from edge cache delay
                     try:
-                        fresh_inv = self.client.get_inventory()
+                        fresh_inv = self._fetch_inventory()
                         if fresh_inv:
                             self.last_inventory = fresh_inv
-                        fresh_sess = self.client.get_drop_current_session(channel["channel_id"], channel["channel_login"])
+                            self.last_inventory_time = time.time()
+                        fresh_sess = self._fetch_drop_session(channel["channel_id"], channel["channel_login"])
                         if fresh_sess:
                             session_ctx = fresh_sess
+                        if fresh_inv or fresh_sess:
+                            self._persist_inventory_cache(session_ctx=session_ctx)
                         fresh_drop_info = self._get_live_drop_progress(
                             game_name, camp_name, fallback_camp=chosen_campaign, session_ctx=session_ctx
                         )
@@ -1511,76 +1812,85 @@ class DropsMiner:
                     except Exception as retry_err:
                         logger.debug("Stall verification retry error: %s", retry_err)
 
-                    self._stop_watchers()
-                    if is_preferred:
-                        logger.warning(
-                            "[MINER] User-selected channel %s (@%s) produced no drop progress after %dm. Clearing preferred channel and switching to another drops channel.",
-                            channel["channel_name"], channel["channel_login"], mins_stalled
+                    is_rl = self._is_rate_limited(browser_active=browser_active)
+                    if is_rl:
+                        logger.info(
+                            "[MINER] Twitch API rate-limit cooldown triggered during stall retry (%ds remaining); keeping %s (@%s) watching peacefully.",
+                            self._rate_limit_cooldown_secs(browser_active=browser_active),
+                            channel["channel_name"],
+                            channel["channel_login"],
                         )
-                        try:
-                            cfg = load_mining_config()
-                            if cfg.get("preferred_channel"):
-                                cfg["preferred_channel"] = ""
-                                save_mining_config(cfg)
-                        except Exception:
-                            pass
-                    log_event(
-                        "MINER_LOOP",
-                        "channel_stalled",
-                        {
-                            "channel": channel["channel_login"],
+                    else:
+                        self._stop_watchers()
+                        if is_preferred:
+                            logger.warning(
+                                "[MINER] User-selected channel %s (@%s) produced no drop progress after %dm. Clearing preferred channel and switching to another drops channel.",
+                                channel["channel_name"], channel["channel_login"], mins_stalled
+                            )
+                            try:
+                                cfg = load_mining_config()
+                                if cfg.get("preferred_channel"):
+                                    cfg["preferred_channel"] = ""
+                                    save_mining_config(cfg)
+                            except Exception:
+                                pass
+                        log_event(
+                            "MINER_LOOP",
+                            "channel_stalled",
+                            {
+                                "channel": channel["channel_login"],
+                                "game": game_name,
+                                "mins_stalled": mins_stalled,
+                                "watched": current_watched,
+                                "presence_conflict": presence_conflict,
+                                "was_preferred": is_preferred,
+                            },
+                            level="WARNING",
+                        )
+                        if presence_conflict:
+                            logger.warning(
+                                "[MINER] Drop progress stalled after %d minutes while an external Twitch session was active (%s). "
+                                "Twitch likely routed drop watch credit to the external browser/app instead of this miner.",
+                                mins_stalled, presence_info.get("availability", "ONLINE")
+                            )
+                        logger.warning(
+                            "[MINER] No drop progress increase after %d minutes on %s (@%s) for '%s' (watched remained at %dm). "
+                            "Marking channel unproductive and switching to another Drops channel immediately!",
+                            mins_stalled, channel["channel_name"], channel["channel_login"], game_name, current_watched
+                        )
+                        self._mark_channel_unproductive(channel["channel_login"], force=is_preferred)
+                        stall_cnt = self.campaign_stall_counts.get(game_name.lower(), 0) + 1
+                        self.campaign_stall_counts[game_name.lower()] = stall_cnt
+                        if stall_cnt >= 4:
+                            self.stalled_campaigns[game_name.lower()] = time.time()
+                            logger.warning(
+                                "[MINER] Campaign '%s' failed to gain progress across %d channels in a row; "
+                                "placing on 30-minute cooldown so other eligible campaigns can be mined.",
+                                game_name, stall_cnt
+                            )
+                        self.current_stream = None
+                        save_miner_status({
+                            "active": False,
+                            "switching": True,
+                            "browser_active": False,
+                            "browser_watcher": self.browser_watcher.last_state,
                             "game": game_name,
-                            "mins_stalled": mins_stalled,
-                            "watched": current_watched,
-                            "presence_conflict": presence_conflict,
-                            "was_preferred": is_preferred,
-                        },
-                        level="WARNING",
-                    )
-                    if presence_conflict:
-                        logger.warning(
-                            "[MINER] Drop progress stalled after %d minutes while an external Twitch session was active (%s). "
-                            "Twitch likely routed drop watch credit to the external browser/app instead of this miner.",
-                            mins_stalled, presence_info.get("availability", "ONLINE")
-                        )
-                    logger.warning(
-                        "[MINER] No drop progress increase after %d minutes on %s (@%s) for '%s' (watched remained at %dm). "
-                        "Marking channel unproductive and switching to another Drops channel immediately!",
-                        mins_stalled, channel["channel_name"], channel["channel_login"], game_name, current_watched
-                    )
-                    self._mark_channel_unproductive(channel["channel_login"], force=is_preferred)
-                    stall_cnt = self.campaign_stall_counts.get(game_name.lower(), 0) + 1
-                    self.campaign_stall_counts[game_name.lower()] = stall_cnt
-                    if stall_cnt >= 4:
-                        self.stalled_campaigns[game_name.lower()] = time.time()
-                        logger.warning(
-                            "[MINER] Campaign '%s' failed to gain progress across %d channels in a row; "
-                            "placing on 30-minute cooldown so other eligible campaigns can be mined.",
-                            game_name, stall_cnt
-                        )
-                    self.current_stream = None
-                    save_miner_status({
-                        "active": False,
-                        "switching": True,
-                        "browser_active": False,
-                        "browser_watcher": self.browser_watcher.last_state,
-                        "game": game_name,
-                        "selected_game": selected_game_cfg or game_name,
-                        "channel_name": "",
-                        "channel_login": "",
-                        "channel_id": "",
-                        "stream_id": "",
-                        "stream_url": "",
-                        "viewers": 0,
-                        "queue": queue_cfg,
-                        "mode": mode_cfg,
-                        "message": (
-                            f"No drop progress increase after {mins_stalled} mins on {channel['channel_name']} (@{channel['channel_login']}). "
-                            f"Switching immediately to a verified Drops channel..."
-                        ),
-                        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                    })
-                    return
+                            "selected_game": selected_game_cfg or game_name,
+                            "channel_name": "",
+                            "channel_login": "",
+                            "channel_id": "",
+                            "stream_id": "",
+                            "stream_url": "",
+                            "viewers": 0,
+                            "queue": queue_cfg,
+                            "mode": mode_cfg,
+                            "message": (
+                                f"No drop progress increase after {mins_stalled} mins on {channel['channel_name']} (@{channel['channel_login']}). "
+                                f"Switching immediately to a verified Drops channel..."
+                            ),
+                            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                        })
+                        return
 
             # Re-verify config hasn't changed while claiming/fetching inventory
             if self._has_config_changed(cycle_sig):
@@ -1588,7 +1898,10 @@ class DropsMiner:
                 return
 
             mins_without_prog = (minute + 1) - last_progress_minute
-            next_check_in = max(0, self.progress_check_minutes - (mins_without_prog % self.progress_check_minutes))
+            eff_check_mins = 12 if (browser_active and self.progress_check_minutes == 8) else self.progress_check_minutes
+            next_check_in = max(0, eff_check_mins - (mins_without_prog % eff_check_mins))
+            is_rl = self._is_rate_limited(browser_active=browser_active)
+            cooldown_secs = self._rate_limit_cooldown_secs(browser_active=browser_active) if is_rl else 0
             current_status = {
                 "active": True,
                 "switching": False,
@@ -1599,6 +1912,8 @@ class DropsMiner:
                 "browser_active": browser_active,
                 "browser_watcher": self.browser_watcher.last_state,
                 "pubsub_connected": self.pubsub_watcher.is_connected(),
+                "rate_limited": is_rl,
+                "rate_limit_cooldown_secs": cooldown_secs,
                 "game": game_name,
                 "selected_game": selected_game_cfg or game_name,
                 "queue": queue_cfg,
@@ -1613,7 +1928,7 @@ class DropsMiner:
                 "has_drops_in_title": bool(channel.get("has_drops_in_title", False)),
                 "progress_verified": progress_verified,
                 "minutes_without_progress": mins_without_prog,
-                "progress_check_minutes": self.progress_check_minutes,
+                "progress_check_minutes": eff_check_mins,
                 "next_progress_check_in": next_check_in,
                 "last_progress_check_minute": minute + 1,
                 "game_id": channel.get("game_id", ""),
@@ -1627,7 +1942,8 @@ class DropsMiner:
                 "user_id": self.client.user_id,
                 "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             }
-            current_status.update(live_drop_info)
+            if live_drop_info:
+                current_status.update(live_drop_info)
             save_miner_status(current_status)
 
             if success:

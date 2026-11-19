@@ -393,7 +393,7 @@ class HeadlessBrowserWatcher:
         self.last_state: Dict[str, Any] = {"available": bool(self.chromium_bin), "running": False}
         self._init_script_added: bool = False
         self._session_configured: bool = False
-        self._session_sig: Tuple[str, str, str, str, str] = ("", "", "", "", "")
+        self._session_sig: Tuple[str, str, str, str] = ("", "", "", "")
         self._last_auth_token: str = ""
         self._last_device_id: str = ""
         self._last_session_id: str = ""
@@ -415,12 +415,73 @@ class HeadlessBrowserWatcher:
         self.last_video_current_time: float = -1.0
         self.consecutive_stalled_ticks: int = 0
 
+        # Passive Kasada Integrity, Session Header & Rate-Limit Capture
+        self.captured_integrity_token: str = ""
+        self.captured_integrity_time: float = 0.0
+        self.captured_client_session_id: str = ""
+        self.captured_device_id: str = ""
+        self.last_gql_rate_limited_time: float = 0.0
+        self._last_integrity_disk_save: float = 0.0
+
     def is_available(self) -> bool:
         self.chromium_bin = find_chromium_binary()
         return bool(self.chromium_bin)
 
     def _is_proc_alive(self) -> bool:
         return bool(self.proc is not None and self.proc.poll() is None)
+
+    def _persist_integrity_cache(self, now: float) -> None:
+        """Atomically persist captured integrity token and session headers to disk."""
+        if not self.captured_integrity_token:
+            return
+        cache_path = os.path.join(DATA_DIR, "twitch_integrity_cache.json")
+        tmp_path = f"{cache_path}.tmp.{os.getpid()}"
+        payload = {
+            "token": self.captured_integrity_token,
+            "captured_at": now,
+            "expires_at": now + 12600,
+            "client_session_id": self.captured_client_session_id,
+            "device_id": self.captured_device_id,
+        }
+        try:
+            os.makedirs(DATA_DIR, exist_ok=True)
+            if os.name == "posix":
+                fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(payload, f)
+                try:
+                    os.chmod(tmp_path, 0o600)
+                except OSError:
+                    pass
+            else:
+                with open(tmp_path, "w", encoding="utf-8") as f:
+                    json.dump(payload, f)
+            os.replace(tmp_path, cache_path)
+            self._last_integrity_disk_save = now
+        except Exception as err:
+            logger.debug("Failed to save integrity cache: %s", type(err).__name__)
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError:
+                pass
+
+    def get_captured_integrity_token(self, max_age_secs: float = 12600.0) -> str:
+        """Return captured Client-Integrity token if non-empty and fresher than max_age_secs."""
+        if (
+            self.captured_integrity_token
+            and self.captured_integrity_time > 0
+            and (time.time() - self.captured_integrity_time) < max_age_secs
+        ):
+            return self.captured_integrity_token
+        return ""
+
+    def is_recently_rate_limited(self, window_secs: float = 300.0) -> bool:
+        """Return True if a GQL HTTP 429 was observed within window_secs."""
+        return bool(
+            self.last_gql_rate_limited_time
+            and (time.time() - self.last_gql_rate_limited_time) < window_secs
+        )
 
     def _on_cdp_event(self, method: str, params: Dict[str, Any]) -> None:
         if method == "Network.requestWillBeSent":
@@ -438,6 +499,29 @@ class HeadlessBrowserWatcher:
                 self.last_hls_time = time.time()
             elif "gql.twitch.tv" in url:
                 self.gql_requests_count += 1
+                raw_headers = req.get("headers") or {}
+                if isinstance(raw_headers, dict):
+                    hdrs_low = {
+                        str(k).strip().lower(): str(v).strip()
+                        for k, v in raw_headers.items()
+                        if v is not None
+                    }
+                    sess_hdr = hdrs_low.get("client-session-id", "")
+                    if sess_hdr:
+                        self.captured_client_session_id = sess_hdr
+                    dev_hdr = hdrs_low.get("x-device-id", "")
+                    if dev_hdr:
+                        self.captured_device_id = dev_hdr
+                    integ_hdr = hdrs_low.get("client-integrity", "")
+                    if integ_hdr:
+                        now = time.time()
+                        token_changed = integ_hdr != self.captured_integrity_token
+                        self.captured_integrity_token = integ_hdr
+                        self.captured_integrity_time = now
+                        if "unittest" not in sys.modules and (
+                            token_changed or (now - self._last_integrity_disk_save) > 60
+                        ):
+                            self._persist_integrity_cache(now)
         elif method == "Network.responseReceived":
             resp = params.get("response") or {}
             url = str(resp.get("url") or "")
@@ -446,7 +530,14 @@ class HeadlessBrowserWatcher:
                 self.last_spade_status = int(status) if status else None
                 self.last_spade_resp_time = time.time()
             elif "gql.twitch.tv" in url:
-                self.last_gql_status = int(status) if status else None
+                try:
+                    status_code = int(status or 0)
+                except (TypeError, ValueError):
+                    status_code = 0
+                self.last_gql_status = status_code if status_code else None
+                if status_code == 429:
+                    self.last_gql_rate_limited_time = time.time()
+                    log_event("BROWSER_WATCHER", "gql_rate_limited_429", {"url": url}, level="WARNING")
 
     def _ensure_browser_started(self, auth_token: str = "", device_id: str = "", session_id: str = "") -> bool:
         if not self.is_available():
@@ -590,7 +681,7 @@ class HeadlessBrowserWatcher:
         if not self.cdp:
             return
 
-        session_sig = (str(auth_token), str(device_id), str(user_login), str(user_id), str(session_id))
+        session_sig = (str(auth_token), str(device_id), str(user_login), str(user_id))
         if self._session_configured and self._session_sig == session_sig:
             return
 
@@ -685,7 +776,7 @@ class HeadlessBrowserWatcher:
               if (dId) {{
                 localStorage.setItem("unique_id", dId);
               }}
-              if (sId) {{
+              if (sId && !localStorage.getItem("client_session_id")) {{
                 localStorage.setItem("client_session_id", sId);
               }}
               if (uLog && uId) {{
@@ -978,10 +1069,20 @@ class HeadlessBrowserWatcher:
         if not self.is_available() or not self._is_proc_alive() or self.cdp is None:
             return None
 
+        if hasattr(self.cdp, "drain_events"):
+            try:
+                self.cdp.drain_events()
+            except Exception:
+                pass
+
         tok = auth_token or getattr(self, "_last_auth_token", "")
         tok_json = json.dumps(str(tok or ""))
-        sess = session_id or getattr(self, "_last_session_id", "")
+        integrity_tok = self.get_captured_integrity_token()
+        integrity_json = json.dumps(str(integrity_tok or ""))
+        sess = self.captured_client_session_id or session_id or getattr(self, "_last_session_id", "")
         sess_json = json.dumps(str(sess or ""))
+        dev_id = self.captured_device_id or getattr(self, "_last_device_id", "")
+        dev_json = json.dumps(str(dev_id or ""))
 
         js_code = f"""
         (async () => {{
@@ -992,10 +1093,12 @@ class HeadlessBrowserWatcher:
                 const isPersisted = {json.dumps(bool(is_persisted))};
                 const passedTok = {tok_json};
                 const passedSess = {sess_json};
+                const passedDevId = {dev_json};
+                const integrityTok = {integrity_json};
                 const cookieTok = (document.cookie.match(/(?:^|;\\s*)auth-token=([^;]+)/) || [])[1] || "";
                 const storageTok = localStorage.getItem("auth-token") || "";
                 const aTok = passedTok || decodeURIComponent(cookieTok) || storageTok;
-                const dId = (document.cookie.match(/(?:^|;\\s*)unique_id=([^;]+)/) || [])[1] || localStorage.getItem("unique_id") || "";
+                const dId = (document.cookie.match(/(?:^|;\\s*)unique_id=([^;]+)/) || [])[1] || passedDevId || localStorage.getItem("unique_id") || "";
                 const sId = passedSess || localStorage.getItem("client_session_id") || "";
 
                 const body = isPersisted ? {{
@@ -1019,6 +1122,9 @@ class HeadlessBrowserWatcher:
                 }}
                 if (sId) {{
                     hdrs['Client-Session-Id'] = sId;
+                }}
+                if (integrityTok) {{
+                    hdrs['Client-Integrity'] = integrityTok;
                 }}
                 const resp = await fetch('https://gql.twitch.tv/gql', {{
                     method: 'POST',
@@ -1075,7 +1181,7 @@ class HeadlessBrowserWatcher:
         self.current_channel = ""
         self._init_script_added = False
         self._session_configured = False
-        self._session_sig = ("", "", "", "", "")
+        self._session_sig = ("", "", "", "")
         self.last_tick_time = 0.0
         self.spade_requests_count = 0
         self.last_spade_req_time = 0.0
@@ -1089,4 +1195,9 @@ class HeadlessBrowserWatcher:
         self.last_gql_status = None
         self.last_video_current_time = -1.0
         self.consecutive_stalled_ticks = 0
+        self.captured_integrity_token = ""
+        self.captured_integrity_time = 0.0
+        self.captured_client_session_id = ""
+        self.last_gql_rate_limited_time = 0.0
+        self._last_integrity_disk_save = 0.0
         self.last_state = {"available": self.is_available(), "running": False}

@@ -31,7 +31,11 @@ TOKEN_FILE = os.path.join(DATA_DIR, "twitch_token.json")
 #   GraphQL API (https://gql.twitch.tv/gql). Third-party dev.twitch.tv Client IDs are rejected
 #   by https://gql.twitch.tv/gql with HTTP 400 ("The Client-ID header is invalid").
 # - WEB_CLIENT_ID ("kimne78kx3ncx6brgo4mv6wki5h1ko") is used for browser auth-token cookies.
-DEVICE_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+try:
+    from src.twitch_drops.browser_watcher import get_platform_user_agent
+    DEVICE_USER_AGENT = get_platform_user_agent()
+except Exception:
+    DEVICE_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
 DEVICE_CLIENT_ID = "ue6666qo983tsx6so1t0vnawi233wa"
 WEB_CLIENT_ID = "kimne78kx3ncx6brgo4mv6wki5h1ko"
 VALID_GQL_CLIENT_IDS = {

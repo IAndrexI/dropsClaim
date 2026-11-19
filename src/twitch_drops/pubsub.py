@@ -21,6 +21,7 @@ import time
 from typing import Any, Dict, List, Optional, Set
 
 from .activity_logger import log_event
+from .browser_watcher import get_platform_user_agent
 
 logger = logging.getLogger("twitch_pubsub")
 
@@ -35,7 +36,7 @@ class TwitchPubSubWatcher:
     """
 
     def __init__(self, user_agent: Optional[str] = None):
-        self.user_agent = user_agent or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+        self.user_agent = get_platform_user_agent(user_agent)
         self._sock: Optional[ssl.SSLSocket] = None
         self._lock = threading.Lock()
         self._running = False
@@ -173,17 +174,27 @@ class TwitchPubSubWatcher:
             log_event("TWITCH_PUBSUB", "connection_error", {"error": str(err)}, level="WARNING")
             return None
 
+    def _sleep_interruptible(self, seconds: int) -> bool:
+        """Sleep in 1s slices while self._running is True. Returns False if stopped."""
+        for _ in range(max(0, int(seconds))):
+            if not self._running:
+                return False
+            time.sleep(1.0)
+        return self._running
+
     def _run_loop(self) -> None:
         """Maintain persistent connection, send heartbeats, and read frames."""
+        backoff_secs = 10
         while self._running:
             sock = self._connect_and_handshake()
             if not sock:
-                # Backoff before reconnect
-                for _ in range(10):
-                    if not self._running:
-                        return
-                    time.sleep(1.0)
+                # Exponential backoff before reconnect (10s -> 20s -> 40s -> 60s)
+                if not self._sleep_interruptible(backoff_secs):
+                    return
+                backoff_secs = min(60, backoff_secs * 2)
                 continue
+
+            backoff_secs = 10
 
             with self._lock:
                 self._sock = sock
@@ -277,4 +288,5 @@ class TwitchPubSubWatcher:
                 pass
 
             if self._running:
-                time.sleep(3.0)
+                if not self._sleep_interruptible(backoff_secs):
+                    return

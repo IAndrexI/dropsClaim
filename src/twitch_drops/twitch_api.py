@@ -13,7 +13,6 @@ No third-party analytics, tracking, or proxy endpoints are contacted.
 """
 
 import base64
-import concurrent.futures
 from datetime import datetime, timezone
 import gzip
 import html
@@ -23,11 +22,12 @@ import os
 import random
 import re
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .activity_logger import log_event
 
@@ -36,6 +36,14 @@ logger = logging.getLogger("twitch_api")
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 CAMPAIGNS_CACHE_FILE = os.path.join(DATA_DIR, "twitch_campaigns_cache.json")
+DEVICE_ID_FILE = os.path.join(DATA_DIR, "twitch_device_id.json")
+INTEGRITY_CACHE_FILE = os.path.join(DATA_DIR, "twitch_integrity_cache.json")
+INVENTORY_CACHE_FILE = os.path.join(DATA_DIR, "twitch_inventory_cache.json")
+
+_DEFAULT_DATA_DIR = DATA_DIR
+_DEFAULT_DEVICE_ID_FILE = DEVICE_ID_FILE
+_DEFAULT_INTEGRITY_CACHE_FILE = INTEGRITY_CACHE_FILE
+_DEFAULT_INVENTORY_CACHE_FILE = INVENTORY_CACHE_FILE
 
 TWITCH_CLIENT_ID = "kimne78kx3ncx6brgo4mv6wki5h1ko"  # Official Twitch Web Client ID
 GQL_URL = "https://gql.twitch.tv/gql"
@@ -43,6 +51,287 @@ SPADE_URL = "https://spade.twitch.tv/track"
 SPADE_FALLBACK_URL = "https://spade.twitch.tv/batched"
 
 DROPHUNTER_CACHE: Dict[str, Any] = {"timestamp": 0, "campaigns": [], "updated_at": ""}
+
+_PERSISTENT_DEVICE_ID: str = ""
+_PERSISTENT_DEVICE_ID_SOURCE: str = ""
+_DEVICE_ID_LOCK = threading.Lock()
+
+_INTEGRITY_CACHE: Dict[Tuple[str, str], Tuple[str, int]] = {}
+_INTEGRITY_FAIL_UNTIL: float = 0.0
+_INTEGRITY_FAIL_STREAK: int = 0
+_INTEGRITY_LOCK = threading.Lock()
+_ENABLE_INTEGRITY_COOLDOWN_IN_TEST: bool = False
+
+_VIEWER_DROPS_DASHBOARD_BLOCKED_UNTIL: float = 0.0
+_INVENTORY_CACHE_LOCK = threading.Lock()
+
+
+def _is_default_data_path(path: str, default_path: str) -> bool:
+    """Return True if path resolves to the original default path or inside the original DATA_DIR."""
+    try:
+        abs_p = os.path.abspath(path)
+        abs_def = os.path.abspath(default_path)
+        abs_data = os.path.abspath(_DEFAULT_DATA_DIR)
+        return abs_p == abs_def or abs_p.startswith(abs_data + os.sep)
+    except Exception:
+        return path == default_path
+
+
+def _default_user_agent() -> str:
+    """Return the unified host-platform Chrome User-Agent matching headless Chromium."""
+    try:
+        from .browser_watcher import get_platform_user_agent
+        return get_platform_user_agent()
+    except Exception:
+        return (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/133.0.0.0 Safari/537.36"
+        )
+
+
+def _load_or_create_persistent_device_id() -> str:
+    """Load or create ONE persistent 32-hex device_id shared across all TwitchClient instances."""
+    global _PERSISTENT_DEVICE_ID, _PERSISTENT_DEVICE_ID_SOURCE
+    with _DEVICE_ID_LOCK:
+        if _PERSISTENT_DEVICE_ID and _PERSISTENT_DEVICE_ID_SOURCE == DEVICE_ID_FILE:
+            return _PERSISTENT_DEVICE_ID
+
+        candidate = ""
+        try:
+            from src.auth.twitch_auth import load_token
+            stored = load_token()
+            if isinstance(stored, dict):
+                cand = str(stored.get("device_id") or stored.get("unique_id") or "").strip()
+                if cand:
+                    candidate = cand
+        except Exception:
+            pass
+
+        if not candidate and os.path.exists(DEVICE_ID_FILE):
+            try:
+                with open(DEVICE_ID_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    cand = str(data.get("device_id") or "").strip()
+                    if cand:
+                        candidate = cand
+            except Exception:
+                pass
+
+        if not candidate:
+            import uuid
+            candidate = uuid.uuid4().hex[:32]
+            should_persist = ("unittest" not in sys.modules) or (
+                not _is_default_data_path(DEVICE_ID_FILE, _DEFAULT_DEVICE_ID_FILE)
+            )
+            if should_persist:
+                try:
+                    parent = os.path.dirname(DEVICE_ID_FILE)
+                    if parent:
+                        os.makedirs(parent, exist_ok=True)
+                    tmp_path = DEVICE_ID_FILE + ".tmp"
+                    with open(tmp_path, "w", encoding="utf-8") as f:
+                        json.dump({"device_id": candidate, "created_at": int(time.time())}, f, indent=2)
+                    os.replace(tmp_path, DEVICE_ID_FILE)
+                except Exception as err:
+                    logger.debug("Could not persist twitch_device_id.json: %s", err)
+
+        _PERSISTENT_DEVICE_ID = candidate
+        _PERSISTENT_DEVICE_ID_SOURCE = DEVICE_ID_FILE
+        return _PERSISTENT_DEVICE_ID
+
+
+def save_inventory_cache(inventory: Dict[str, Any], session_ctx: Optional[Dict[str, Any]] = None) -> None:
+    """Persist Twitch inventory and optional active session context to INVENTORY_CACHE_FILE."""
+    if not isinstance(inventory, dict):
+        return
+    if not inventory and not session_ctx:
+        return
+    if "unittest" in sys.modules and _is_default_data_path(INVENTORY_CACHE_FILE, _DEFAULT_INVENTORY_CACHE_FILE):
+        return
+    payload = {
+        "inventory": inventory,
+        "session_ctx": session_ctx if isinstance(session_ctx, dict) else None,
+        "updated_at": float(time.time()),
+    }
+    try:
+        with _INVENTORY_CACHE_LOCK:
+            parent = os.path.dirname(INVENTORY_CACHE_FILE)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            tmp_path = INVENTORY_CACHE_FILE + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f)
+            os.replace(tmp_path, INVENTORY_CACHE_FILE)
+    except Exception as err:
+        logger.debug("Could not persist inventory cache: %s", err)
+
+
+def load_inventory_cache(max_age_secs: float = 300.0) -> Optional[Dict[str, Any]]:
+    """Load cached Twitch inventory + session_ctx from INVENTORY_CACHE_FILE if fresh."""
+    if "unittest" in sys.modules and _is_default_data_path(INVENTORY_CACHE_FILE, _DEFAULT_INVENTORY_CACHE_FILE):
+        return None
+    if not os.path.exists(INVENTORY_CACHE_FILE):
+        return None
+    try:
+        with _INVENTORY_CACHE_LOCK:
+            with open(INVENTORY_CACHE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        if not isinstance(data, dict):
+            return None
+        updated_at = float(data.get("updated_at") or 0.0)
+        if updated_at <= 0.0 or (time.time() - updated_at) > float(max_age_secs):
+            return None
+        inv = data.get("inventory")
+        if not isinstance(inv, dict):
+            return None
+        sess = data.get("session_ctx")
+        return {
+            "inventory": inv,
+            "session_ctx": sess if isinstance(sess, dict) else None,
+            "updated_at": updated_at,
+        }
+    except Exception as err:
+        logger.debug("Could not load inventory cache: %s", err)
+        return None
+
+
+class TwitchRateLimiter:
+    """Thread-safe global request pacer and exponential backoff circuit breaker for Twitch HTTP calls."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.strikes: int = 0
+        self.rate_limited_until: float = 0.0
+        self.last_request_ts: float = 0.0
+        self.last_reason: str = ""
+
+    def wait_turn(self, min_interval: float = 0.4) -> None:
+        """Apply gentle jittered pacing (0.35s-0.55s) between live Twitch HTTP calls."""
+        if "unittest" in sys.modules:
+            return
+        spacing = max(0.05, float(min_interval) + random.uniform(-0.05, 0.15))
+        sleep_for = 0.0
+        with self._lock:
+            now = time.monotonic()
+            target = max(now, self.last_request_ts + spacing)
+            sleep_for = target - now
+            self.last_request_ts = target
+        if sleep_for > 0:
+            time.sleep(sleep_for)
+
+    def record_rate_limit(self, reason: str, base_cooldown: float = 300.0) -> float:
+        """Record a rate-limit / integrity block strike and set exponential cooldown (5m->10m->20m->30m)."""
+        now = time.time()
+        with self._lock:
+            self.strikes += 1
+            exp = min(max(0, self.strikes - 1), 3)
+            cooldown = min(1800.0, float(base_cooldown) * (2 ** exp))
+            new_until = now + cooldown
+            if new_until > self.rate_limited_until:
+                self.rate_limited_until = new_until
+            self.last_reason = str(reason or "rate_limit")
+            strikes = self.strikes
+            until = self.rate_limited_until
+        logger.warning(
+            "Twitch rate limit / cooldown triggered (%s): %.0fs cooldown (strike #%d)",
+            reason,
+            cooldown,
+            strikes,
+        )
+        log_event(
+            "TWITCH_RATE_LIMIT",
+            "rate_limit_triggered",
+            {
+                "reason": str(reason),
+                "cooldown_secs": int(cooldown),
+                "strikes": strikes,
+                "until": int(until),
+            },
+            level="WARNING",
+        )
+        return cooldown
+
+    def record_success(self) -> None:
+        """Reset strike count once past any active cooldown window."""
+        now = time.time()
+        with self._lock:
+            if now >= self.rate_limited_until:
+                self.strikes = 0
+                self.rate_limited_until = 0.0
+                self.last_reason = ""
+
+    def is_rate_limited(self) -> bool:
+        """Return True if a rate-limit cooldown window is currently active."""
+        now = time.time()
+        with self._lock:
+            return now < self.rate_limited_until
+
+    def cooldown_remaining(self) -> float:
+        """Return remaining cooldown seconds, or 0.0 if not rate-limited."""
+        now = time.time()
+        with self._lock:
+            return max(0.0, self.rate_limited_until - now)
+
+    def reset(self) -> None:
+        """Reset all rate-limiter state (intended for tests)."""
+        with self._lock:
+            self.strikes = 0
+            self.rate_limited_until = 0.0
+            self.last_request_ts = 0.0
+            self.last_reason = ""
+
+
+_TWITCH_RATE_LIMITER = TwitchRateLimiter()
+
+
+def _has_integrity_error(resp: Any) -> bool:
+    """Return True if a single or batched GQL response contains an IntegrityCheckFailed error."""
+    if isinstance(resp, list):
+        return any(_has_integrity_error(x) for x in resp)
+    if not isinstance(resp, dict):
+        return False
+    errs = resp.get("errors") or []
+    if isinstance(errs, list):
+        return any("integrity" in str(e).lower() for e in errs)
+    return "integrity" in str(errs).lower()
+
+
+def _is_rate_limit_response(resp: Any) -> bool:
+    """Return True if a GQL/browser response indicates HTTP 429 or Twitch rate limiting."""
+    if isinstance(resp, list):
+        return any(_is_rate_limit_response(x) for x in resp)
+    if not isinstance(resp, dict):
+        return False
+    if resp.get("status") == 429:
+        return True
+    blob = f"{resp.get('errors') or ''} {resp.get('error') or ''} {resp.get('message') or ''}".lower()
+    return (
+        "rate limit" in blob
+        or "ratelimit" in blob
+        or "rate_limit" in blob
+        or "too many requests" in blob
+        or bool(re.search(r"\b429\b", blob))
+    )
+
+
+def _record_integrity_outcome(had_integrity_error: bool) -> None:
+    """Track consecutive IntegrityCheckFailed responses and trip cooldown after 2 consecutive failures."""
+    global _INTEGRITY_FAIL_STREAK, _INTEGRITY_FAIL_UNTIL
+    tripped = False
+    with _INTEGRITY_LOCK:
+        if not had_integrity_error:
+            _INTEGRITY_FAIL_STREAK = 0
+            return
+        _INTEGRITY_FAIL_STREAK += 1
+        if _INTEGRITY_FAIL_STREAK >= 2:
+            _INTEGRITY_FAIL_UNTIL = time.time() + 600.0
+            tripped = True
+    if tripped:
+        _TWITCH_RATE_LIMITER.record_rate_limit(
+            "repeated_integrity_failure", base_cooldown=300.0
+        )
 
 
 def clean_text(text: Any) -> str:
@@ -395,15 +684,15 @@ def fetch_drophunter_live_campaigns(force_refresh: bool = False) -> List[Dict[st
     """
     Fetch all active drop campaigns from drophunter.app/drops.
     Returns 80+ games and 115+ live campaigns with active drop items (including watch time, sub requirements, and reward icons).
-    Cached for 10 minutes in memory and persisted to data/twitch_campaigns_cache.json for daily freshness.
+    Cached for 60 minutes in memory and persisted to data/twitch_campaigns_cache.json for daily freshness.
     """
     global DROPHUNTER_CACHE
     now = time.time()
-    if not force_refresh and (now - DROPHUNTER_CACHE["timestamp"] < 600) and DROPHUNTER_CACHE["campaigns"]:
+    if not force_refresh and (now - DROPHUNTER_CACHE["timestamp"] < 3600) and DROPHUNTER_CACHE["campaigns"]:
         return [normalize_cached_campaign(c) for c in DROPHUNTER_CACHE["campaigns"]]
 
-    # Try loading from disk if in-memory cache is empty and not force_refresh
-    if not DROPHUNTER_CACHE["campaigns"] and os.path.exists(CAMPAIGNS_CACHE_FILE):
+    # Try loading from disk if in-memory cache is empty or stale and not force_refresh
+    if not force_refresh and os.path.exists(CAMPAIGNS_CACHE_FILE):
         try:
             with open(CAMPAIGNS_CACHE_FILE, "r", encoding="utf-8") as f:
                 disk_cache = json.load(f)
@@ -693,11 +982,7 @@ class TwitchClient:
         from src.auth.twitch_auth import _VALIDATED_TOKEN_CACHE, clean_auth_token, client_id_for, load_token
         self.auth_token = clean_auth_token(auth_token)
         self.client_id = client_id or client_id_for(self.auth_token)
-        self.user_agent = user_agent or (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36"
-        )
+        self.user_agent = user_agent or _default_user_agent()
         self.user_id: Optional[str] = None
         self.user_login: Optional[str] = None
         self.last_drop_session: Dict[str, Any] = {}
@@ -708,7 +993,7 @@ class TwitchClient:
         self._triggered_urls: Set[str] = set()
         import uuid
         self.session_id: str = uuid.uuid4().hex[:16]
-        self.device_id: str = uuid.uuid4().hex[:32]
+        self.device_id: str = _load_or_create_persistent_device_id()
         try:
             stored = load_token()
             if stored:
@@ -731,17 +1016,71 @@ class TwitchClient:
             pass
         self.cookies["unique_id"] = self.device_id
 
+    def is_rate_limited(self) -> bool:
+        """Return True if global Twitch API cooldown/circuit-breaker is currently active."""
+        return _TWITCH_RATE_LIMITER.is_rate_limited()
+
+    def rate_limit_remaining(self) -> float:
+        """Return remaining global Twitch API rate-limit cooldown in seconds."""
+        return _TWITCH_RATE_LIMITER.cooldown_remaining()
+
     def get_client_integrity_token(self, force_refresh: bool = False) -> str:
         """
         Fetch or return a cached Client-Integrity token from https://gql.twitch.tv/integrity.
-        Twitch requires this cryptographic token on GQL queries/mutations and telemetry heartbeats
-        to verify legitimate client integrity and grant drop watch-time progression.
+        Checks instance cache, browser-written disk cache, and shared in-memory cache
+        before issuing a live /integrity request, and respects failure cooldowns.
         """
-        now_ms = int(time.time() * 1000)
+        global _INTEGRITY_FAIL_UNTIL
+        now_s = time.time()
+        now_ms = int(now_s * 1000)
         cached_tok = getattr(self, "_integrity_token", "")
         cached_exp = getattr(self, "_integrity_expiration", 0)
         if cached_tok and not force_refresh and (cached_exp - now_ms) > 60000:
             return cached_tok
+
+        allow_disk = ("unittest" not in sys.modules) or (
+            not _is_default_data_path(INTEGRITY_CACHE_FILE, _DEFAULT_INTEGRITY_CACHE_FILE)
+        )
+        if not force_refresh and allow_disk and os.path.exists(INTEGRITY_CACHE_FILE):
+            try:
+                with open(INTEGRITY_CACHE_FILE, "r", encoding="utf-8") as f:
+                    disk_data = json.load(f)
+                if isinstance(disk_data, dict):
+                    d_tok = str(disk_data.get("token") or "").strip()
+                    raw_exp = float(disk_data.get("expires_at") or 0)
+                    exp_s = raw_exp / 1000.0 if raw_exp > 1e12 else raw_exp
+                    if d_tok and exp_s > (now_s + 60.0):
+                        exp_ms = int(exp_s * 1000)
+                        self._integrity_token = d_tok
+                        self._integrity_expiration = exp_ms
+                        with _INTEGRITY_LOCK:
+                            _INTEGRITY_CACHE[(self.auth_token, self.client_id)] = (d_tok, exp_ms)
+                        return d_tok
+            except Exception as err:
+                logger.debug("Could not read integrity disk cache: %s", err)
+
+        cache_key = (self.auth_token, self.client_id)
+        if not force_refresh:
+            with _INTEGRITY_LOCK:
+                shared = _INTEGRITY_CACHE.get(cache_key)
+            if shared:
+                s_tok, s_exp_ms = shared
+                if s_tok and (s_exp_ms - now_ms) > 60000:
+                    self._integrity_token = s_tok
+                    self._integrity_expiration = s_exp_ms
+                    return s_tok
+
+        with _INTEGRITY_LOCK:
+            fail_until = _INTEGRITY_FAIL_UNTIL
+        if now_s < fail_until and (
+            ("unittest" not in sys.modules) or _ENABLE_INTEGRITY_COOLDOWN_IN_TEST
+        ):
+            logger.debug("Skipping /integrity call during failure cooldown (%.0fs left)", fail_until - now_s)
+            if not force_refresh and cached_tok and (cached_exp - now_ms) > 60000:
+                return cached_tok
+            return ""
+
+        _TWITCH_RATE_LIMITER.wait_turn()
 
         try:
             headers = {
@@ -769,11 +1108,20 @@ class TwitchClient:
                 if tok:
                     self._integrity_token = tok
                     self._integrity_expiration = exp
+                    with _INTEGRITY_LOCK:
+                        _INTEGRITY_CACHE[cache_key] = (tok, exp)
+                        _INTEGRITY_FAIL_UNTIL = 0.0
                     logger.debug("Acquired fresh Twitch Client-Integrity token (valid for %ds)", int((exp - now_ms) / 1000))
                     return tok
+        except urllib.error.HTTPError as e:
+            if e.code in (403, 429):
+                with _INTEGRITY_LOCK:
+                    _INTEGRITY_FAIL_UNTIL = time.time() + 600.0
+                _TWITCH_RATE_LIMITER.record_rate_limit(f"integrity_http_{e.code}", base_cooldown=300.0)
+            logger.debug("Could not fetch Client-Integrity token (HTTP %s): %s", e.code, e)
         except Exception as e:
             logger.debug("Could not fetch Client-Integrity token: %s", e)
-        return getattr(self, "_integrity_token", "")
+        return "" if force_refresh else getattr(self, "_integrity_token", "")
 
     def new_session_id(self) -> str:
         """Rotate client session ID to establish a distinct, fresh stream viewing session with Twitch."""
@@ -782,10 +1130,93 @@ class TwitchClient:
         return self.session_id
 
     def _make_request(self, url: str, data: bytes, headers: Dict[str, str], timeout: int = 15) -> bytes:
-        """Make an HTTP POST request using Python standard library."""
+        """Make an HTTP POST request using Python standard library with pacing and rate-limit detection."""
+        _TWITCH_RATE_LIMITER.wait_turn()
         req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            return response.read()
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                raw = response.read()
+            _TWITCH_RATE_LIMITER.record_success()
+            return raw
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                _TWITCH_RATE_LIMITER.record_rate_limit("http_429", 300.0)
+            elif e.code == 403 and "gql.twitch.tv" in str(url).lower():
+                _TWITCH_RATE_LIMITER.record_rate_limit("http_403", 300.0)
+            raise
+
+    def _build_gql_headers(self, include_auth: bool = True) -> Dict[str, str]:
+        """Build Twitch GQL headers (authenticated with Client-Integrity, or unauthenticated public fallback)."""
+        if not include_auth or not self.auth_token:
+            return {
+                "Client-Id": TWITCH_CLIENT_ID if not include_auth else self.client_id,
+                "User-Agent": self.user_agent,
+                "Content-Type": "application/json",
+                "Accept": "*/*",
+                **(
+                    {}
+                    if not include_auth
+                    else {
+                        "Origin": "https://www.twitch.tv",
+                        "Referer": "https://www.twitch.tv/",
+                        "Client-Session-Id": getattr(self, "session_id", "1234567890abcdef"),
+                        "X-Device-Id": getattr(self, "device_id", "1234567890abcdef1234567890abcdef"),
+                    }
+                ),
+            }
+        headers = {
+            "Client-Id": self.client_id,
+            "User-Agent": self.user_agent,
+            "Content-Type": "application/json",
+            "Accept": "*/*",
+            "Origin": "https://www.twitch.tv",
+            "Referer": "https://www.twitch.tv/",
+            "Client-Session-Id": getattr(self, "session_id", "1234567890abcdef"),
+            "X-Device-Id": getattr(self, "device_id", "1234567890abcdef1234567890abcdef"),
+            "Authorization": f"OAuth {self.auth_token}",
+        }
+        integrity_tok = self.get_client_integrity_token()
+        if integrity_tok:
+            headers["Client-Integrity"] = integrity_tok
+        return headers
+
+    def _handle_gql_integrity(self, body: bytes, headers: Dict[str, str], parsed: Any, timeout: int = 15) -> Any:
+        """
+        Handle IntegrityCheckFailed in GQL responses: retry once only if a fresh, distinct
+        integrity token is obtained, and track consecutive failures for cooldown tripping.
+        """
+        if not _has_integrity_error(parsed):
+            _record_integrity_outcome(False)
+            return parsed
+        if not self.auth_token:
+            return parsed
+
+        prev_tok = str(headers.get("Client-Integrity") or "")
+        try:
+            fresh_tok = self.get_client_integrity_token(force_refresh=True)
+        except Exception:
+            fresh_tok = ""
+
+        if fresh_tok and fresh_tok != prev_tok:
+            retry_headers = dict(headers)
+            retry_headers["Client-Integrity"] = fresh_tok
+            try:
+                raw_retry = self._make_request(GQL_URL, data=body, headers=retry_headers, timeout=timeout)
+                parsed_retry = json.loads(raw_retry.decode("utf-8"))
+                if not _has_integrity_error(parsed_retry):
+                    _record_integrity_outcome(False)
+                    return parsed_retry
+                _record_integrity_outcome(True)
+                return parsed_retry
+            except urllib.error.HTTPError as e:
+                _record_integrity_outcome(True)
+                if e.code in (403, 429):
+                    raise
+            except Exception:
+                _record_integrity_outcome(True)
+        else:
+            _record_integrity_outcome(True)
+        return parsed
 
     def post_gql(self, query: str, variables: Optional[Dict[str, Any]] = None, operation_name: Optional[str] = None) -> Dict[str, Any]:
         """Send a standard query or mutation to Twitch GraphQL."""
@@ -796,33 +1227,20 @@ class TwitchClient:
             payload["operationName"] = operation_name
 
         body = json.dumps(payload).encode("utf-8")
-        headers = {
-            "Client-Id": self.client_id,
-            "User-Agent": self.user_agent,
-            "Content-Type": "application/json",
-            "Accept": "*/*",
-            "Origin": "https://www.twitch.tv",
-            "Referer": "https://www.twitch.tv/",
-            "Client-Session-Id": getattr(self, "session_id", "1234567890abcdef"),
-            "X-Device-Id": getattr(self, "device_id", "1234567890abcdef1234567890abcdef"),
-        }
-        if self.auth_token:
-            headers["Authorization"] = f"OAuth {self.auth_token}"
-            integrity_tok = self.get_client_integrity_token()
-            if integrity_tok:
-                headers["Client-Integrity"] = integrity_tok
+        headers = self._build_gql_headers(include_auth=True)
 
         try:
             raw = self._make_request(GQL_URL, data=body, headers=headers, timeout=15)
             data = json.loads(raw.decode("utf-8"))
         except Exception as err:
-            if self.auth_token and operation_name not in ("CheckUserSession", "CheckUserPresence"):
-                pub_headers = {
-                    "Client-Id": TWITCH_CLIENT_ID,
-                    "User-Agent": self.user_agent,
-                    "Content-Type": "application/json",
-                    "Accept": "*/*",
-                }
+            is_rl_http = isinstance(err, urllib.error.HTTPError) and err.code in (403, 429)
+            if (
+                self.auth_token
+                and not is_rl_http
+                and not self.is_rate_limited()
+                and operation_name not in ("CheckUserSession", "CheckUserPresence")
+            ):
+                pub_headers = self._build_gql_headers(include_auth=False)
                 raw = self._make_request(GQL_URL, data=body, headers=pub_headers, timeout=15)
                 data = json.loads(raw.decode("utf-8"))
             else:
@@ -834,29 +1252,17 @@ class TwitchClient:
                 )
                 raise err
 
-        if "errors" in data and data["errors"]:
+        data = self._handle_gql_integrity(body, headers, data, timeout=15)
+        if isinstance(data, dict) and "errors" in data and data["errors"]:
             err_str = str(data["errors"]).lower()
-            if "integrity" in err_str and self.auth_token:
-                try:
-                    fresh_tok = self.get_client_integrity_token(force_refresh=True)
-                    if fresh_tok:
-                        headers["Client-Integrity"] = fresh_tok
-                        raw_retry = self._make_request(GQL_URL, data=body, headers=headers, timeout=15)
-                        data_retry = json.loads(raw_retry.decode("utf-8"))
-                        if not any("integrity" in str(e).lower() for e in data_retry.get("errors", [])):
-                            return data_retry
-                except Exception:
-                    pass
-            if self.auth_token and operation_name not in ("CheckUserSession", "CheckUserPresence") and any(
-                k in err_str for k in ("client-id", "oauth", "unauthenticated", "unauthorized", "token")
+            if (
+                self.auth_token
+                and not self.is_rate_limited()
+                and operation_name not in ("CheckUserSession", "CheckUserPresence")
+                and any(k in err_str for k in ("client-id", "oauth", "unauthenticated", "unauthorized", "token"))
             ):
                 try:
-                    pub_headers = {
-                        "Client-Id": TWITCH_CLIENT_ID,
-                        "User-Agent": self.user_agent,
-                        "Content-Type": "application/json",
-                        "Accept": "*/*",
-                    }
+                    pub_headers = self._build_gql_headers(include_auth=False)
                     raw_retry = self._make_request(GQL_URL, data=body, headers=pub_headers, timeout=15)
                     data_retry = json.loads(raw_retry.decode("utf-8"))
                     if not data_retry.get("errors"):
@@ -887,35 +1293,12 @@ class TwitchClient:
             payload["variables"] = variables
 
         body = json.dumps(payload).encode("utf-8")
-        headers = {
-            "Client-Id": self.client_id,
-            "User-Agent": self.user_agent,
-            "Content-Type": "application/json",
-            "Accept": "*/*",
-            "Origin": "https://www.twitch.tv",
-            "Referer": "https://www.twitch.tv/",
-            "Client-Session-Id": getattr(self, "session_id", "1234567890abcdef"),
-            "X-Device-Id": getattr(self, "device_id", "1234567890abcdef1234567890abcdef"),
-        }
-        if self.auth_token:
-            headers["Authorization"] = f"OAuth {self.auth_token}"
-            integrity_tok = self.get_client_integrity_token()
-            if integrity_tok:
-                headers["Client-Integrity"] = integrity_tok
+        headers = self._build_gql_headers(include_auth=True)
 
         raw = self._make_request(GQL_URL, data=body, headers=headers, timeout=15)
         res = json.loads(raw.decode("utf-8"))
+        res = self._handle_gql_integrity(body, headers, res, timeout=15)
         if isinstance(res, dict) and res.get("errors"):
-            err_str = str(res["errors"]).lower()
-            if "integrity" in err_str and self.auth_token:
-                try:
-                    fresh_tok = self.get_client_integrity_token(force_refresh=True)
-                    if fresh_tok:
-                        headers["Client-Integrity"] = fresh_tok
-                        raw_retry = self._make_request(GQL_URL, data=body, headers=headers, timeout=15)
-                        res = json.loads(raw_retry.decode("utf-8"))
-                except Exception:
-                    pass
             log_event(
                 "TWITCH_GQL",
                 f"persisted_errors op={operation_name}",
@@ -1046,17 +1429,42 @@ class TwitchClient:
             return True
         return False
 
-    def get_inventory(self) -> Dict[str, Any]:
-        """Fetch the user's active drop campaigns, progress, and claimed items via persisted query."""
+    def get_inventory(self, browser_watcher: Any = None) -> Dict[str, Any]:
+        """Fetch the user's active drop campaigns, progress, and claimed items via persisted query (browser-first when active)."""
         if not self.auth_token:
             return {}
+        if (
+            browser_watcher is not None
+            and hasattr(browser_watcher, "execute_gql_in_browser")
+            and (not hasattr(browser_watcher, "is_watching") or browser_watcher.is_watching())
+        ):
+            try:
+                bres = browser_watcher.execute_gql_in_browser(
+                    "Inventory",
+                    "8337eb8541b314040b0edde0c09c5c7a2783ba1960aa9edfbf3bac16d0fec404",
+                    variables={"fetchRewardCampaigns": False},
+                    is_persisted=True,
+                )
+                if isinstance(bres, dict):
+                    inv = ((bres.get("data") or {}).get("currentUser") or {}).get("inventory")
+                    if isinstance(inv, dict):
+                        return inv
+                    if _has_integrity_error(bres) or _is_rate_limit_response(bres):
+                        return {}
+            except Exception as b_err:
+                logger.debug("In-browser get_inventory fallback note: %s", b_err)
+
+        if self.is_rate_limited():
+            logger.debug("Skipping Python HTTP get_inventory while rate-limit cooldown is active.")
+            return {}
+
         try:
             res = self.post_persisted_gql(
                 operation_name="Inventory",
                 sha256_hash="8337eb8541b314040b0edde0c09c5c7a2783ba1960aa9edfbf3bac16d0fec404",
                 variables={"fetchRewardCampaigns": False}
             )
-            return (res.get("data") or {}).get("currentUser", {}).get("inventory") or {}
+            return ((res.get("data") or {}).get("currentUser") or {}).get("inventory") or {}
         except Exception as e:
             logger.error("Error fetching inventory via persisted query: %s", e)
             return {}
@@ -1065,59 +1473,31 @@ class TwitchClient:
         """Send a batched array of GraphQL operations (up to 35 per call) to Twitch GQL."""
         if not operations:
             return []
-        headers = {
-            "Client-Id": self.client_id,
-            "User-Agent": self.user_agent,
-            "Content-Type": "application/json",
-            "Accept": "*/*",
-            "Origin": "https://www.twitch.tv",
-            "Referer": "https://www.twitch.tv/",
-            "Client-Session-Id": getattr(self, "session_id", "1234567890abcdef"),
-            "X-Device-Id": getattr(self, "device_id", "1234567890abcdef1234567890abcdef"),
-        }
-        if self.auth_token:
-            headers["Authorization"] = f"OAuth {self.auth_token}"
-            integrity_tok = self.get_client_integrity_token()
-            if integrity_tok:
-                headers["Client-Integrity"] = integrity_tok
+        headers = self._build_gql_headers(include_auth=True)
         body = json.dumps(operations).encode("utf-8")
         try:
             raw = self._make_request(GQL_URL, data=body, headers=headers, timeout=timeout)
             parsed = json.loads(raw.decode("utf-8"))
             res_list = parsed if isinstance(parsed, list) else [parsed]
-            # Check for IntegrityCheckFailed across batch items
-            if self.auth_token and res_list and any(
-                isinstance(x, dict) and any("integrity" in str(e).lower() for e in x.get("errors", []))
-                for x in res_list
+            res_list = self._handle_gql_integrity(body, headers, res_list, timeout=timeout)
+            if not isinstance(res_list, list):
+                res_list = [res_list]
+            if (
+                self.auth_token
+                and not self.is_rate_limited()
+                and not _has_integrity_error(res_list)
+                and res_list
+                and all(isinstance(x, dict) and x.get("errors") and not x.get("data") for x in res_list)
             ):
-                try:
-                    fresh_tok = self.get_client_integrity_token(force_refresh=True)
-                    if fresh_tok:
-                        headers["Client-Integrity"] = fresh_tok
-                        raw_retry = self._make_request(GQL_URL, data=body, headers=headers, timeout=timeout)
-                        parsed_retry = json.loads(raw_retry.decode("utf-8"))
-                        res_list = parsed_retry if isinstance(parsed_retry, list) else [parsed_retry]
-                except Exception:
-                    pass
-            if self.auth_token and res_list and all(isinstance(x, dict) and x.get("errors") and not x.get("data") for x in res_list):
-                pub_headers = {
-                    "Client-Id": TWITCH_CLIENT_ID,
-                    "User-Agent": self.user_agent,
-                    "Content-Type": "application/json",
-                    "Accept": "*/*",
-                }
+                pub_headers = self._build_gql_headers(include_auth=False)
                 raw_pub = self._make_request(GQL_URL, data=body, headers=pub_headers, timeout=timeout)
                 parsed_pub = json.loads(raw_pub.decode("utf-8"))
                 return parsed_pub if isinstance(parsed_pub, list) else [parsed_pub]
             return res_list
-        except Exception:
-            if self.auth_token:
-                pub_headers = {
-                    "Client-Id": TWITCH_CLIENT_ID,
-                    "User-Agent": self.user_agent,
-                    "Content-Type": "application/json",
-                    "Accept": "*/*",
-                }
+        except Exception as err:
+            is_rl_http = isinstance(err, urllib.error.HTTPError) and err.code in (403, 429)
+            if self.auth_token and not is_rl_http and not self.is_rate_limited():
+                pub_headers = self._build_gql_headers(include_auth=False)
                 raw_pub = self._make_request(GQL_URL, data=body, headers=pub_headers, timeout=timeout)
                 parsed_pub = json.loads(raw_pub.decode("utf-8"))
                 return parsed_pub if isinstance(parsed_pub, list) else [parsed_pub]
@@ -1131,34 +1511,47 @@ class TwitchClient:
         3. Priority/queued games + DEFAULT_DROPS_GAMES_ROSTER (including WARDOGS, Rust, etc.).
         4. Batched DropsHighlightService_AvailableDrops across live broadcasters for full drop tiers & reward icons.
         """
+        global _VIEWER_DROPS_DASHBOARD_BLOCKED_UNTIL
         dashboard_meta: Dict[str, Dict[str, Any]] = {}
         dashboard_games: List[str] = []
 
-        # 1. Query official ViewerDropsDashboard when authenticated
-        if self.auth_token:
+        # 1. Query official ViewerDropsDashboard when authenticated (skip during 6h IntegrityCheckFailed cooldown)
+        if (
+            self.auth_token
+            and time.time() >= _VIEWER_DROPS_DASHBOARD_BLOCKED_UNTIL
+            and not self.is_rate_limited()
+        ):
             try:
                 dash_res = self.post_persisted_gql(
                     operation_name="ViewerDropsDashboard",
                     sha256_hash="5a4da2ab3d5b47c9f9ce864e727b2cb346af1e3ea8b897fe8f704a97ff017619",
                     variables={"fetchRewardCampaigns": False},
                 )
-                dash_camps = ((dash_res.get("data") or {}).get("currentUser") or {}).get("dropCampaigns") or []
-                for dc in dash_camps:
-                    if not isinstance(dc, dict):
-                        continue
-                    status_str = str(dc.get("status") or "").upper()
-                    if status_str == "EXPIRED" or is_campaign_expired(dc):
-                        continue
-                    cid = str(dc.get("id") or "")
-                    gname = extract_game_name(dc, "")
-                    if cid:
-                        dashboard_meta[cid] = dc
-                    if gname and gname not in dashboard_games:
-                        dashboard_games.append(gname)
+                if _has_integrity_error(dash_res):
+                    _VIEWER_DROPS_DASHBOARD_BLOCKED_UNTIL = time.time() + 21600.0
+                    logger.warning(
+                        "ViewerDropsDashboard returned IntegrityCheckFailed; skipping it for 6h."
+                    )
+                else:
+                    dash_camps = ((dash_res.get("data") or {}).get("currentUser") or {}).get("dropCampaigns") or []
+                    for dc in dash_camps:
+                        if not isinstance(dc, dict):
+                            continue
+                        status_str = str(dc.get("status") or "").upper()
+                        if status_str == "EXPIRED" or is_campaign_expired(dc):
+                            continue
+                        cid = str(dc.get("id") or "")
+                        gname = extract_game_name(dc, "")
+                        if cid:
+                            dashboard_meta[cid] = dc
+                        if gname and gname not in dashboard_games:
+                            dashboard_games.append(gname)
             except Exception as err:
                 logger.debug("ViewerDropsDashboard query note: %s", err)
 
         # 2. Query Top 100 live games on Twitch + StreamsWithDrops
+        if self.is_rate_limited():
+            return []
         game_broadcasters: Dict[str, Dict[str, Any]] = {}  # game_low -> {"name": str, "box_art": str, "bids": List[str]}
         try:
             q_top = """
@@ -1244,7 +1637,7 @@ class TwitchClient:
                 target_games_ordered.append(gs)
 
         missing_games = [g for g in target_games_ordered if g.lower() not in game_broadcasters]
-        if missing_games:
+        if missing_games and not self.is_rate_limited():
             q_check = """
             query CheckGameTopStream($name: String!) {
                 game(name: $name) {
@@ -1266,6 +1659,8 @@ class TwitchClient:
             }
             """
             for i in range(0, len(missing_games), 30):
+                if self.is_rate_limited():
+                    break
                 chunk = missing_games[i : i + 30]
                 ops = [{"operationName": "CheckGameTopStream", "query": q_check, "variables": {"name": g}} for g in chunk]
                 try:
@@ -1313,6 +1708,8 @@ class TwitchClient:
 
         discovered_campaigns: Dict[str, Dict[str, Any]] = {}
         for i in range(0, len(broadcaster_ids), 35):
+            if self.is_rate_limited():
+                break
             chunk_bids = broadcaster_ids[i : i + 35]
             ops = [
                 {
@@ -1448,10 +1845,13 @@ class TwitchClient:
             for p in prio_low
         )
 
-        # 2. Fetch live campaigns directly from Twitch GraphQL when refreshing, cache expired (>10m), empty, partial, or missing queued game
+        # 2. Fetch live campaigns directly from Twitch GraphQL when refreshing, cache expired (>60m), empty, partial, or missing queued game
         cache_age = now - float(DROPHUNTER_CACHE.get("timestamp") or 0)
         needs_full_catalog = ("unittest" not in sys.modules) and len(campaigns_map) < 10
-        if force_refresh or not campaigns_map or needs_full_catalog or cache_age >= 600 or missing_prio:
+        should_fetch_gql = force_refresh or not campaigns_map or needs_full_catalog or cache_age >= 3600 or missing_prio
+        if self.is_rate_limited() and campaigns_map:
+            should_fetch_gql = False
+        if should_fetch_gql:
             gql_live_camps = self.fetch_twitch_gql_live_campaigns(priority_games=priority_games)
             for gc in gql_live_camps:
                 gc_id = gc.get("id")
@@ -1609,7 +2009,10 @@ class TwitchClient:
         return list(campaigns_map.values())
 
     def get_drops_overview(
-        self, priority_games: Optional[List[str]] = None, force_refresh: bool = False
+        self,
+        priority_games: Optional[List[str]] = None,
+        force_refresh: bool = False,
+        inv_override: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Builds a comprehensive drops overview:
@@ -1623,7 +2026,7 @@ class TwitchClient:
           * UNAVAILABLE (Unavailable for collection: Campaign/Drop Expired, Paid Sub Required, Locked/Precondition, or Upcoming)
         - Returns structured campaigns list, collected_items list, needs_collection_drops, unavailable_drops, and summary metrics.
         """
-        inv = self.get_inventory()
+        inv = inv_override if inv_override is not None else self.get_inventory()
         claimed_events = inv.get("gameEventDrops") or []
         in_prog_camps = inv.get("dropCampaignsInProgress") or []
         if isinstance(in_prog_camps, dict):
@@ -2064,6 +2467,31 @@ class TwitchClient:
                     return True
         return False
 
+    @staticmethod
+    def _campaigns_have_watchable_drops(
+        camps: List[Dict[str, Any]],
+        target_game_low: str,
+        campaign_low: str,
+        is_global_target: bool,
+    ) -> bool:
+        """Return True if any campaign in camps matches the target game and has watch-time drops."""
+        for c in camps or []:
+            c_game = extract_game_name(c, "").lower()
+            # Ignore global badge campaigns when targeting a specific game
+            if not c_game:
+                if not is_global_target:
+                    continue
+            elif (
+                target_game_low not in c_game
+                and c_game not in target_game_low
+                and not (campaign_low and (campaign_low in c_game or c_game in campaign_low))
+            ):
+                continue
+            t_drops = c.get("timeBasedDrops") or []
+            if any((d.get("requiredMinutesWatched") or 0) > 0 for d in t_drops):
+                return True
+        return False
+
     def find_eligible_channel(
         self,
         game_name: str,
@@ -2136,14 +2564,15 @@ class TwitchClient:
         }
         """
         try:
+            if self.is_rate_limited():
+                return None
             res = self.post_gql(query, variables={"name": game_name}, operation_name="DirectoryPage_Game")
             game_obj = res.get("data", {}).get("game") or {}
             game_id = str(game_obj.get("id") or "")
             edges = game_obj.get("streams", {}).get("edges", [])
 
-            used_drops_filter = bool(edges)
-            # Fallback if no streams found with DropsEnabled filter query
-            if not edges:
+            # Fallback if no streams found with DropsEnabled filter query (unless errors/rate-limited)
+            if not edges and not _has_integrity_error(res) and not self.is_rate_limited():
                 query_fallback = """
                 query DirectoryPage_GameFallback($name: String!) {
                     game(name: $name) {
@@ -2201,7 +2630,7 @@ class TwitchClient:
                 for kw in ("evolutions", "pokemon", "twitch global drop")
             )
 
-            # Verify which channels actually have active watch-time drops enabled via DropsHighlightService_AvailableDrops
+            # Verify sequentially via DropsHighlightService_AvailableDrops (stopping on first match)
             def verify_channel(node: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                 try:
                     broadcaster = node.get("broadcaster") or {}
@@ -2214,23 +2643,7 @@ class TwitchClient:
                         variables={"channelID": b_id}
                     )
                     camps = (drops_res.get("data") or {}).get("channel", {}).get("viewerDropCampaigns") or []
-                    has_watchable = False
-                    for c in camps:
-                        c_game = extract_game_name(c, "").lower()
-                        # Ignore global badge campaigns when targeting a specific game
-                        if not c_game:
-                            if not is_global_target:
-                                continue
-                        elif (
-                            target_game_low not in c_game and c_game not in target_game_low
-                            and not (campaign_low and (campaign_low in c_game or c_game in campaign_low))
-                        ):
-                            continue
-                        t_drops = c.get("timeBasedDrops") or []
-                        if any((d.get("requiredMinutesWatched") or 0) > 0 for d in t_drops):
-                            has_watchable = True
-                            break
-                    if has_watchable:
+                    if self._campaigns_have_watchable_drops(camps, target_game_low, campaign_low, is_global_target):
                         has_title_drops = self._node_has_drops_in_title_or_tags(node)
                         return {
                             "channel_id": b_id,
@@ -2249,24 +2662,15 @@ class TwitchClient:
                 return None
 
             verified_channels: List[Dict[str, Any]] = []
-            pool_slice = candidate_nodes[:15]
-            executor = concurrent.futures.ThreadPoolExecutor(max_workers=6)
-            try:
-                futures = [executor.submit(verify_channel, node) for node in pool_slice]
-                deadline = time.time() + 8
-                # Walk results in directory order so the first listed verified channel wins
-                for fut in futures:
-                    try:
-                        r = fut.result(timeout=max(0.1, deadline - time.time()))
-                    except Exception:
-                        r = None
-                    if r:
-                        verified_channels.append(r)
-                        break
-            except Exception:
-                pass
-            finally:
-                executor.shutdown(wait=False, cancel_futures=True)
+            for idx, node in enumerate(candidate_nodes[:10]):
+                if self.is_rate_limited():
+                    break
+                if idx > 0 and ("unittest" not in sys.modules):
+                    time.sleep(0.2)
+                r = verify_channel(node)
+                if r:
+                    verified_channels.append(r)
+                    break
 
             if verified_channels:
                 chosen = verified_channels[0]
@@ -2386,6 +2790,8 @@ class TwitchClient:
         }
         """
         try:
+            if self.is_rate_limited():
+                return []
             drops_filtered = False
             res = self.post_gql(query, variables={"name": game_name}, operation_name="DirectoryPage_Game")
             game_obj = res.get("data", {}).get("game") or {}
@@ -2393,7 +2799,7 @@ class TwitchClient:
             edges = game_obj.get("streams", {}).get("edges", [])
             if edges:
                 drops_filtered = True
-            else:
+            elif not _has_integrity_error(res) and not self.is_rate_limited():
                 query_fallback = """
                 query DirectoryPage_GameFallback($name: String!) {
                     game(name: $name) {
@@ -2435,72 +2841,93 @@ class TwitchClient:
                 for kw in ("evolutions", "pokemon", "twitch global drop")
             )
 
-            def verify_node(node: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-                try:
-                    broadcaster = node.get("broadcaster") or {}
-                    b_id = str(broadcaster.get("id") or "")
-                    if not b_id:
-                        return None
-                    drops_res = self.post_persisted_gql(
-                        operation_name="DropsHighlightService_AvailableDrops",
-                        sha256_hash="9a62a09bce5b53e26e64a671e530bc599cb6aab1e5ba3cbd5d85966d3940716f",
-                        variables={"channelID": b_id},
-                    )
-                    camps = (drops_res.get("data") or {}).get("channel", {}).get("viewerDropCampaigns") or []
-                    has_watchable = False
-                    for c in camps:
-                        c_game = extract_game_name(c, "").lower()
-                        if not c_game:
-                            if not is_global_target:
-                                continue
-                        elif (
-                            target_game_low not in c_game and c_game not in target_game_low
-                            and not (campaign_low and (campaign_low in c_game or c_game in campaign_low))
-                        ):
-                            continue
-                        t_drops = c.get("timeBasedDrops") or []
-                        if any((d.get("requiredMinutesWatched") or 0) > 0 for d in t_drops):
-                            has_watchable = True
-                            break
-                    if has_watchable or drops_filtered:
-                        return {
-                            "channel_id": b_id,
-                            "channel_login": broadcaster.get("login"),
-                            "channel_name": broadcaster.get("displayName") or broadcaster.get("login"),
-                            "stream_id": str(node.get("id") or ""),
-                            "stream_title": str(node.get("title") or ""),
-                            "viewers": int(node.get("viewersCount") or 0),
-                            "game_name": game_name,
-                            "game_id": game_id,
-                            "verified_drops": True,
-                            "has_drops_in_title": self._node_has_drops_in_title_or_tags(node),
-                        }
-                except Exception:
-                    pass
+            def _build_entry(node: Dict[str, Any], b_id: str, camps: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+                broadcaster = node.get("broadcaster") or {}
+                has_watchable = self._campaigns_have_watchable_drops(
+                    camps, target_game_low, campaign_low, is_global_target
+                )
+                if has_watchable or drops_filtered:
+                    return {
+                        "channel_id": b_id,
+                        "channel_login": broadcaster.get("login"),
+                        "channel_name": broadcaster.get("displayName") or broadcaster.get("login"),
+                        "stream_id": str(node.get("id") or ""),
+                        "stream_title": str(node.get("title") or ""),
+                        "viewers": int(node.get("viewersCount") or 0),
+                        "game_name": game_name,
+                        "game_id": game_id,
+                        "verified_drops": True,
+                        "has_drops_in_title": self._node_has_drops_in_title_or_tags(node),
+                    }
                 return None
 
-            pool_slice = raw_nodes[:max(limit, 12)]
+            pool_slice = raw_nodes[:min(max(limit, 12), 35)]
+            nodes_with_bids: List[Tuple[str, Dict[str, Any]]] = []
+            for node in pool_slice:
+                b_id = str((node.get("broadcaster") or {}).get("id") or "").strip()
+                if b_id:
+                    nodes_with_bids.append((b_id, node))
+
             results: List[Dict[str, Any]] = []
             seen_logins: Set[str] = set()
-            executor = concurrent.futures.ThreadPoolExecutor(max_workers=6)
-            try:
-                futures = [executor.submit(verify_node, node) for node in pool_slice]
-                deadline = time.time() + 8
-                for fut in futures:
+
+            batch_usable = False
+            if nodes_with_bids and not self.is_rate_limited():
+                ops = [
+                    {
+                        "operationName": "DropsHighlightService_AvailableDrops",
+                        "extensions": {
+                            "persistedQuery": {
+                                "version": 1,
+                                "sha256Hash": "9a62a09bce5b53e26e64a671e530bc599cb6aab1e5ba3cbd5d85966d3940716f",
+                            }
+                        },
+                        "variables": {"channelID": b_id},
+                    }
+                    for b_id, _ in nodes_with_bids
+                ]
+                try:
+                    batch_res = self.post_gql_batch(ops, timeout=15)
+                    if (
+                        isinstance(batch_res, list)
+                        and len(batch_res) == len(nodes_with_bids)
+                        and any(isinstance(x, dict) and x.get("data") is not None for x in batch_res)
+                    ):
+                        batch_usable = True
+                        for (b_id, node), item in zip(nodes_with_bids, batch_res):
+                            camps = (((item or {}).get("data") or {}).get("channel") or {}).get("viewerDropCampaigns") or []
+                            r = _build_entry(node, b_id, camps)
+                            if r and r.get("channel_login"):
+                                lg = str(r["channel_login"]).lower()
+                                if lg not in seen_logins:
+                                    seen_logins.add(lg)
+                                    r["rank"] = len(results) + 1
+                                    results.append(r)
+                except Exception as batch_err:
+                    logger.debug("Batch DropsHighlightService_AvailableDrops failed: %s", batch_err)
+
+            if not batch_usable and not self.is_rate_limited():
+                for idx, (b_id, node) in enumerate(nodes_with_bids):
+                    if len(results) >= limit or self.is_rate_limited():
+                        break
+                    if idx > 0 and ("unittest" not in sys.modules):
+                        time.sleep(0.2)
                     try:
-                        r = fut.result(timeout=max(0.1, deadline - time.time()))
+                        drops_res = self.post_persisted_gql(
+                            operation_name="DropsHighlightService_AvailableDrops",
+                            sha256_hash="9a62a09bce5b53e26e64a671e530bc599cb6aab1e5ba3cbd5d85966d3940716f",
+                            variables={"channelID": b_id},
+                        )
+                        camps = ((drops_res.get("data") or {}).get("channel") or {}).get("viewerDropCampaigns") or []
+                        r = _build_entry(node, b_id, camps)
+                        if r and r.get("channel_login"):
+                            lg = str(r["channel_login"]).lower()
+                            if lg not in seen_logins:
+                                seen_logins.add(lg)
+                                r["rank"] = len(results) + 1
+                                results.append(r)
                     except Exception:
-                        r = None
-                    if r and r.get("channel_login"):
-                        lg = str(r["channel_login"]).lower()
-                        if lg not in seen_logins:
-                            seen_logins.add(lg)
-                            r["rank"] = len(results) + 1
-                            results.append(r)
-            except Exception:
-                pass
-            finally:
-                executor.shutdown(wait=False, cancel_futures=True)
+                        pass
 
             # Append any remaining title/tag drop channels if below limit
             for node in raw_nodes:
@@ -2826,26 +3253,82 @@ class TwitchClient:
             log_event("TWITCH_HLS", "touch_stream_chunk_error", {"channel": channel_login, "error": str(e)}, level="WARNING")
         return False
 
-    def get_drop_current_session(self, channel_id: str, channel_login: str = "") -> Dict[str, Any]:
+    def get_drop_current_session(
+        self,
+        channel_id: str,
+        channel_login: str = "",
+        browser_watcher: Any = None,
+    ) -> Dict[str, Any]:
         """
-        Query DropCurrentSessionContext for the watched channel.
+        Query DropCurrentSessionContext for the watched channel (browser-first when active).
         Binds/refreshes the active drop watching session on Twitch's backend and returns
         real-time per-minute progress (currentMinutesWatched, requiredMinutesWatched, dropID).
         """
         if not self.auth_token or not channel_id:
             return {}
+        login_str = str(channel_login or "").strip()
+        op_hash = "4d06b702d25d652afb9ef835d2a550031f1cf762b193523a92166f40ea3d142b"
+
+        if (
+            browser_watcher is not None
+            and hasattr(browser_watcher, "execute_gql_in_browser")
+            and (not hasattr(browser_watcher, "is_watching") or browser_watcher.is_watching())
+        ):
+            try:
+                bres = browser_watcher.execute_gql_in_browser(
+                    "DropCurrentSessionContext",
+                    op_hash,
+                    variables={"channelID": str(channel_id), "channelLogin": ""},
+                    is_persisted=True,
+                )
+                if isinstance(bres, dict):
+                    if _has_integrity_error(bres) or _is_rate_limit_response(bres):
+                        return {}
+                    session = ((bres.get("data") or {}).get("currentUser") or {}).get("dropCurrentSession")
+                    if not session and login_str and not bres.get("errors") and not bres.get("error"):
+                        bres_fb = browser_watcher.execute_gql_in_browser(
+                            "DropCurrentSessionContext",
+                            op_hash,
+                            variables={"channelID": str(channel_id), "channelLogin": login_str},
+                            is_persisted=True,
+                        )
+                        if isinstance(bres_fb, dict):
+                            if _has_integrity_error(bres_fb) or _is_rate_limit_response(bres_fb):
+                                return {}
+                            session = ((bres_fb.get("data") or {}).get("currentUser") or {}).get("dropCurrentSession")
+                    if isinstance(session, dict):
+                        self.last_drop_session = session
+                        log_event(
+                            "TWITCH_GQL",
+                            "drop_current_session",
+                            {
+                                "channel": login_str or channel_id,
+                                "drop_id": session.get("dropID", ""),
+                                "watched": session.get("currentMinutesWatched", 0),
+                                "required": session.get("requiredMinutesWatched", 0),
+                                "via": "browser",
+                            },
+                        )
+                        return session
+            except Exception as b_err:
+                logger.debug("In-browser DropCurrentSessionContext error for %s: %s", channel_id, b_err)
+
+        if self.is_rate_limited():
+            logger.debug("Skipping HTTP DropCurrentSessionContext while rate-limit cooldown is active.")
+            return {}
+
         try:
-            login_str = str(channel_login or "").strip()
             res = self.post_persisted_gql(
                 operation_name="DropCurrentSessionContext",
-                sha256_hash="4d06b702d25d652afb9ef835d2a550031f1cf762b193523a92166f40ea3d142b",
+                sha256_hash=op_hash,
                 variables={"channelID": str(channel_id), "channelLogin": ""},
             )
             session = ((res.get("data") or {}).get("currentUser") or {}).get("dropCurrentSession")
-            if not session and login_str:
+            has_gql_errors = isinstance(res, dict) and bool(res.get("errors"))
+            if not session and login_str and not has_gql_errors and not self.is_rate_limited():
                 res_fallback = self.post_persisted_gql(
                     operation_name="DropCurrentSessionContext",
-                    sha256_hash="4d06b702d25d652afb9ef835d2a550031f1cf762b193523a92166f40ea3d142b",
+                    sha256_hash=op_hash,
                     variables={"channelID": str(channel_id), "channelLogin": login_str},
                 )
                 session = ((res_fallback.get("data") or {}).get("currentUser") or {}).get("dropCurrentSession")
@@ -2865,7 +3348,7 @@ class TwitchClient:
             log_event(
                 "TWITCH_GQL",
                 "drop_current_session_empty",
-                {"channel": login_str or channel_id, "errors": res.get("errors")},
+                {"channel": login_str or channel_id, "errors": res.get("errors") if isinstance(res, dict) else None},
             )
         except Exception as e:
             logger.debug("DropCurrentSessionContext error for %s: %s", channel_id, e)
@@ -3330,7 +3813,7 @@ class TwitchClient:
         Claim a completed drop reward.
         Sends the official DropsPage_ClaimDropRewards persisted GraphQL query.
         Supports in-browser execution via Headless Chromium CDP, fallback raw mutation,
-        and multiple composite ID formats. Applies polite pacing and backoff between requests.
+        and multiple composite ID formats. Aborts immediately on IntegrityCheckFailed or 429/rate limits.
         """
         clean_id = str(drop_instance_id or "").strip()
         if not clean_id:
@@ -3376,48 +3859,103 @@ class TwitchClient:
                         return True
             return False
 
+        def _is_abort_error(res_dict: Any) -> bool:
+            return _has_integrity_error(res_dict) or _is_rate_limit_response(res_dict)
+
+        claim_hash = "a455deea71bdc9015b78eb49f4acfbce8baa7ccbedd28e549bb025bd0f751930"
+
         # 1. Attempt via Headless Chromium browser if active (authentic session & anti-bot context)
-        if browser_watcher and hasattr(browser_watcher, "execute_gql_in_browser"):
-            for idx, cand in enumerate(candidate_ids):
-                if idx > 0:
-                    time.sleep(random.uniform(0.5, 1.0))
-                try:
-                    res = browser_watcher.execute_gql_in_browser(
-                        operation_name="DropsPage_ClaimDropRewards",
-                        query_or_hash="a455deea71bdc9015b78eb49f4acfbce8baa7ccbedd28e549bb025bd0f751930",
-                        variables={"input": {"dropInstanceID": str(cand)}},
-                        is_persisted=True,
+        if (
+            browser_watcher is not None
+            and hasattr(browser_watcher, "execute_gql_in_browser")
+            and (not hasattr(browser_watcher, "is_watching") or browser_watcher.is_watching())
+        ):
+            try:
+                res = browser_watcher.execute_gql_in_browser(
+                    operation_name="DropsPage_ClaimDropRewards",
+                    query_or_hash=claim_hash,
+                    variables={"input": {"dropInstanceID": str(candidate_ids[0])}},
+                    is_persisted=True,
+                )
+                if _is_claim_success(res):
+                    data = (res or {}).get("data") or {}
+                    claim_info = data.get("claimDropRewards") or data.get("claimDrop") or {}
+                    logger.info("[CLAIM] In-browser drop claim succeeded for %s (cand=%s): %s", clean_id, candidate_ids[0], claim_info.get("status"))
+                    return True
+                if _is_abort_error(res):
+                    logger.warning("[CLAIM] Aborting claim for %s due to integrity/rate-limit error in browser.", clean_id)
+                    return False
+
+                if isinstance(res, dict) and "error" not in res:
+                    # Browser returned a real GQL response from Twitch.
+                    # Allow at most 1 clean-UUID retry when '#' is in clean_id and error suggests invalid input.
+                    err_msg = str(res.get("errors") or "").lower()
+                    suggests_invalid = (
+                        any(k in err_msg for k in ("invalid", "input", "not found", "malformed", "dropinstanceid", "drop_instance_id"))
+                        or bool(re.search(r"\bid\b", err_msg))
                     )
-                    if _is_claim_success(res):
-                        data = (res or {}).get("data") or {}
-                        claim_info = data.get("claimDropRewards") or data.get("claimDrop") or {}
-                        logger.info("[CLAIM] In-browser drop claim succeeded for %s (cand=%s): %s", clean_id, cand, claim_info.get("status"))
-                        return True
-                except Exception as err:
-                    logger.debug("In-browser claim attempt error on cand %s: %s", cand, err)
+                    if "#" in clean_id and len(candidate_ids) > 1 and (suggests_invalid or not err_msg):
+                        if "unittest" not in sys.modules:
+                            time.sleep(random.uniform(0.5, 1.0))
+                        res2 = browser_watcher.execute_gql_in_browser(
+                            operation_name="DropsPage_ClaimDropRewards",
+                            query_or_hash=claim_hash,
+                            variables={"input": {"dropInstanceID": str(candidate_ids[1])}},
+                            is_persisted=True,
+                        )
+                        if _is_claim_success(res2):
+                            data2 = (res2 or {}).get("data") or {}
+                            claim_info2 = data2.get("claimDropRewards") or data2.get("claimDrop") or {}
+                            logger.info("[CLAIM] In-browser drop claim succeeded for %s (cand=%s): %s", clean_id, candidate_ids[1], claim_info2.get("status"))
+                            return True
+                        if _is_abort_error(res2):
+                            logger.warning("[CLAIM] Aborting claim for %s due to integrity/rate-limit error on UUID retry.", clean_id)
+                            return False
+                    logger.debug("[CLAIM] Twitch rejected in-browser claim for %s; skipping Python HTTP fallback.", clean_id)
+                    return False
+            except Exception as err:
+                logger.debug("In-browser claim attempt error on cand %s: %s", candidate_ids[0], err)
+
+        if self.is_rate_limited():
+            logger.debug("[CLAIM] Skipping Python HTTP claim for %s while rate-limit cooldown is active.", clean_id)
+            return False
 
         # 2. HTTP GQL attempt: Official persisted query DropsPage_ClaimDropRewards
-        time.sleep(random.uniform(0.3, 0.6))
+        if "unittest" not in sys.modules:
+            time.sleep(random.uniform(0.3, 0.6))
         for idx, cand in enumerate(candidate_ids):
-            if idx > 0:
+            if self.is_rate_limited():
+                return False
+            if idx > 0 and ("unittest" not in sys.modules):
                 time.sleep(random.uniform(0.5, 1.0))
             try:
                 res = self.post_persisted_gql(
                     operation_name="DropsPage_ClaimDropRewards",
-                    sha256_hash="a455deea71bdc9015b78eb49f4acfbce8baa7ccbedd28e549bb025bd0f751930",
+                    sha256_hash=claim_hash,
                     variables={"input": {"dropInstanceID": str(cand)}}
                 )
+                if _is_abort_error(res):
+                    logger.warning("[CLAIM] Aborting claim for %s due to integrity/rate-limit error.", clean_id)
+                    return False
                 data = res.get("data") or {}
                 claim_info = data.get("claimDropRewards") or data.get("claimDrop") or {}
                 status = claim_info.get("status")
                 logger.info("Claim result for drop %s (cand=%s): %s", clean_id, cand, status)
                 if _is_claim_success(res):
                     return True
+            except urllib.error.HTTPError as e:
+                logger.debug("Persisted claim HTTP error for %s (cand=%s): %s", clean_id, cand, e)
+                if e.code in (403, 429) or self.is_rate_limited():
+                    return False
             except Exception as e:
                 logger.debug("Persisted claim failed for %s (cand=%s): %s", clean_id, cand, e)
 
+        if self.is_rate_limited():
+            return False
+
         # 3. Fallback: Raw GraphQL mutation ClaimDropRewards
-        time.sleep(random.uniform(0.3, 0.6))
+        if "unittest" not in sys.modules:
+            time.sleep(random.uniform(0.3, 0.6))
         raw_mutation = """
         mutation ClaimDropRewards($input: ClaimDropRewardsInput!) {
             claimDropRewards(input: $input) {
@@ -3426,7 +3964,9 @@ class TwitchClient:
         }
         """
         for idx, cand in enumerate(candidate_ids):
-            if idx > 0:
+            if self.is_rate_limited():
+                return False
+            if idx > 0 and ("unittest" not in sys.modules):
                 time.sleep(random.uniform(0.5, 1.0))
             try:
                 res = self.post_gql(
@@ -3434,12 +3974,19 @@ class TwitchClient:
                     variables={"input": {"dropInstanceID": str(cand)}},
                     operation_name="ClaimDropRewards"
                 )
+                if _is_abort_error(res):
+                    logger.warning("[CLAIM] Aborting raw claim for %s due to integrity/rate-limit error.", clean_id)
+                    return False
                 data = res.get("data") or {}
                 claim_info = data.get("claimDropRewards") or data.get("claimDrop") or {}
                 status = claim_info.get("status")
                 if _is_claim_success(res):
                     logger.info("Raw mutation claim succeeded for drop %s (cand=%s): %s", clean_id, cand, status)
                     return True
+            except urllib.error.HTTPError as e:
+                logger.debug("Raw claim HTTP error for %s (cand=%s): %s", clean_id, cand, e)
+                if e.code in (403, 429) or self.is_rate_limited():
+                    return False
             except Exception as e:
                 logger.debug("Raw claim failed for %s (cand=%s): %s", clean_id, cand, e)
 

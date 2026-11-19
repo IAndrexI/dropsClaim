@@ -33,6 +33,7 @@ _SENSITIVE_KEYS = (
     "webhook",
     "authorization",
     "device_code_secret",
+    "integrity",
 )
 
 _TOKEN_PATTERNS = [

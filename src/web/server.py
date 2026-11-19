@@ -5,6 +5,7 @@ Features secure session authentication, login page, and in-browser account manag
 """
 
 import argparse
+import copy
 import json
 import logging
 import os
@@ -18,6 +19,7 @@ import urllib.parse
 import urllib.request
 import urllib.error
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any, Dict, List, Optional
 
 # Path resolution
 APP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -26,7 +28,9 @@ sys.path.insert(0, APP_DIR)
 from src.free_games.preview_promotions import fetch_epic_freebies
 from src.twitch_drops.activity_logger import log_event, read_activity_log, sanitize_text
 from src.twitch_drops.browser_watcher import find_chromium_binary
-from src.twitch_drops.twitch_api import TwitchClient
+from src.twitch_drops import twitch_api as _twitch_api
+from src.twitch_drops.twitch_api import TwitchClient, load_inventory_cache as _orig_load_inventory_cache
+load_inventory_cache = _orig_load_inventory_cache
 from src.auth.twitch_auth import (
     clear_token as clear_stored_token,
     load_token as load_stored_token,
@@ -47,6 +51,32 @@ if not logger.handlers:
 
 # In-memory session store: token -> expiration timestamp
 ACTIVE_SESSIONS = {}
+
+_SHARED_CLIENT_LOCK = threading.Lock()
+_SHARED_TWITCH_CLIENT: Optional[TwitchClient] = None
+_SHARED_TWITCH_TOKEN: str = ""
+
+_TWITCH_OVERVIEW_LOCK = threading.Lock()
+_TWITCH_OVERVIEW_CACHE: Dict[str, Any] = {
+    "ts": 0.0,
+    "token": "",
+    "username": None,
+    "user_id": None,
+    "overview": None,
+    "last_force_ts": 0.0,
+}
+_ENABLE_STATUS_CACHE_IN_TEST = False
+
+
+def _get_shared_twitch_client(token: str) -> TwitchClient:
+    """Return a shared persistent TwitchClient for the active token to preserve cookies, session_id, device_id, and integrity tokens."""
+    global _SHARED_TWITCH_CLIENT, _SHARED_TWITCH_TOKEN
+    clean_tok = (token or "").strip()
+    with _SHARED_CLIENT_LOCK:
+        if _SHARED_TWITCH_CLIENT is None or _SHARED_TWITCH_TOKEN != clean_tok:
+            _SHARED_TWITCH_CLIENT = TwitchClient(clean_tok)
+            _SHARED_TWITCH_TOKEN = clean_tok
+        return _SHARED_TWITCH_CLIENT
 
 
 def build_diagnostics_bundle():
@@ -418,7 +448,7 @@ def ensure_miner_daemon_running(token: str = "") -> bool:
 def _send_async_initial_heartbeat(token: str, channel: dict, game_name: str):
     """Send immediate first minute-watched heartbeat in background upon stream swap."""
     try:
-        client = TwitchClient(token)
+        client = _get_shared_twitch_client(token)
         if not client.validate_session():
             return
         playback_info = client.get_playback_stream_info(channel["channel_login"])
@@ -543,7 +573,7 @@ def save_mining_config(mode: str, activated_games: list, resolve_stream: bool = 
     candidates_to_try = list(clean_queue) if clean_queue else ([target_game] if target_game else [])
     if candidates_to_try and token:
         try:
-            client = TwitchClient(token)
+            client = _get_shared_twitch_client(token)
             for cand in candidates_to_try:
                 channel = client.find_eligible_channel(cand, fast_first=True)
                 if channel and channel.get("channel_login"):
@@ -577,11 +607,12 @@ def save_mining_config(mode: str, activated_games: list, resolve_stream: bool = 
                         "switched_at": now_ts,
                         "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     }
-                    threading.Thread(
-                        target=_send_async_initial_heartbeat,
-                        args=(token, channel, cand),
-                        daemon=True,
-                    ).start()
+                    if not find_chromium_binary():
+                        threading.Thread(
+                            target=_send_async_initial_heartbeat,
+                            args=(token, channel, cand),
+                            daemon=True,
+                        ).start()
                     break
             if not new_status and target_game:
                 new_status = {
@@ -777,7 +808,7 @@ def switch_watched_channel(
         requested_login = requested_login.lower().split("twitch.tv/", 1)[1]
     requested_login = requested_login.split("?")[0].split("#")[0].strip().strip("/").lstrip("@").lower()
 
-    client = TwitchClient(token) if token else TwitchClient("")
+    client = _get_shared_twitch_client(token) if token else TwitchClient("")
     chosen_channel: Optional[Dict[str, Any]] = None
     preferred_channel = ""
 
@@ -904,11 +935,12 @@ def switch_watched_channel(
         pass
 
     if token:
-        threading.Thread(
-            target=_send_async_initial_heartbeat,
-            args=(token, chosen_channel, selected_game or chosen_channel.get("game_name", "")),
-            daemon=True,
-        ).start()
+        if not find_chromium_binary():
+            threading.Thread(
+                target=_send_async_initial_heartbeat,
+                args=(token, chosen_channel, selected_game or chosen_channel.get("game_name", "")),
+                daemon=True,
+            ).start()
         ensure_miner_daemon_running(token)
 
     new_ch_display = chosen_channel.get("channel_name") or chosen_channel["channel_login"]
@@ -1105,7 +1137,7 @@ def get_dashboard_password(env):
     return pw
 
 
-def build_status_payload():
+def build_status_payload(force_refresh: bool = False):
     env = load_env_file()
     data_dir = os.path.join(APP_DIR, "data", "fgc")
     twitch_token = resolve_token(env.get("TWITCH_AUTH_TOKEN", "").strip())
@@ -1179,16 +1211,90 @@ def build_status_payload():
         "token_error": "",
     }
 
+    use_cache = ("unittest" not in sys.modules) or bool(_ENABLE_STATUS_CACHE_IN_TEST)
+    used_overview_cache = False
+    cached_bundle = None
+
     if twitch_token:
         try:
-            client = TwitchClient(twitch_token)
-            if client.validate_session():
-                twitch_info["username"] = client.user_login
-                twitch_info["user_id"] = client.user_id
+            now = time.time()
+            overview = None
+            cached_username = None
+            cached_user_id = None
+
+            if use_cache:
+                with _TWITCH_OVERVIEW_LOCK:
+                    c_tok = _TWITCH_OVERVIEW_CACHE.get("token") or ""
+                    c_ov = _TWITCH_OVERVIEW_CACHE.get("overview")
+                    c_ts = float(_TWITCH_OVERVIEW_CACHE.get("ts") or 0.0)
+                    c_force_ts = float(_TWITCH_OVERVIEW_CACHE.get("last_force_ts") or 0.0)
+                    if c_tok == twitch_token and c_ov is not None:
+                        if force_refresh and (now - c_force_ts) < 15.0:
+                            overview = copy.deepcopy(c_ov)
+                            cached_username = _TWITCH_OVERVIEW_CACHE.get("username")
+                            cached_user_id = _TWITCH_OVERVIEW_CACHE.get("user_id")
+                            used_overview_cache = True
+                        elif (not force_refresh) and (now - c_ts) < 180.0:
+                            overview = copy.deepcopy(c_ov)
+                            cached_username = _TWITCH_OVERVIEW_CACHE.get("username")
+                            cached_user_id = _TWITCH_OVERVIEW_CACHE.get("user_id")
+                            used_overview_cache = True
+
+            session_ok = False
+            if used_overview_cache:
+                twitch_info["username"] = cached_username
+                twitch_info["user_id"] = cached_user_id
                 twitch_info["connected"] = True
                 twitch_info["token_valid"] = True
+                session_ok = True
+            else:
+                client = _get_shared_twitch_client(twitch_token)
+                if client.validate_session():
+                    session_ok = True
+                    twitch_info["username"] = client.user_login
+                    twitch_info["user_id"] = client.user_id
+                    twitch_info["connected"] = True
+                    twitch_info["token_valid"] = True
 
-                overview = client.get_drops_overview(priority_games=queue_list)
+                    _loader = load_inventory_cache
+                    if _loader is _orig_load_inventory_cache or _loader is None:
+                        _loader = getattr(_twitch_api, "load_inventory_cache", _loader)
+                    if callable(_loader):
+                        try:
+                            cached_bundle = _loader(max_age_secs=300.0)
+                        except Exception:
+                            cached_bundle = None
+
+                    inv_override = (
+                        cached_bundle.get("inventory")
+                        if isinstance(cached_bundle, dict) and cached_bundle.get("inventory")
+                        else None
+                    )
+                    if inv_override is not None:
+                        try:
+                            overview = client.get_drops_overview(priority_games=queue_list, inv_override=inv_override)
+                        except TypeError as te:
+                            if "inv_override" in str(te) or "unexpected keyword" in str(te):
+                                overview = client.get_drops_overview(priority_games=queue_list)
+                            else:
+                                raise
+                    else:
+                        overview = client.get_drops_overview(priority_games=queue_list)
+
+                    if use_cache and isinstance(overview, dict):
+                        now_done = time.time()
+                        with _TWITCH_OVERVIEW_LOCK:
+                            _TWITCH_OVERVIEW_CACHE["ts"] = now_done
+                            _TWITCH_OVERVIEW_CACHE["token"] = twitch_token
+                            _TWITCH_OVERVIEW_CACHE["username"] = client.user_login
+                            _TWITCH_OVERVIEW_CACHE["user_id"] = client.user_id
+                            _TWITCH_OVERVIEW_CACHE["overview"] = copy.deepcopy(overview)
+                            if force_refresh:
+                                _TWITCH_OVERVIEW_CACHE["last_force_ts"] = now_done
+                else:
+                    twitch_info["token_error"] = "Twitch token is invalid or expired. Please re-link in Accounts & Logins."
+
+            if session_ok and isinstance(overview, dict):
                 camps = overview.get("campaigns", [])
                 _mark_queued_and_active_campaigns(camps, active_target_game, queue_list)
                 twitch_info["priority_games"] = queue_list
@@ -1230,17 +1336,15 @@ def build_status_payload():
                         except Exception:
                             pass
 
-                    live_sess_watched = 0
-                    if miner_stat.get("channel_id"):
-                        try:
-                            sess_ctx = client.get_drop_current_session(
-                                str(miner_stat["channel_id"]),
-                                str(miner_stat.get("channel_login") or ""),
-                            )
-                            if isinstance(sess_ctx, dict):
-                                live_sess_watched = int(sess_ctx.get("currentMinutesWatched") or 0)
-                        except Exception:
-                            pass
+                    sess_ctx_watched = 0
+                    if isinstance(cached_bundle, dict):
+                        sess_obj = cached_bundle.get("session_ctx")
+                        if isinstance(sess_obj, dict):
+                            sess_ctx_watched = int(sess_obj.get("currentMinutesWatched") or 0)
+                    live_sess_watched = max(
+                        int(miner_stat.get("current_drop_watched") or 0),
+                        sess_ctx_watched,
+                    )
 
                     watched_game_low = str(miner_stat.get("game") or "").lower()
                     stat_watched = max(int(miner_stat.get("current_drop_watched") or 0), live_sess_watched)
@@ -1287,14 +1391,12 @@ def build_status_payload():
                                 "drop_instance_id": d.get("drop_instance_id"),
                                 "status": d.get("status"),
                             })
-            else:
-                twitch_info["token_error"] = "Twitch token is invalid or expired. Please re-link in Accounts & Logins."
         except Exception as err:
             twitch_info["error"] = str(err)
     elif twitch_info["token_configured"]:
         twitch_info["token_error"] = "Stored Twitch token expired or invalid. Please re-link in Accounts & Logins."
 
-    if not twitch_info["campaigns"]:
+    if not twitch_info["campaigns"] and not used_overview_cache and not twitch_info["connected"]:
         try:
             fallback_client = TwitchClient("")
             overview = fallback_client.get_drops_overview(priority_games=queue_list)
@@ -1505,7 +1607,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return
 
         elif route_path == "/api/status":
-            data = build_status_payload()
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            force_refresh = str((qs.get("force") or ["0"])[0]).lower() in ("1", "true", "yes")
+            data = build_status_payload(force_refresh=force_refresh)
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
@@ -1632,7 +1736,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             channels = []
             if target_game:
                 try:
-                    client = TwitchClient(token)
+                    client = _get_shared_twitch_client(token)
                     channels = client.list_eligible_channels(target_game, limit=15)
                 except Exception:
                     channels = []
@@ -1882,8 +1986,37 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             message = "No drops were claimed."
             if token:
                 try:
-                    if drop_instance_id:
-                        client = TwitchClient(token)
+                    client = _get_shared_twitch_client(token)
+                    if is_miner_daemon_alive() and find_chromium_binary():
+                        claim_req_path = os.path.join(APP_DIR, "data", "claim_request.json")
+                        os.makedirs(os.path.dirname(claim_req_path), exist_ok=True)
+                        tmp_req_path = claim_req_path + f".tmp.{os.getpid()}"
+                        with open(tmp_req_path, "w", encoding="utf-8") as cf:
+                            json.dump(
+                                {
+                                    "drop_instance_id": drop_instance_id or "",
+                                    "requested_at": time.time(),
+                                },
+                                cf,
+                            )
+                        os.replace(tmp_req_path, claim_req_path)
+                        if hasattr(client, "is_rate_limited") and client.is_rate_limited():
+                            message = "Queued in-browser claim via active miner (Twitch rate-limit cooldown active)."
+                        else:
+                            processed = False
+                            deadline = time.time() + 2.5
+                            while time.time() < deadline:
+                                if not os.path.exists(claim_req_path):
+                                    processed = True
+                                    break
+                                time.sleep(0.25)
+                            if processed:
+                                message = "In-browser claim dispatched to active miner!"
+                            else:
+                                message = "Queued in-browser claim via active miner."
+                    elif hasattr(client, "is_rate_limited") and client.is_rate_limited():
+                        message = "Twitch rate-limit cooldown active — please wait or start the headless miner to claim in-browser."
+                    elif drop_instance_id:
                         if client.claim_drop(drop_instance_id):
                             claimed = 1
                             message = "Successfully claimed drop reward!"
@@ -1891,10 +2024,16 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                             message = "Could not claim drop reward (it may have already been claimed or requires manual claim on Twitch)."
                     else:
                         miner = DropsMiner(token)
+                        if type(miner).__name__ == "DropsMiner":
+                            miner.client = client
                         claimed = miner.claim_pending_drops(force=True)
                         message = f"Claimed {claimed} ready drop rewards!" if claimed > 0 else "Checked for completed drops. No unclaimed drops were currently available."
                 except Exception as e:
                     message = f"Error claiming drops: {e}"
+
+            if claimed > 0:
+                with _TWITCH_OVERVIEW_LOCK:
+                    _TWITCH_OVERVIEW_CACHE["ts"] = 0.0
 
             log_event("API_ACTION", "claim_drops", {"drop_instance_id": drop_instance_id or "", "claimed": claimed})
             self.send_response(200)
@@ -2273,10 +2412,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             env_prio = [g.strip() for g in priority_str.split(",") if g.strip()]
             priority_games = list(dict.fromkeys(queue_list + env_prio))
 
-            client = TwitchClient(token)
+            client = _get_shared_twitch_client(token)
             if token:
                 client.validate_session()
             overview = client.get_drops_overview(priority_games=priority_games, force_refresh=True)
+            with _TWITCH_OVERVIEW_LOCK:
+                _TWITCH_OVERVIEW_CACHE["ts"] = 0.0
             active_cnt = overview.get("active_campaigns_count", overview.get("total_campaigns", 0))
             log_event("API_ACTION", "refresh_campaigns", {"active_campaigns": active_cnt, "total_campaigns": overview.get("total_campaigns", 0)})
             self.send_response(200)

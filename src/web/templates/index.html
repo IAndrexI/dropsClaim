@@ -569,6 +569,7 @@
           <span class="miner-stat-pill" id="miner-drop-live-progress" style="display: none; border-color: #3b82f6; color: #93c5fd;">Drop: --</span>
           <span class="miner-stat-pill" id="miner-stream-progress">Session: 0/60 mins (1h rotation)</span>
           <span class="miner-stat-pill" id="miner-stream-viewers">0 Viewers</span>
+          <span class="miner-stat-pill" id="miner-rate-limit-badge" style="display: none; border-color: #f59e0b; color: #fbbf24; background: rgba(245, 158, 11, 0.12);">Twitch API cooldown — headless browser watching calmly</span>
           <button class="btn btn-sm" id="btn-refresh-progress" onclick="refreshMiningProgress()" style="border-color: #10b981; color: #34d399; background: rgba(16, 185, 129, 0.12); font-weight: 600;" title="Refresh live Twitch drop progress and session minutes on this page">&#8635; Refresh Progress</button>
           <button class="btn btn-sm" id="btn-switch-channel" onclick="switchWatchedChannel()" style="border-color: #38bdf8; color: #7dd3fc; background: rgba(56, 189, 248, 0.12); font-weight: 600;" title="Skip current channel and switch to the next live Drops-enabled channel">&#8644; Next Channel</button>
           <button class="btn btn-sm" id="btn-pick-channel" onclick="openChannelSwitcherModal()" style="border-color: #6366f1; color: #a5b4fc; background: rgba(99, 102, 241, 0.12); font-weight: 600;" title="Choose a specific live Drops channel or enter a streamer username">&#9776; Pick Channel</button>
@@ -1066,6 +1067,7 @@
     let selectedPriorityGames = [];
     let currentMiningMode = "default";
     let currentDropsFilter = "all";
+    let lastStatusFetchAt = 0;
 
     function showToast(message) {
       const toast = document.getElementById("toast");
@@ -1135,9 +1137,13 @@
       if (currentData) renderDropsGrid(currentData.twitch || {});
     }
 
-    async function fetchData(silent = false) {
+    async function fetchData(silent = false, force = false) {
       try {
-        const res = await fetch("/api/status?t=" + Date.now(), { cache: "no-store" });
+        lastStatusFetchAt = Date.now();
+        const url = force
+          ? "/api/status?force=1&t=" + Date.now()
+          : "/api/status?t=" + Date.now();
+        const res = await fetch(url, { cache: "no-store" });
         if (res.status === 401) {
           window.location.href = "/login";
           return;
@@ -1164,7 +1170,7 @@
         btnHeader.innerHTML = "&#8635; Refreshing...";
       }
       try {
-        await fetchData(false);
+        await fetchData(false, true);
         const ms = (currentData && currentData.twitch && currentData.twitch.miner_status) || {};
         if (ms.active && ms.current_drop_name && ms.current_drop_required > 0) {
           showToast(`Mining progress refreshed: ${ms.current_drop_name} (${ms.current_drop_watched || 0}/${ms.current_drop_required}m — ${ms.current_drop_percent || 0}%)`);
@@ -1738,6 +1744,18 @@
           }
         } else {
           conflictBanner.style.display = "none";
+        }
+      }
+
+      const rateLimitBadge = document.getElementById("miner-rate-limit-badge");
+      if (rateLimitBadge) {
+        if (!isStopped && minerStat.rate_limited) {
+          const secs = Number(minerStat.rate_limit_cooldown_secs || minerStat.rate_limit_remaining_secs || 0);
+          const mins = secs > 0 ? Math.max(1, Math.ceil(secs / 60)) : 5;
+          rateLimitBadge.innerText = `Twitch API cooldown (~${mins}m) — headless browser watching calmly`;
+          rateLimitBadge.style.display = "inline-flex";
+        } else {
+          rateLimitBadge.style.display = "none";
         }
       }
 
@@ -3413,16 +3431,18 @@
       } catch (e) {}
     }
 
-    // Auto re-sync when window gains focus or switches to foreground
+    // Auto re-sync when window gains focus or switches to foreground (throttled to >= 30s)
     document.addEventListener("visibilitychange", () => {
-      if (!document.hidden) {
+      if (!document.hidden && (Date.now() - lastStatusFetchAt) >= 30000) {
         pulseSyncIndicator();
         fetchData(true);
       }
     });
     window.addEventListener("focus", () => {
-      pulseSyncIndicator();
-      fetchData(true);
+      if (!document.hidden && (Date.now() - lastStatusFetchAt) >= 30000) {
+        pulseSyncIndicator();
+        fetchData(true);
+      }
     });
 
     function pulseSyncIndicator() {
@@ -3517,9 +3537,9 @@
       } catch (e) {}
     });
 
-    // Initial load & continuous 10s synchronization heartbeat
+    // Initial load & calm 30s synchronization heartbeat (paused in background tabs)
     fetchData();
-    setInterval(() => fetchData(true), 10000);
+    setInterval(() => { if (!document.hidden) fetchData(true); }, 30000);
     setInterval(tickLocalSessionTimer, 5000);
   </script>
 </body>
