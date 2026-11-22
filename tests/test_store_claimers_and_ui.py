@@ -219,6 +219,12 @@ class TestStoreClaimersAndUI(unittest.TestCase):
             "submitStore2faCode",
             ".accounts-grid",
             ".account-card",
+            "cover_url",
+            "getGameCoverFallback",
+            "drop-thumb",
+            "d.image_url",
+            'referrerpolicy="no-referrer"',
+            "_calcCampaignProgress",
         ):
             self.assertIn(marker, index_html)
 

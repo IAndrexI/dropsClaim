@@ -407,6 +407,26 @@
       background: var(--surface-2);
       flex-shrink: 0;
     }
+    .camp-cover-fallback, .list-row-cover-fallback {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 0.95rem;
+      color: #c4b5fd;
+      background: linear-gradient(135deg, #1e1b4b, #312e81);
+      border: 1px solid rgba(139, 92, 246, 0.35);
+    }
+    .drop-thumb {
+      width: 32px;
+      height: 32px;
+      border-radius: 6px;
+      object-fit: contain;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      flex-shrink: 0;
+      padding: 2px;
+    }
     .camp-game-fullname {
       font-size: 0.96rem;
       font-weight: 700;
@@ -1056,12 +1076,53 @@
 
   <script>
     const KNOWN_GAME_LOGOS = {
-      "rust": "https://static-cdn.jtvnw.net/ttv-boxart/263490_IGDB-144x192.jpg",
-      "world of warcraft": "https://static-cdn.jtvnw.net/ttv-boxart/18122-144x192.jpg",
-      "overwatch 2": "https://static-cdn.jtvnw.net/ttv-boxart/515025-144x192.jpg",
-      "escape from tarkov": "https://static-cdn.jtvnw.net/ttv-boxart/491931_IGDB-144x192.jpg",
-      "valorant": "https://static-cdn.jtvnw.net/ttv-boxart/516575-144x192.jpg"
+      "evolutions": "https://static-cdn.jtvnw.net/ttv-boxart/1982936547_IGDB-285x380.jpg",
+      "pokémon community game": "https://static-cdn.jtvnw.net/ttv-boxart/329951934_IGDB-285x380.jpg",
+      "pokémon trading card game pocket": "https://static-cdn.jtvnw.net/ttv-boxart/375403621_IGDB-285x380.jpg",
+      "pokémon trading card game live": "https://static-cdn.jtvnw.net/ttv-boxart/155409827-285x380.jpg",
+      "pokémon": "https://static-cdn.jtvnw.net/ttv-boxart/1982936547_IGDB-285x380.jpg",
+      "pokemon": "https://static-cdn.jtvnw.net/ttv-boxart/1982936547_IGDB-285x380.jpg",
+      "wardogs": "https://static-cdn.jtvnw.net/ttv-boxart/743893402_IGDB-285x380.jpg",
+      "rust": "https://static-cdn.jtvnw.net/ttv-boxart/263490_IGDB-285x380.jpg",
+      "world of warcraft": "https://static-cdn.jtvnw.net/ttv-boxart/18122-285x380.jpg",
+      "overwatch 2": "https://static-cdn.jtvnw.net/ttv-boxart/515025-285x380.jpg",
+      "overwatch": "https://static-cdn.jtvnw.net/ttv-boxart/488552-285x380.jpg",
+      "marvel rivals": "https://static-cdn.jtvnw.net/ttv-boxart/1476685419_IGDB-285x380.jpg",
+      "escape from tarkov": "https://static-cdn.jtvnw.net/ttv-boxart/491931-285x380.jpg",
+      "warframe": "https://static-cdn.jtvnw.net/ttv-boxart/66170-285x380.jpg",
+      "rainbow six siege": "https://static-cdn.jtvnw.net/ttv-boxart/460630-285x380.jpg",
+      "apex legends": "https://static-cdn.jtvnw.net/ttv-boxart/511224-285x380.jpg",
+      "grand theft auto v": "https://static-cdn.jtvnw.net/ttv-boxart/32982_IGDB-285x380.jpg",
+      "dead by daylight": "https://static-cdn.jtvnw.net/ttv-boxart/491487-285x380.jpg",
+      "fortnite": "https://static-cdn.jtvnw.net/ttv-boxart/33214-285x380.jpg",
+      "valorant": "https://static-cdn.jtvnw.net/ttv-boxart/516575-285x380.jpg",
+      "sea of thieves": "https://static-cdn.jtvnw.net/ttv-boxart/490377-285x380.jpg",
+      "once human": "https://static-cdn.jtvnw.net/ttv-boxart/1283626244_IGDB-285x380.jpg",
+      "delta force": "https://static-cdn.jtvnw.net/ttv-boxart/1568265005_IGDB-285x380.jpg",
+      "the finals": "https://static-cdn.jtvnw.net/ttv-boxart/1709407338_IGDB-285x380.jpg",
+      "arc raiders": "https://static-cdn.jtvnw.net/ttv-boxart/1709407338_IGDB-285x380.jpg",
+      "path of exile": "https://static-cdn.jtvnw.net/ttv-boxart/29307_IGDB-285x380.jpg",
+      "path of exile 2": "https://static-cdn.jtvnw.net/ttv-boxart/518184_IGDB-285x380.jpg",
+      "diablo iv": "https://static-cdn.jtvnw.net/ttv-boxart/515024-285x380.jpg",
+      "just chatting": "https://static-cdn.jtvnw.net/ttv-boxart/509658-285x380.jpg"
     };
+
+    function getGameCoverFallback(gameName, existingUrl) {
+      if (existingUrl && String(existingUrl).trim()) return existingUrl;
+      const gLow = String(gameName || "").toLowerCase().trim();
+      if (KNOWN_GAME_LOGOS[gLow]) return KNOWN_GAME_LOGOS[gLow];
+      for (const [k, v] of Object.entries(KNOWN_GAME_LOGOS)) {
+        if (k === gLow || k.includes(gLow) || gLow.includes(k)) return v;
+      }
+      if (lastTwitchData && Array.isArray(lastTwitchData.campaigns)) {
+        const found = lastTwitchData.campaigns.find(c => {
+          const cg = String(c.game || "").toLowerCase().trim();
+          return cg === gLow || cg.includes(gLow) || gLow.includes(cg);
+        });
+        if (found && found.cover_url) return found.cover_url;
+      }
+      return "";
+    }
 
     const CAMPAIGN_VIEW_KEY = "autoloot_campaign_view";
     function loadCampaignView() {
@@ -1260,10 +1321,15 @@
       }
 
       const gameName = minerStat.game || selectedPriorityGames[0] || "";
-      const logo = KNOWN_GAME_LOGOS[String(gameName).toLowerCase()] || "";
+      const logo = getGameCoverFallback(gameName, minerStat.cover_url || minerStat.game_box_art);
       if (coverEl) {
-        if (logo) { coverEl.src = logo; coverEl.style.display = "block"; }
-        else { coverEl.style.display = "none"; }
+        if (logo) {
+          coverEl.referrerPolicy = "no-referrer";
+          coverEl.src = logo;
+          coverEl.style.display = "block";
+        } else {
+          coverEl.style.display = "none";
+        }
       }
 
       if (minerStat.active && minerStat.channel_name) {
@@ -1300,8 +1366,8 @@
         return;
       }
       container.innerHTML = selectedPriorityGames.map((g, idx) => {
-        const logo = KNOWN_GAME_LOGOS[String(g).toLowerCase()] || "";
-        const logoHtml = logo ? `<img class="chip-game-logo" src="${logo}" alt="">` : "";
+        const logo = getGameCoverFallback(g, "");
+        const logoHtml = logo ? `<img class="chip-game-logo" src="${escapeHtml(logo)}" alt="" referrerpolicy="no-referrer" onerror="this.style.display='none'">` : "";
         return `
           <div class="chip ${idx === 0 ? "active" : ""}">
             ${logoHtml}
@@ -1312,10 +1378,33 @@
       }).join("");
     }
 
+    function _calcCampaignProgress(camp) {
+      if (camp.status === "COMPLETED") return 100;
+      const drops = camp.drops || [];
+      let totalReq = 0;
+      let totalWatched = 0;
+      for (const d of drops) {
+        const req = Number(d.required_minutes || 0);
+        if (req > 0) {
+          totalReq += req;
+          totalWatched += Math.min(req, Number(d.watched_minutes || 0));
+        }
+      }
+      return totalReq > 0 ? Math.min(100, Math.round((totalWatched / totalReq) * 100)) : 0;
+    }
+
+    function _renderCoverImg(coverUrl, gameName, sizeClass) {
+      const initial = escapeHtml((String(gameName || "?").trim()[0] || "?").toUpperCase());
+      if (!coverUrl) {
+        return `<div class="${sizeClass} camp-cover-fallback">${initial}</div>`;
+      }
+      return `<img class="${sizeClass}" src="${escapeHtml(coverUrl)}" alt="${escapeHtml(gameName || "")}" referrerpolicy="no-referrer" onerror="this.outerHTML='<div class=&quot;${sizeClass} camp-cover-fallback&quot;>${initial}</div>'">`;
+    }
+
     function _campStatusBadge(camp) {
-      if (camp.ready_to_claim_count > 0) return `<span class="badge badge-ready">Ready</span>`;
-      if (camp.in_progress_count > 0) return `<span class="badge badge-progress">In Progress</span>`;
-      if (camp.is_claimed_all) return `<span class="badge badge-claimed">Claimed</span>`;
+      if ((camp.ready_count || 0) > 0 || camp.status === "READY") return `<span class="badge badge-ready">Ready</span>`;
+      if ((camp.in_progress_count || 0) > 0 || camp.status === "IN_PROGRESS") return `<span class="badge badge-progress">In Progress</span>`;
+      if (camp.status === "COMPLETED") return `<span class="badge badge-claimed">Claimed</span>`;
       return `<span class="badge badge-available">Available</span>`;
     }
 
@@ -1325,9 +1414,13 @@
       const claimBtn = d.status === "READY_TO_CLAIM" && d.drop_instance_id
         ? `<button class="btn btn-sm btn-success" onclick="claimSingleDrop('${escapeJsAttr(d.drop_instance_id)}')">Claim</button>`
         : "";
+      const thumbUrl = d.image_url || "https://static-cdn.jtvnw.net/custom-reward-images/default-4.png";
       return `
         <div class="drop-row">
-          <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(d.name)}</span>
+          <div style="display: flex; align-items: center; gap: 8px; min-width: 0;">
+            <img src="${escapeHtml(thumbUrl)}" alt="${escapeHtml(d.name)}" class="drop-thumb" referrerpolicy="no-referrer" onerror="this.onerror=null;this.src='https://static-cdn.jtvnw.net/custom-reward-images/default-4.png';">
+            <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(d.name)}</span>
+          </div>
           <div style="display: flex; align-items: center; gap: 6px; flex-shrink: 0;">
             <span style="color: var(--text-muted);">${d.watched_minutes || 0}/${d.required_minutes || 0}m (${pct}%)</span>
             <span class="badge ${badgeClass}">${escapeHtml(d.status || "AVAILABLE")}</span>
@@ -1350,10 +1443,10 @@
           if (!hay.includes(search)) return false;
         }
         if (currentDropsFilter === "queued") return Boolean(c.is_queued || c.is_active_target);
-        if (currentDropsFilter === "in_progress") return (c.in_progress_count || 0) > 0;
-        if (currentDropsFilter === "ready") return (c.ready_to_claim_count || 0) > 0;
-        if (currentDropsFilter === "claimed") return Boolean(c.is_claimed_all);
-        if (currentDropsFilter === "available") return !c.is_claimed_all;
+        if (currentDropsFilter === "in_progress") return (c.in_progress_count || 0) > 0 || c.status === "IN_PROGRESS";
+        if (currentDropsFilter === "ready") return (c.ready_count || 0) > 0 || c.status === "READY";
+        if (currentDropsFilter === "claimed") return c.status === "COMPLETED";
+        if (currentDropsFilter === "available") return c.status !== "COMPLETED";
         return true;
       });
 
@@ -1367,18 +1460,19 @@
           const cid = String(c.id || c.name || c.game);
           const isExpanded = expandedCampaignIds.has(cid);
           const drops = c.drops || [];
-          const pct = c.progress_percent || 0;
-          const cover = c.box_art_url || KNOWN_GAME_LOGOS[String(c.game || "").toLowerCase()] || "";
+          const pct = _calcCampaignProgress(c);
+          const cover = getGameCoverFallback(c.game, c.cover_url || c.box_art_url);
+          const sub = [c.name, c.time_left].filter(Boolean).join(" · ");
           const qBtn = c.is_queued
             ? `<button class="btn btn-sm" onclick="queueAction('${escapeJsAttr(c.game)}', 'remove')">Remove</button>`
             : `<button class="btn btn-sm" onclick="queueAction('${escapeJsAttr(c.game)}', 'enqueue')">+ Queue</button>`;
           return `
             <div class="list-row-card ${c.is_queued ? "is-queued" : ""}">
               <div class="list-row-main">
-                <img class="list-row-cover" src="${escapeHtml(cover)}" alt="">
+                ${_renderCoverImg(cover, c.game, "list-row-cover")}
                 <div>
                   <div class="camp-game-fullname">${escapeHtml(c.game)}</div>
-                  <div class="camp-subtitle">${escapeHtml(c.name || "")}</div>
+                  <div class="camp-subtitle">${escapeHtml(sub)}</div>
                 </div>
                 <div>
                   <div style="display: flex; justify-content: space-between; font-size: 0.74rem; margin-bottom: 4px;">
@@ -1405,16 +1499,16 @@
           const cid = String(c.id || c.name || c.game);
           const isExpanded = expandedCampaignIds.has(cid);
           const drops = c.drops || [];
-          const pct = c.progress_percent || 0;
-          const cover = c.box_art_url || KNOWN_GAME_LOGOS[String(c.game || "").toLowerCase()] || "";
+          const pct = _calcCampaignProgress(c);
+          const cover = getGameCoverFallback(c.game, c.cover_url || c.box_art_url);
           return `
             <div class="card ${c.is_queued ? "is-queued" : ""}">
               <div class="card-top">
                 <div class="camp-header-left">
-                  <img class="camp-cover" src="${escapeHtml(cover)}" alt="">
+                  ${_renderCoverImg(cover, c.game, "camp-cover")}
                   <div>
                     <div class="camp-game-fullname">${escapeHtml(c.game)}</div>
-                    <div class="camp-subtitle">${drops.length} drop(s)</div>
+                    <div class="camp-subtitle">${drops.length} drop(s)${c.time_left ? " · " + escapeHtml(c.time_left) : ""}</div>
                   </div>
                 </div>
                 ${_campStatusBadge(c)}
@@ -1437,8 +1531,9 @@
         const isExpanded = expandedCampaignIds.has(cid);
         const drops = c.drops || [];
         const visibleDrops = isExpanded ? drops : drops.slice(0, 3);
-        const pct = c.progress_percent || 0;
-        const cover = c.box_art_url || KNOWN_GAME_LOGOS[String(c.game || "").toLowerCase()] || "";
+        const pct = _calcCampaignProgress(c);
+        const cover = getGameCoverFallback(c.game, c.cover_url || c.box_art_url);
+        const sub = [c.name, c.time_left].filter(Boolean).join(" · ");
         const qBtn = c.is_queued
           ? `<button class="btn btn-sm" onclick="queueAction('${escapeJsAttr(c.game)}', 'remove')">Remove</button>`
           : `<button class="btn btn-sm" onclick="queueAction('${escapeJsAttr(c.game)}', 'enqueue')">+ Queue</button>`;
@@ -1446,10 +1541,10 @@
           <div class="card ${c.is_queued ? "is-queued" : ""}">
             <div class="card-top">
               <div class="camp-header-left">
-                <img class="camp-cover" src="${escapeHtml(cover)}" alt="">
+                ${_renderCoverImg(cover, c.game, "camp-cover")}
                 <div>
                   <div class="camp-game-fullname">${escapeHtml(c.game)}</div>
-                  <div class="camp-subtitle">${escapeHtml(c.name || "")}</div>
+                  <div class="camp-subtitle">${escapeHtml(sub)}</div>
                 </div>
               </div>
               ${_campStatusBadge(c)}
