@@ -3,147 +3,166 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Sign In - Auto Loot Claimer</title>
+  <title>Sign In | Auto Loot Claimer</title>
   <link rel="manifest" href="/manifest.json">
   <link rel="icon" type="image/svg+xml" href="/static/icons/icon.svg">
   <link rel="icon" type="image/png" sizes="192x192" href="/static/icons/icon-192.png">
-  <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
-  <meta name="theme-color" content="#6366f1">
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="AutoLoot">
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/icons/apple-touch-icon.png">
+  <meta name="theme-color" content="#0b0f19">
   <style>
     :root {
       --bg: #0b0f19;
-      --card-bg: #131b2e;
-      --card-border: #1e293b;
-      --text: #f8fafc;
+      --surface: #111827;
+      --surface-2: #161f33;
+      --border: #1f2937;
+      --text: #f1f5f9;
       --text-muted: #94a3b8;
-      --primary: #9146ff;
-      --primary-hover: #7c2cf1;
+      --accent: #8b5cf6;
+      --accent-hover: #7c3aed;
       --danger: #ef4444;
     }
-    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      background-color: var(--bg);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: radial-gradient(circle at top, #171e36 0%, var(--bg) 55%);
       color: var(--text);
-      display: flex;
-      justify-content: center;
-      align-items: center;
       min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
       padding: 20px;
     }
     .login-card {
-      background: var(--card-bg);
-      border: 1px solid var(--card-border);
-      border-radius: 12px;
-      padding: 32px;
       width: 100%;
-      max-width: 400px;
-      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
+      max-width: 390px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 28px 26px;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45);
     }
-    .header { text-align: center; margin-bottom: 24px; }
-    .header h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 6px; }
-    .header p { color: var(--text-muted); font-size: 0.88rem; }
-    .form-group { margin-bottom: 18px; }
-    .form-group label { display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 6px; color: var(--text-muted); }
-    .form-control {
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 6px;
+    }
+    .brand-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 12px var(--accent);
+    }
+    h1 {
+      font-size: 1.25rem;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+    }
+    .subtitle {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      margin-bottom: 22px;
+    }
+    .form-group { margin-bottom: 14px; }
+    label {
+      display: block;
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      margin-bottom: 6px;
+    }
+    input {
       width: 100%;
-      background: #0b0f19;
-      border: 1px solid #1e293b;
-      color: white;
-      padding: 10px 14px;
-      border-radius: 6px;
-      font-size: 0.95rem;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 12px;
+      color: var(--text);
+      font-size: 0.92rem;
       outline: none;
-      transition: border-color 0.2s;
+      transition: border-color 0.15s;
     }
-    .form-control:focus { border-color: var(--primary); }
-    .btn {
+    input:focus { border-color: var(--accent); }
+    .btn-submit {
       width: 100%;
-      background: var(--primary);
-      color: white;
+      margin-top: 8px;
+      padding: 10px 14px;
       border: none;
-      padding: 12px;
-      border-radius: 6px;
-      font-size: 0.95rem;
+      border-radius: 8px;
+      background: var(--accent);
+      color: #fff;
+      font-size: 0.92rem;
       font-weight: 600;
       cursor: pointer;
-      transition: background 0.2s;
-      margin-top: 8px;
+      transition: background 0.15s;
     }
-    .btn:hover { background: var(--primary-hover); }
+    .btn-submit:hover { background: var(--accent-hover); }
+    .btn-submit:disabled { opacity: 0.6; cursor: not-allowed; }
     .error-msg {
-      background: rgba(239, 68, 68, 0.15);
-      border: 1px solid rgba(239, 68, 68, 0.3);
-      color: #f87171;
-      padding: 10px 12px;
-      border-radius: 6px;
-      font-size: 0.85rem;
-      margin-bottom: 16px;
       display: none;
+      margin-top: 12px;
+      padding: 9px 12px;
+      border-radius: 8px;
+      background: rgba(239, 68, 68, 0.12);
+      border: 1px solid rgba(239, 68, 68, 0.35);
+      color: #fca5a5;
+      font-size: 0.82rem;
     }
   </style>
 </head>
 <body>
   <div class="login-card">
-    <div class="header">
+    <div class="brand">
+      <span class="brand-dot"></span>
       <h1>Auto Loot Claimer</h1>
-      <p>Enter credentials to access your dashboard</p>
     </div>
-
-    <div id="error-box" class="error-msg"></div>
-
-    <form id="login-form">
+    <p class="subtitle">Sign in to manage Twitch Drops &amp; free game claimers.</p>
+    <form id="login-form" onsubmit="handleLogin(event)">
       <div class="form-group">
         <label for="username">Username</label>
-        <input type="text" id="username" class="form-control" autocomplete="username" required autofocus>
+        <input type="text" id="username" autocomplete="username" required autofocus>
       </div>
       <div class="form-group">
         <label for="password">Password</label>
-        <input type="password" id="password" class="form-control" autocomplete="current-password" required>
+        <input type="password" id="password" autocomplete="current-password" required>
       </div>
-      <button type="submit" class="btn" id="submit-btn">Sign In</button>
+      <button type="submit" class="btn-submit" id="btn-login">Sign In</button>
+      <div id="error-msg" class="error-msg"></div>
     </form>
   </div>
-
   <script>
-    const form = document.getElementById("login-form");
-    const errorBox = document.getElementById("error-box");
-    const submitBtn = document.getElementById("submit-btn");
-
-    form.addEventListener("submit", async (e) => {
+    async function handleLogin(e) {
       e.preventDefault();
-      errorBox.style.display = "none";
-      submitBtn.disabled = true;
-      submitBtn.innerText = "Authenticating...";
-
-      const username = document.getElementById("username").value.trim();
-      const password = document.getElementById("password").value;
-
+      const btn = document.getElementById("btn-login");
+      const errEl = document.getElementById("error-msg");
+      errEl.style.display = "none";
+      btn.disabled = true;
+      btn.innerText = "Signing in...";
       try {
         const res = await fetch("/api/login", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ username, password })
+          body: JSON.stringify({
+            username: document.getElementById("username").value,
+            password: document.getElementById("password").value
+          })
         });
         const data = await res.json();
-
         if (res.ok && data.success) {
           window.location.href = "/";
         } else {
-          errorBox.innerText = data.error || "Invalid username or password";
-          errorBox.style.display = "block";
-          submitBtn.disabled = false;
-          submitBtn.innerText = "Sign In";
+          errEl.innerText = data.error || "Invalid username or password.";
+          errEl.style.display = "block";
         }
       } catch (err) {
-        errorBox.innerText = "Connection error. Please try again.";
-        errorBox.style.display = "block";
-        submitBtn.disabled = false;
-        submitBtn.innerText = "Sign In";
+        errEl.innerText = "Connection error: " + err.message;
+        errEl.style.display = "block";
+      } finally {
+        btn.disabled = false;
+        btn.innerText = "Sign In";
       }
-    });
+    }
   </script>
 </body>
 </html>

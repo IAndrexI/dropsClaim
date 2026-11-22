@@ -61,6 +61,12 @@ else
     echo "Vendor directory already exists, skipping clone."
 fi
 
+# Ensure vendor data directory symlinks cleanly to persistent data/fgc & Playwright Firefox is ready
+if [ -d "$APP_DIR/vendor/free-games-claimer" ]; then
+    ln -sfn "$APP_DIR/data/fgc" "$APP_DIR/vendor/free-games-claimer/data"
+    (cd "$APP_DIR/vendor/free-games-claimer" && npx playwright-firefox install firefox >/dev/null 2>&1 || true)
+fi
+
 echo "[4/6] Setting up script permissions..."
 chmod +x "$APP_DIR/scripts/"*.sh
 

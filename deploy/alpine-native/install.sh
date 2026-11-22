@@ -69,6 +69,11 @@ else
     echo "Vendor directory already exists, skipping clone."
 fi
 
+# Ensure vendor data directory symlinks cleanly to persistent data/fgc
+if [ -d "$APP_DIR/vendor/free-games-claimer" ]; then
+    ln -sfn "$APP_DIR/data/fgc" "$APP_DIR/vendor/free-games-claimer/data"
+fi
+
 echo "[4/6] Setting up script permissions..."
 chmod +x "$APP_DIR/scripts/"*.sh
 

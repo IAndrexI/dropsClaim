@@ -26,6 +26,12 @@ APP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, APP_DIR)
 
 from src.free_games.preview_promotions import fetch_epic_freebies
+from src.free_games.sync_claimed import collect_claimed_records
+from src.free_games.auto_claimer import (
+    load_store_claimer_status,
+    save_store_claimer_status,
+    save_pending_2fa,
+)
 from src.twitch_drops.activity_logger import log_event, read_activity_log, sanitize_text
 from src.twitch_drops.browser_watcher import find_chromium_binary
 from src.twitch_drops import twitch_api as _twitch_api
@@ -250,61 +256,156 @@ def get_claimed_store_titles():
     """
     Returns a dictionary of claimed titles per store:
     {"epic": [...], "amazon": [...], "gog": [...]}
-    Reads persistent data/claimed_games.json and scans log files.
     """
-    data_file = os.path.join(APP_DIR, "data", "claimed_games.json")
-    results = {"epic": set(), "amazon": set(), "gog": set()}
+    try:
+        return collect_claimed_records(base_dir=APP_DIR)
+    except Exception:
+        return {"epic": [], "amazon": [], "gog": []}
 
-    # 1. Read persistent JSON
-    if os.path.exists(data_file):
+
+_STORE_SCHEDULER_LOCK = threading.Lock()
+_STORE_SCHEDULER_STARTED = False
+
+
+def _get_free_games_log_path() -> str:
+    var_log = "/var/log/free-games.log"
+    if os.path.isdir("/var/log") and os.access("/var/log", os.W_OK):
+        return var_log
+    return os.path.join(APP_DIR, "data", "free-games.log")
+
+
+def get_store_claimer_settings(env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    env_map = env if env is not None else load_env_file()
+    raw_enabled = str(env_map.get("FREE_GAMES_AUTO_CLAIM", "1")).strip().lower()
+    auto_claim_enabled = raw_enabled not in ("0", "false", "no", "off", "disabled")
+    try:
+        interval_hours = int(str(env_map.get("FREE_GAMES_INTERVAL_HOURS", "6")).strip() or "6")
+    except Exception:
+        interval_hours = 6
+    interval_hours = max(1, min(48, interval_hours))
+    return {
+        "auto_claim_enabled": auto_claim_enabled,
+        "interval_hours": interval_hours,
+    }
+
+
+def _parse_iso_ts(val: Optional[str]) -> Optional[float]:
+    if not val:
+        return None
+    try:
+        from datetime import datetime
+        dt = datetime.fromisoformat(str(val).replace("Z", "+00:00"))
+        return dt.timestamp()
+    except Exception:
+        return None
+
+
+def is_store_claim_due(
+    env: Optional[Dict[str, str]] = None,
+    status: Optional[Dict[str, Any]] = None,
+    now_ts: Optional[float] = None,
+) -> bool:
+    env_map = env if env is not None else load_env_file()
+    settings = get_store_claimer_settings(env_map)
+    if not settings["auto_claim_enabled"]:
+        return False
+    has_any_store = any(
+        bool(str(env_map.get(k) or "").strip())
+        for k in ("EG_EMAIL", "PG_EMAIL", "GOG_EMAIL")
+    )
+    if not has_any_store:
+        return False
+
+    st = status if status is not None else load_store_claimer_status(base_dir=APP_DIR)
+    now = now_ts if now_ts is not None else time.time()
+    if st.get("running"):
+        return False
+    last_ts = _parse_iso_ts(st.get("last_run_at"))
+    if last_ts is None:
+        return True
+    return (now - last_ts) >= (settings["interval_hours"] * 3600)
+
+
+def trigger_store_claimer(target_store: str = "all", reason: str = "manual") -> Dict[str, Any]:
+    store_norm = str(target_store or "all").strip().lower() or "all"
+    if store_norm == "prime":
+        store_norm = "amazon"
+
+    lock_path = os.path.join(APP_DIR, "data", "store_claimer.lock")
+    if os.path.exists(lock_path):
         try:
-            with open(data_file, "r", encoding="utf-8") as f:
-                stored = json.load(f)
-                if isinstance(stored, dict):
-                    for k, titles in stored.items():
-                        if k in results and isinstance(titles, list):
-                            for t in titles:
-                                if t and isinstance(t, str):
-                                    results[k].add(t.strip())
+            with open(lock_path, "r", encoding="utf-8") as lf:
+                pid = int((lf.read() or "0").strip() or "0")
+            if pid > 0 and is_pid_alive(pid):
+                return {
+                    "success": True,
+                    "already_running": True,
+                    "message": "Store auto-claimer is already running in the background.",
+                }
         except Exception:
             pass
 
-    # 2. Scan log files and vendor data for claimed keywords
-    search_paths = [
-        "/var/log/free-games.log",
-        os.path.join(APP_DIR, "data", "fgc"),
-        os.path.join(APP_DIR, "vendor", "free-games-claimer", "data"),
-    ]
-    for sp in search_paths:
-        if os.path.isfile(sp):
-            targets = [sp]
-        elif os.path.isdir(sp):
-            targets = [os.path.join(root, f) for root, _, fs in os.walk(sp) for f in fs if f.endswith((".log", ".json", ".txt"))]
-        else:
-            continue
+    st = load_store_claimer_status(base_dir=APP_DIR)
+    if st.get("running"):
+        return {
+            "success": True,
+            "already_running": True,
+            "message": "Store auto-claimer is already running in the background.",
+        }
 
-        for tf in targets:
+    st["running"] = True
+    save_store_claimer_status(st, base_dir=APP_DIR)
+
+    log_path = _get_free_games_log_path()
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    script_path = os.path.join(APP_DIR, "scripts", "run_games_claimer.sh")
+
+    try:
+        log_f = open(log_path, "a", encoding="utf-8")
+        if os.name != "nt" and os.path.exists(script_path) and shutil.which("bash"):
+            cmd = ["bash", script_path, store_norm]
+        else:
+            cmd = [sys.executable, "-u", "-m", "src.free_games.auto_claimer", "--store", store_norm]
+        subprocess.Popen(cmd, cwd=APP_DIR, stdout=log_f, stderr=subprocess.STDOUT)
+        log_f.close()
+    except Exception as err:
+        st["running"] = False
+        save_store_claimer_status(st, base_dir=APP_DIR)
+        return {
+            "success": False,
+            "already_running": False,
+            "message": f"Failed to launch store claimer: {err}",
+        }
+
+    label = "all storefronts" if store_norm == "all" else store_norm.upper()
+    return {
+        "success": True,
+        "already_running": False,
+        "message": f"Triggered {label} check in the background!",
+    }
+
+
+def start_store_claimer_scheduler() -> None:
+    global _STORE_SCHEDULER_STARTED
+    if "unittest" in sys.modules:
+        return
+    with _STORE_SCHEDULER_LOCK:
+        if _STORE_SCHEDULER_STARTED:
+            return
+        _STORE_SCHEDULER_STARTED = True
+
+    def _loop():
+        time.sleep(90)
+        while True:
             try:
-                with open(tf, "r", encoding="utf-8", errors="ignore") as f:
-                    for line in f:
-                        line_low = line.lower()
-                        if any(kw in line_low for kw in ["claimed", "already claimed", "already in library", "successfully claimed"]):
-                            cleaned = line.strip()
-                            for prefix in ["claimed:", "already claimed:", "successfully claimed:"]:
-                                if prefix in line_low:
-                                    idx = line_low.find(prefix) + len(prefix)
-                                    cleaned = line[idx:].strip(" -:[]*\"'")
-                            if cleaned and len(cleaned) < 80:
-                                if "prime" in tf.lower() or "amazon" in tf.lower():
-                                    results["amazon"].add(cleaned)
-                                elif "gog" in tf.lower():
-                                    results["gog"].add(cleaned)
-                                else:
-                                    results["epic"].add(cleaned)
+                if is_store_claim_due():
+                    trigger_store_claimer("all", reason="scheduled")
             except Exception:
                 pass
+            time.sleep(300)
 
-    return {k: sorted(list(v)) for k, v in results.items()}
+    t = threading.Thread(target=_loop, name="store-claimer-scheduler", daemon=True)
+    t.start()
 
 
 def save_claimed_store_title(store: str, title: str, is_claimed: bool = True):
@@ -1421,12 +1522,24 @@ def build_status_payload(force_refresh: bool = False):
     for game in active_free:
         game["store_url"] = f"https://store.epicgames.com/browse?q={urllib.parse.quote(game.get('title', ''))}"
 
-    has_epic_cookies = False
-    if os.path.exists(data_dir):
-        for root, _, files in os.walk(data_dir):
-            if any("epic" in f.lower() or "cookie" in f.lower() for f in files):
-                has_epic_cookies = True
-                break
+    store_status = load_store_claimer_status(base_dir=APP_DIR)
+    store_settings = get_store_claimer_settings(env)
+    stores_map = store_status.get("stores") or {}
+
+    def _has_store_session(keywords):
+        for check_dir in (
+            data_dir,
+            os.path.join(APP_DIR, "vendor", "free-games-claimer", "data"),
+        ):
+            if os.path.exists(check_dir):
+                for _, _, files in os.walk(check_dir):
+                    if any(any(kw in f.lower() for kw in keywords) for f in files):
+                        return True
+        return False
+
+    has_epic_cookies = _has_store_session(("epic", "cookie")) or bool(
+        (stores_map.get("epic") or {}).get("last_success_at")
+    )
 
     epic_info = {
         "email": env.get("EG_EMAIL"),
@@ -1434,24 +1547,24 @@ def build_status_payload(force_refresh: bool = False):
         "active_freebies": active_free,
         "upcoming_freebies": upcoming_free,
         "claimed_titles": claimed_store_map.get("epic", []),
+        "claimer_status": stores_map.get("epic") or {},
         "store_url": "https://store.epicgames.com/free-games",
         "library_url": "https://www.epicgames.com/account/transactions",
     }
 
     # 3. Amazon Prime Gaming & GOG
-    has_amazon_cookies = False
-    has_gog_cookies = False
-    if os.path.exists(data_dir):
-        for root, _, files in os.walk(data_dir):
-            if any("amazon" in f.lower() or "prime" in f.lower() for f in files):
-                has_amazon_cookies = True
-            if any("gog" in f.lower() for f in files):
-                has_gog_cookies = True
+    has_amazon_cookies = _has_store_session(("amazon", "prime")) or bool(
+        (stores_map.get("amazon") or {}).get("last_success_at")
+    )
+    has_gog_cookies = _has_store_session(("gog",)) or bool(
+        (stores_map.get("gog") or {}).get("last_success_at")
+    )
 
     amazon_info = {
         "email": env.get("PG_EMAIL"),
         "has_saved_session": has_amazon_cookies,
         "claimed_items": claimed_store_map.get("amazon", []),
+        "claimer_status": stores_map.get("amazon") or {},
         "claim_url": "https://gaming.amazon.com/home",
         "loot_url": "https://gaming.amazon.com/loot",
     }
@@ -1460,6 +1573,7 @@ def build_status_payload(force_refresh: bool = False):
         "email": env.get("GOG_EMAIL"),
         "has_saved_session": has_gog_cookies,
         "claimed_items": claimed_store_map.get("gog", []),
+        "claimer_status": stores_map.get("gog") or {},
         "store_url": "https://www.gog.com",
         "library_url": "https://www.gog.com/account",
     }
@@ -1477,6 +1591,14 @@ def build_status_payload(force_refresh: bool = False):
         "epic": epic_info,
         "amazon": amazon_info,
         "gog": gog_info,
+        "store_claimer": {
+            "running": bool(store_status.get("running", False)),
+            "engine": store_status.get("engine", "native-chromium-cdp"),
+            "last_run_at": store_status.get("last_run_at"),
+            "next_scheduled_at": store_status.get("next_scheduled_at"),
+            "auto_claim_enabled": store_settings["auto_claim_enabled"],
+            "interval_hours": store_settings["interval_hours"],
+        },
         "system": {
             "miner_running": miner_running,
             "git": git_info,
@@ -1655,7 +1777,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 sections.append("=== Detailed Activity Log (data/activity.log) ===\n" + "\n".join(act_lines))
 
             if not cat_filter:
-                log_paths = ["/var/log/twitch-drops.log", "/var/log/free-games.log", "/var/log/auto-loot-web.log"]
+                log_paths = [
+                    "/var/log/twitch-drops.log",
+                    "/var/log/free-games.log",
+                    os.path.join(APP_DIR, "data", "free-games.log"),
+                    "/var/log/auto-loot-web.log",
+                ]
                 for lp in log_paths:
                     if os.path.exists(lp):
                         try:
@@ -1959,6 +2086,38 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                         res = {"success": True, "message": "Epic Games Store API reachable (HTTP 200). Ready for automated claims."}
                 except Exception as e:
                     res = {"success": False, "message": f"Could not reach Epic API: {e}"}
+
+            elif service == "amazon":
+                try:
+                    req = urllib.request.Request("https://gaming.amazon.com/home", headers={"User-Agent": "Mozilla/5.0"}, method="GET")
+                    with urllib.request.urlopen(req, timeout=10) as resp:
+                        configured = bool((env.get("PG_EMAIL") or "").strip())
+                        otp_ready = bool((env.get("PG_OTP_SECRET") or "").strip())
+                        res = {
+                            "success": True,
+                            "message": (
+                                f"Prime Gaming reachable (HTTP {resp.status}). "
+                                + ("Account configured" if configured else "PG_EMAIL not set yet")
+                                + (" with 2FA TOTP ready." if otp_ready else ".")
+                            ),
+                        }
+                except Exception as e:
+                    res = {"success": False, "message": f"Could not reach Prime Gaming: {e}"}
+
+            elif service == "gog":
+                try:
+                    req = urllib.request.Request("https://www.gog.com/en", headers={"User-Agent": "Mozilla/5.0"}, method="GET")
+                    with urllib.request.urlopen(req, timeout=10) as resp:
+                        configured = bool((env.get("GOG_EMAIL") or "").strip())
+                        res = {
+                            "success": True,
+                            "message": (
+                                f"GOG.com reachable (HTTP {resp.status}). "
+                                + ("Account configured." if configured else "GOG_EMAIL not set yet.")
+                            ),
+                        }
+                except Exception as e:
+                    res = {"success": False, "message": f"Could not reach GOG.com: {e}"}
 
             else:
                 res = {"success": True, "message": f"Configuration saved for {service}."}
@@ -2264,25 +2423,44 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 except Exception:
                     pass
             target_store = payload.get("store", "").strip().lower()
+            res = trigger_store_claimer(target_store or "all", reason="manual")
+            log_event("API_ACTION", "trigger_games", {"store": target_store, "already_running": bool(res.get("already_running"))})
+            self.send_response(200 if res.get("success") else 500)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(res).encode("utf-8"))
+            return
 
-            script_path = os.path.join(APP_DIR, "scripts", "run_games_claimer.sh")
-            if os.path.exists(script_path):
-                cmd = ["bash", script_path]
-                if target_store:
-                    cmd.append(target_store)
-                subprocess.Popen(cmd, cwd=APP_DIR)
-                if target_store:
-                    msg = f"Triggered {target_store.upper()} claim check in the background!"
-                else:
-                    msg = "Triggered game storefronts check in the background!"
-            else:
-                msg = "Claimer script not found."
+        elif self.path == "/api/stores/2fa-code":
+            content_length = int(self.headers.get("Content-Length", 0))
+            payload = {}
+            if content_length > 0:
+                try:
+                    payload = json.loads(self.rfile.read(content_length).decode("utf-8"))
+                except Exception:
+                    pass
+            store = str(payload.get("store") or "").strip().lower()
+            code = "".join(ch for ch in str(payload.get("code") or "") if ch.isdigit())
+            trigger = bool(payload.get("trigger", True))
+            if store not in ("epic", "amazon", "prime", "gog") or not (4 <= len(code) <= 8):
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": False, "error": "Invalid store or 2FA code (expected 4-8 digits)."}).encode("utf-8"))
+                return
 
-            log_event("API_ACTION", "trigger_games", {"store": target_store})
+            norm_store = "amazon" if store == "prime" else store
+            save_pending_2fa(norm_store, code, base_dir=APP_DIR)
+            log_event("API_ACTION", "store_2fa_code", {"store": norm_store, "trigger": trigger})
+            trig_res = trigger_store_claimer(norm_store, reason="2fa_verify") if trigger else {"success": True, "message": "2FA code saved."}
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(json.dumps({"success": True, "message": msg}).encode("utf-8"))
+            self.wfile.write(json.dumps({
+                "success": True,
+                "store": norm_store,
+                "message": trig_res.get("message") or f"2FA code saved for {norm_store.upper()}.",
+            }).encode("utf-8"))
             return
 
         elif self.path == "/api/claim-item":
@@ -2437,6 +2615,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
 
 def run_server(port=8080):
+    start_store_claimer_scheduler()
     server_address = ("0.0.0.0", port)
     httpd = ThreadingHTTPServer(server_address, DashboardHandler)
     env = load_env_file()

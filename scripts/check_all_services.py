@@ -193,6 +193,20 @@ def main():
     check_epic(env, data_dir)
     check_amazon(env, data_dir)
     check_gog(env, data_dir)
+
+    status_file = os.path.join(app_dir, "data", "store_claimer_status.json")
+    if os.path.exists(status_file):
+        try:
+            with open(status_file, "r", encoding="utf-8") as sf:
+                st = json.load(sf) or {}
+            print("\n[4b] --- STORE AUTO-CLAIMER STATUS ---")
+            print(f"  Engine: {st.get('engine', 'native-chromium-cdp')} | Last Run: {st.get('last_run_at') or 'Never'}")
+            for store_k in ("epic", "amazon", "gog"):
+                s_info = (st.get("stores") or {}).get(store_k) or {}
+                print(f"  {store_k.upper():6s}: {s_info.get('status', 'idle')} - {s_info.get('message', '')}")
+        except Exception:
+            pass
+
     check_process()
 
     print("\n==========================================================")
